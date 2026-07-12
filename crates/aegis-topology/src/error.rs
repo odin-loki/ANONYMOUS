@@ -51,4 +51,13 @@ pub enum RosterError {
 
     #[error("deserialize error: {0}")]
     Deserialize(String),
+
+    #[error(
+        "admission rate limit exceeded: {attempted} admissions in window (max {max_per_window} per {window_secs}s)"
+    )]
+    AdmissionRateLimitExceeded {
+        attempted: usize,
+        max_per_window: usize,
+        window_secs: u64,
+    },
 }

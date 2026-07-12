@@ -34,7 +34,10 @@ impl Default for EmitterConfig {
 /// Constant-rate client emitter: exactly one cell every tick.
 pub struct ConstantRateEmitter<R: RngCore + CryptoRngCore> {
     config: EmitterConfig,
+    /// Application payloads encoded as `Command::Data` cells.
     queue: VecDeque<Vec<u8>>,
+    /// Pre-formed wire cells (e.g. Sphinx fragments) emitted as-is.
+    cell_queue: VecDeque<OutboundCell>,
     tick: u64,
     rng: R,
 }
@@ -44,6 +47,7 @@ impl<R: RngCore + CryptoRngCore> ConstantRateEmitter<R> {
         Self {
             config,
             queue: VecDeque::new(),
+            cell_queue: VecDeque::new(),
             tick: 0,
             rng,
         }
@@ -66,6 +70,16 @@ impl<R: RngCore + CryptoRngCore> ConstantRateEmitter<R> {
         self.queue.push_back(payload);
     }
 
+    /// Queue a pre-formed 512-byte wire cell (e.g. a Sphinx fragment).
+    pub fn enqueue_cell(&mut self, cell: OutboundCell) {
+        self.cell_queue.push_back(cell);
+    }
+
+    /// Real cells still queued (payload or pre-formed).
+    pub fn pending_emissions(&self) -> usize {
+        self.cell_queue.len() + self.queue.len()
+    }
+
     /// Current send-side backlog (queued real messages awaiting a slot).
     pub fn backlog(&self) -> usize {
         self.queue.len()
@@ -75,15 +89,24 @@ impl<R: RngCore + CryptoRngCore> ConstantRateEmitter<R> {
         self.tick
     }
 
-    /// Emit exactly one cell on this slot — real if queued, else dummy cover.
-    pub fn tick(&mut self, transport: &mut impl Transport) {
-        let cell = if let Some(payload) = self.queue.pop_front() {
+    /// Produce exactly one cell for this slot — real if queued, else dummy cover.
+    pub fn next_cell(&mut self) -> (u64, OutboundCell) {
+        let tick = self.tick;
+        let cell = if let Some(cell) = self.cell_queue.pop_front() {
+            cell
+        } else if let Some(payload) = self.queue.pop_front() {
             encode_data_cell(&payload, &mut self.rng)
         } else {
             encode_dummy_cell(&mut self.rng)
         };
-        transport.send(self.tick, cell);
         self.tick += 1;
+        (tick, cell)
+    }
+
+    /// Emit exactly one cell on this slot — real if queued, else dummy cover.
+    pub fn tick(&mut self, transport: &mut impl Transport) {
+        let (tick, cell) = self.next_cell();
+        transport.send(tick, cell);
     }
 
     /// Conceptual peak utilization ρ given a peak enqueue rate (messages / second).
@@ -93,12 +116,17 @@ impl<R: RngCore + CryptoRngCore> ConstantRateEmitter<R> {
 }
 
 fn encode_data_cell<R: RngCore + CryptoRngCore>(payload: &[u8], rng: &mut R) -> OutboundCell {
+    debug_assert!(
+        payload.len() <= MAX_CELL_PAYLOAD,
+        "payload exceeds single-cell capacity"
+    );
     let mut buf = [0u8; CELL_LEN];
     buf[0] = Command::Data as u8;
-    let len = u16::try_from(payload.len()).expect("payload length");
+    let len = u16::try_from(payload.len()).unwrap_or(u16::MAX);
     buf[1..3].copy_from_slice(&len.to_be_bytes());
-    buf[3..3 + payload.len()].copy_from_slice(payload);
-    rng.fill_bytes(&mut buf[3 + payload.len()..]);
+    let copy_len = payload.len().min(MAX_CELL_PAYLOAD);
+    buf[3..3 + copy_len].copy_from_slice(&payload[..copy_len]);
+    rng.fill_bytes(&mut buf[3 + copy_len..]);
     OutboundCell(Cell::from_bytes(buf))
 }
 

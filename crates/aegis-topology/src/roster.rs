@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aegis_trust::reputation::ReputationLedger;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -78,6 +79,36 @@ fn canonical_record_bytes(record: &RelayRecord) -> Vec<u8> {
     bytes
 }
 
+/// Rate limit for signed relay admissions on this roster instance.
+///
+/// Timestamps are roster-local bookkeeping (not part of the signed wire format).
+/// Default: 5 new admissions per 24 hours — slows Sybil flooding from a single
+/// compromised consortium key while allowing normal consortium churn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RosterAdmissionPolicy {
+    pub max_admissions_per_window: usize,
+    pub window: Duration,
+}
+
+impl Default for RosterAdmissionPolicy {
+    fn default() -> Self {
+        Self {
+            max_admissions_per_window: 5,
+            window: Duration::from_secs(24 * 60 * 60),
+        }
+    }
+}
+
+impl RosterAdmissionPolicy {
+    /// No practical limit — for tests that admit large honest pools in one batch.
+    pub fn permissive_for_tests() -> Self {
+        Self {
+            max_admissions_per_window: usize::MAX,
+            window: Duration::from_secs(1),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct RosterEntry {
     record: RelayRecord,
@@ -92,14 +123,80 @@ struct PersistedRoster {
 }
 
 /// In-memory admission list: only rostered relays are eligible for layer assignment.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct RelayRoster {
     relays: HashMap<RelayId, RosterEntry>,
+    admission_policy: RosterAdmissionPolicy,
+    /// Local admission timestamps (unix seconds) for rate limiting; not signed / not persisted.
+    admission_timestamps: Vec<u64>,
+}
+
+impl PartialEq for RelayRoster {
+    fn eq(&self, other: &Self) -> bool {
+        self.relays == other.relays && self.admission_policy == other.admission_policy
+    }
+}
+
+impl Eq for RelayRoster {}
+
+impl Default for RelayRoster {
+    fn default() -> Self {
+        Self {
+            relays: HashMap::new(),
+            admission_policy: RosterAdmissionPolicy::default(),
+            admission_timestamps: Vec::new(),
+        }
+    }
 }
 
 impl RelayRoster {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Roster with a custom admission rate-limit policy.
+    pub fn with_admission_policy(policy: RosterAdmissionPolicy) -> Self {
+        Self {
+            admission_policy: policy,
+            ..Self::default()
+        }
+    }
+
+    pub fn admission_policy(&self) -> &RosterAdmissionPolicy {
+        &self.admission_policy
+    }
+
+    fn check_admission_rate_limit(&self, now_secs: u64) -> Result<(), RosterError> {
+        let max = self.admission_policy.max_admissions_per_window;
+        let window_secs = self.admission_policy.window.as_secs();
+        let cutoff = now_secs.saturating_sub(window_secs);
+        let recent = self
+            .admission_timestamps
+            .iter()
+            .filter(|&&t| t >= cutoff)
+            .count();
+        if recent >= max {
+            return Err(RosterError::AdmissionRateLimitExceeded {
+                attempted: recent + 1,
+                max_per_window: max,
+                window_secs,
+            });
+        }
+        Ok(())
+    }
+
+    fn record_admission(&mut self, now_secs: u64) {
+        let window_secs = self.admission_policy.window.as_secs();
+        let cutoff = now_secs.saturating_sub(window_secs);
+        self.admission_timestamps.retain(|&t| t >= cutoff);
+        self.admission_timestamps.push(now_secs);
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before UNIX epoch")
+            .as_secs()
     }
 
     /// Admit a relay without cryptographic authorization.
@@ -117,13 +214,27 @@ impl RelayRoster {
     }
 
     /// Admit a relay after verifying its consortium authority signature.
+    ///
+    /// New relays are seeded at [`ReputationScore::PROBATIONARY`] on `ledger` and
+    /// count toward the roster's admission rate limit. Re-admitting an existing
+    /// relay id updates the record but does not re-seed reputation or consume quota.
     pub fn admit_signed(
         &mut self,
         signed: SignedRelayRecord,
         authority_pubkey: &VerifyingKey,
+        ledger: &mut ReputationLedger,
     ) -> Result<(), RosterError> {
         signed.verify(authority_pubkey)?;
         let id = signed.record.id;
+        let is_new = !self.relays.contains_key(&id);
+
+        if is_new {
+            let now = Self::now_secs();
+            self.check_admission_rate_limit(now)?;
+            ledger.admit_new_relay(*id.as_bytes());
+            self.record_admission(now);
+        }
+
         self.relays.insert(
             id,
             RosterEntry {
@@ -239,6 +350,10 @@ mod tests {
         }
     }
 
+    fn test_ledger() -> ReputationLedger {
+        ReputationLedger::new(0.9).expect("ledger")
+    }
+
     #[test]
     fn valid_signed_admission_succeeds() {
         let mut rng = OsRng;
@@ -248,10 +363,17 @@ mod tests {
         let signed = authority.sign_record(&record);
 
         let mut roster = RelayRoster::new();
-        roster.admit_signed(signed.clone(), &pk).expect("admit");
+        let mut ledger = test_ledger();
+        roster
+            .admit_signed(signed.clone(), &pk, &mut ledger)
+            .expect("admit");
 
         assert!(roster.is_admitted(record.id));
         assert_eq!(roster.get_signed(record.id), Some(&signed));
+        assert_eq!(
+            ledger.score(*record.id.as_bytes()).0,
+            aegis_trust::reputation::ReputationScore::PROBATIONARY.0
+        );
     }
 
     #[test]
@@ -265,7 +387,8 @@ mod tests {
         signed.record.jurisdiction = JurisdictionId::new("DE");
 
         let mut roster = RelayRoster::new();
-        let err = roster.admit_signed(signed, &pk).unwrap_err();
+        let mut ledger = test_ledger();
+        let err = roster.admit_signed(signed, &pk, &mut ledger).unwrap_err();
         assert!(matches!(err, RosterError::InvalidSignature { .. }));
     }
 
@@ -278,8 +401,9 @@ mod tests {
         let signed = authority.sign_record(&record);
 
         let mut roster = RelayRoster::new();
+        let mut ledger = test_ledger();
         let err = roster
-            .admit_signed(signed, &other.verifying_key())
+            .admit_signed(signed, &other.verifying_key(), &mut ledger)
             .unwrap_err();
         assert!(matches!(
             err,
@@ -294,9 +418,10 @@ mod tests {
         let pk = authority.verifying_key();
 
         let mut roster = RelayRoster::new();
+        let mut ledger = test_ledger();
         for (id, j) in [(1, "US"), (2, "DE"), (3, "FR")] {
             let signed = authority.sign_record(&sample_record(id, j));
-            roster.admit_signed(signed, &pk).expect("admit");
+            roster.admit_signed(signed, &pk, &mut ledger).expect("admit");
         }
 
         let dir = std::env::temp_dir().join(format!(
@@ -316,6 +441,118 @@ mod tests {
             let signed = loaded.get_signed(relay_id).expect("signed entry");
             signed.verify(&pk).expect("reloaded signature still valid");
         }
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn malformed_json_load_returns_err_not_panic() {
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-roster-malformed-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("bad.json");
+        std::fs::write(&path, b"{ not valid json").unwrap();
+
+        let err = RelayRoster::load_from_file(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn truncated_signature_bytes_rejected_on_admit() {
+        let mut rng = OsRng;
+        let authority = ConsortiumKey::generate(&mut rng);
+        let pk = authority.verifying_key();
+        let record = sample_record(9, "US");
+        let mut signed = authority.sign_record(&record);
+        signed.signature.truncate(16);
+
+        let mut roster = RelayRoster::new();
+        let mut ledger = test_ledger();
+        let err = roster.admit_signed(signed, &pk, &mut ledger).unwrap_err();
+        assert!(matches!(err, RosterError::InvalidSignature { .. }));
+    }
+
+    #[test]
+    fn admission_rate_limit_blocks_excess_new_admissions() {
+        let mut rng = OsRng;
+        let authority = ConsortiumKey::generate(&mut rng);
+        let pk = authority.verifying_key();
+        let policy = RosterAdmissionPolicy {
+            max_admissions_per_window: 5,
+            window: Duration::from_secs(3600),
+        };
+        let mut roster = RelayRoster::with_admission_policy(policy);
+        let mut ledger = test_ledger();
+
+        for id in 1..=5u64 {
+            roster
+                .admit_signed(authority.sign_record(&sample_record(id, "US")), &pk, &mut ledger)
+                .expect("first five admit");
+        }
+
+        let err = roster
+            .admit_signed(authority.sign_record(&sample_record(6, "US")), &pk, &mut ledger)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            RosterError::AdmissionRateLimitExceeded { max_per_window: 5, .. }
+        ));
+    }
+
+    #[test]
+    fn re_admit_same_relay_does_not_consume_rate_limit() {
+        let mut rng = OsRng;
+        let authority = ConsortiumKey::generate(&mut rng);
+        let pk = authority.verifying_key();
+        let policy = RosterAdmissionPolicy {
+            max_admissions_per_window: 1,
+            window: Duration::from_secs(3600),
+        };
+        let mut roster = RelayRoster::with_admission_policy(policy);
+        let mut ledger = test_ledger();
+        let record = sample_record(1, "US");
+        let signed = authority.sign_record(&record);
+
+        roster
+            .admit_signed(signed.clone(), &pk, &mut ledger)
+            .expect("first admit");
+        roster
+            .admit_signed(signed, &pk, &mut ledger)
+            .expect("re-admit same id");
+    }
+
+    #[test]
+    fn load_verified_rejects_tampered_on_disk_signature() {
+        let mut rng = OsRng;
+        let authority = ConsortiumKey::generate(&mut rng);
+        let pk = authority.verifying_key();
+        let signed = authority.sign_record(&sample_record(4, "UK"));
+
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-roster-tamper-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("roster.json");
+
+        let mut roster = RelayRoster::new();
+        let mut ledger = test_ledger();
+        roster.admit_signed(signed, &pk, &mut ledger).expect("admit");
+        roster.save_to_file(&path).expect("save");
+
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("parse");
+        value["entries"][0]["signed_admission"]["signature"][0] = serde_json::json!(255);
+        std::fs::write(&path, value.to_string()).expect("write tampered");
+
+        let err = RelayRoster::load_from_file_verified(&path, Some(&pk)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);

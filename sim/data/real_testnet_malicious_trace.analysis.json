@@ -1,0 +1,61 @@
+{
+  "malicious": {
+    "trace_file": "C:\\Users\\odinl\\OneDrive\\Desktop\\ANONYMOUS\\sim\\data\\real_testnet_malicious_trace.csv",
+    "meta": {
+      "path": "C:\\Users\\odinl\\OneDrive\\Desktop\\ANONYMOUS\\sim\\data\\real_testnet_malicious_trace.csv",
+      "vantage": "client_send_wall_clock",
+      "capture": "malicious_flood path_len=4 n_sends=80 gap_ms=2",
+      "relay_stats": "80 integrity_err=0 dropped=0 send_errors=0"
+    },
+    "n_events": 80,
+    "duration_seconds": 7.100476026535034,
+    "slot_seconds": 1.0,
+    "n_slots": 8,
+    "events_per_slot_mean": 10.0,
+    "events_per_slot_max": 12.0,
+    "send_ok_rate": 1.0,
+    "inter_send_gap_ms_median": 88.07992935180664,
+    "inter_send_gap_ms_min": 77.40998268127441,
+    "total_cells_on_wire": 1440,
+    "payload_bytes_mean": 155.975,
+    "shapeability": {
+      "cv": 0.3427827300200179,
+      "hurst": null,
+      "min_multiple": 1.1,
+      "tier": "cheap"
+    }
+  },
+  "benign": {
+    "trace_file": "C:\\Users\\odinl\\OneDrive\\Desktop\\ANONYMOUS\\sim\\data\\real_testnet_trace.csv",
+    "meta": {
+      "path": "C:\\Users\\odinl\\OneDrive\\Desktop\\ANONYMOUS\\sim\\data\\real_testnet_trace.csv",
+      "vantage": "client_send_wall_clock",
+      "capture": "in_process_tcp_testnet path_len=4 n_sends=48"
+    },
+    "n_events": 48,
+    "duration_seconds": 71.88525104522705,
+    "slot_seconds": 1.0,
+    "n_slots": 72,
+    "events_per_slot_mean": 0.6666666666666666,
+    "events_per_slot_max": 4.0,
+    "send_ok_rate": 1.0,
+    "inter_send_gap_ms_median": 1467.623233795166,
+    "inter_send_gap_ms_min": 219.67101097106934,
+    "total_cells_on_wire": 864,
+    "payload_bytes_mean": 132.70833333333334,
+    "shapeability": {
+      "cv": 1.3919410907054177,
+      "hurst": null,
+      "min_multiple": 1.1,
+      "tier": "feasible"
+    }
+  },
+  "synthetic_c2_like_shapeability": {
+    "cv": 1.2540288577641916,
+    "hurst": 0.7541875791808322,
+    "min_multiple": 2.6,
+    "tier": "feasible"
+  },
+  "cv_ratio_malicious_over_benign": 0.2462623830196004,
+  "min_multiple_ratio_malicious_over_benign": 1.0
+}

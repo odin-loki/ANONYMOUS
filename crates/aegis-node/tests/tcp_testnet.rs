@@ -8,7 +8,7 @@ use aegis_client::send::{send_payload, ClientHop, ClientLink};
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_crypto::sphinx::{build, PathHop, SphinxPacket};
 use aegis_relay::{
-    packet_delta, spawn_link_bridge, PeerInfo, RelayConfig, RelayId, RelayNode,
+    packet_delta, spawn_link_bridge, LinkBridgeConfig, PeerInfo, RelayConfig, RelayId, RelayNode,
 };
 use rand_core::OsRng;
 use tokio::net::TcpListener;
@@ -115,6 +115,7 @@ impl TcpTestnet {
                 outbound_rx,
                 exit,
                 OsRng,
+                LinkBridgeConfig::default(),
             );
 
             relays.push(TcpRelaySlot {
@@ -155,6 +156,37 @@ impl TcpTestnet {
     fn relay_handle(&self, index: usize) -> &aegis_relay::RelayHandle {
         &self.relays[index].handle
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tcp_testnet_paced_send_delivers_payload() {
+    let (exit_tx, mut exit_rx) = mpsc::channel(1);
+    let testnet = TcpTestnet::build(PATH_LEN, Some(exit_tx)).await;
+
+    let mut rng = OsRng;
+    let tau = Duration::from_millis(25);
+    aegis_client::send::send_payload_paced(
+        &testnet.hops,
+        &testnet.client_link,
+        PAYLOAD,
+        &mut rng,
+        Some(aegis_client::EmitterConfig { tau }),
+        &LinkBridgeConfig::default(),
+    )
+    .await
+    .expect("paced client send over TcpStream");
+
+    let exit_packet = tokio::time::timeout(Duration::from_secs(20), exit_rx.recv())
+        .await
+        .expect("timed out waiting for paced exit packet")
+        .expect("exit channel closed");
+
+    let delta = packet_delta(&exit_packet);
+    assert_eq!(
+        &delta[..PAYLOAD.len()],
+        PAYLOAD,
+        "payload mismatch after paced send over {PATH_LEN} TCP hops"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

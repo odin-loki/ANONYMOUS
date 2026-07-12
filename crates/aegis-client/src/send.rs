@@ -2,13 +2,18 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::time::Duration;
 
+use aegis_crypto::fragment::{fragment_with_random_id, SPHINX_FRAGMENT_COUNT};
 use aegis_crypto::kem::RelayKemPublic;
 use aegis_crypto::sphinx::{build, PathHop, SphinxPacket};
-use aegis_crypto::link::LinkKey;
-use aegis_relay::send_sphinx_packet;
-use rand_core::{CryptoRngCore, RngCore};
+use aegis_relay::{send_sphinx_packet, LinkBridgeConfig};
+use rand_core::{CryptoRngCore, OsRng, RngCore};
 use thiserror::Error;
+
+use crate::emitter::{ConstantRateEmitter, EmitterConfig};
+use crate::tcp_transport::{run_paced_ticks, TcpCellTransport};
+use crate::transport::OutboundCell;
 
 /// One hop in an explicit client path (id + KEM public key + optional TCP addr).
 #[derive(Clone)]
@@ -57,7 +62,7 @@ pub fn build_packet<R: RngCore + CryptoRngCore>(
     Ok(build(&path, payload, rng)?)
 }
 
-/// Build, fragment, seal, and send a Sphinx packet to the first hop over TCP.
+/// Build, fragment, seal, and burst-send a Sphinx packet (unpaced legacy path).
 pub async fn send_payload<R: RngCore + CryptoRngCore>(
     hops: &[ClientHop],
     link: &ClientLink,
@@ -65,9 +70,60 @@ pub async fn send_payload<R: RngCore + CryptoRngCore>(
     rng: &mut R,
 ) -> Result<SphinxPacket, SendError> {
     let packet = build_packet(hops, payload, rng)?;
-    let key = LinkKey::new(link.link_key_bytes);
-    send_sphinx_packet(link.first_hop_addr, &key, &packet, rng).await?;
+    send_sphinx_packet(
+        link.first_hop_addr,
+        &link.link_key_bytes,
+        &packet,
+        rng,
+        &LinkBridgeConfig::default(),
+    )
+    .await?;
     Ok(packet)
+}
+
+/// Build, fragment, and emit a Sphinx packet at constant rate τ over TCP (Mode 1 path).
+///
+/// Connects and handshakes once, then sends exactly one sealed link frame per emitter
+/// tick until all [`SPHINX_FRAGMENT_COUNT`] fragments are on the wire.
+pub async fn send_payload_paced<R: RngCore + CryptoRngCore>(
+    hops: &[ClientHop],
+    link: &ClientLink,
+    payload: &[u8],
+    rng: &mut R,
+    emitter_config: Option<EmitterConfig>,
+    bridge_config: &LinkBridgeConfig,
+) -> Result<SphinxPacket, SendError> {
+    let packet = build_packet(hops, payload, rng)?;
+    let (fragments, _) = fragment_with_random_id(&packet, rng);
+
+    let config = emitter_config.unwrap_or_default();
+    let mut emitter = ConstantRateEmitter::new(config, OsRng);
+    for cell in fragments {
+        emitter.enqueue_cell(OutboundCell(cell));
+    }
+
+    let transport = TcpCellTransport::connect(link, bridge_config, rng).await?;
+    run_paced_ticks(&mut emitter, &transport, SPHINX_FRAGMENT_COUNT).await;
+
+    Ok(packet)
+}
+
+/// Convenience: paced send with default bridge config and emitter τ.
+pub async fn send_payload_paced_default<R: RngCore + CryptoRngCore>(
+    hops: &[ClientHop],
+    link: &ClientLink,
+    payload: &[u8],
+    rng: &mut R,
+) -> Result<SphinxPacket, SendError> {
+    send_payload_paced(
+        hops,
+        link,
+        payload,
+        rng,
+        None,
+        &LinkBridgeConfig::default(),
+    )
+    .await
 }
 
 /// Convenience: path from relay id bytes and pre-built public keys.
@@ -84,4 +140,13 @@ pub fn hops_from_keys(
             addr: addrs.get(id).copied(),
         })
         .collect()
+}
+
+/// Test helper: fragment a packet and return fragment cells plus expected tick count.
+pub fn sphinx_fragments_for_pacing<R: RngCore + CryptoRngCore>(
+    packet: &SphinxPacket,
+    rng: &mut R,
+) -> ([aegis_crypto::cell::Cell; SPHINX_FRAGMENT_COUNT], Duration) {
+    let (cells, _) = fragment_with_random_id(packet, rng);
+    (cells, EmitterConfig::default().tau)
 }

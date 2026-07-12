@@ -1,0 +1,7 @@
+# Workspace Clippy policy — security-relevant lints enforced in CI;
+# pedantic/nursery are advisory (see `[workspace.lints.clippy]` in Cargo.toml).
+
+disallowed-methods = [
+    { path = "std::env::set_var", reason = "environment mutation is unsafe in multi-threaded servers" },
+    { path = "std::env::remove_var", reason = "environment mutation is unsafe in multi-threaded servers" },
+]

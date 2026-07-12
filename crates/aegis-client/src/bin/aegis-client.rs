@@ -4,7 +4,7 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use aegis_client::send::{send_payload, ClientHop, ClientLink};
+use aegis_client::send::{send_payload, send_payload_paced_default, ClientHop, ClientLink};
 use aegis_crypto::kem::RelayKemSecret;
 use clap::Parser;
 use rand_core::OsRng;
@@ -24,6 +24,10 @@ struct Cli {
     /// Read payload from stdin when set.
     #[arg(long)]
     stdin: bool,
+
+    /// Burst-send without constant-rate pacing (debug / trace capture only).
+    #[arg(long)]
+    raw: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,12 +106,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut rng = OsRng;
-    let packet = send_payload(&hops, &link, &payload, &mut rng).await?;
-    eprintln!(
-        "sent sphinx packet ({} B payload) to {}",
-        payload.len(),
-        first_hop_addr
-    );
-    let _ = packet;
+    if cli.raw {
+        let packet = send_payload(&hops, &link, &payload, &mut rng).await?;
+        eprintln!(
+            "sent sphinx packet (raw/unpaced, {} B payload) to {}",
+            payload.len(),
+            first_hop_addr
+        );
+        let _ = packet;
+    } else {
+        let packet = send_payload_paced_default(&hops, &link, &payload, &mut rng).await?;
+        eprintln!(
+            "sent sphinx packet (paced, {} B payload) to {}",
+            payload.len(),
+            first_hop_addr
+        );
+        let _ = packet;
+    }
     Ok(())
 }

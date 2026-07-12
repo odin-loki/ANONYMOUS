@@ -219,6 +219,34 @@ mod tests {
     }
 
     #[test]
+    fn bulletproofs_truncated_commitment_rejects_without_panic() {
+        // Invalid compressed Ristretto point (all zeros) — verify returns false, no panic.
+        let proof = BulletproofsProof {
+            commitment: [0u8; 32],
+            range_proof: vec![0u8; 64],
+        };
+        assert!(!BulletproofsReputationProof::verify(&proof, 0.5));
+    }
+
+    #[test]
+    fn bulletproofs_empty_range_proof_rejects_without_panic() {
+        let proof = BulletproofsProof {
+            commitment: [0u8; 32],
+            range_proof: Vec::new(),
+        };
+        assert!(!BulletproofsReputationProof::verify(&proof, 0.5));
+    }
+
+    #[test]
+    fn bulletproofs_garbage_range_proof_bytes_reject_without_panic() {
+        let proof = BulletproofsProof {
+            commitment: [0u8; 32],
+            range_proof: vec![0xFF; 8],
+        };
+        assert!(!BulletproofsReputationProof::verify(&proof, 0.5));
+    }
+
+    #[test]
     fn bulletproofs_tampered_proof_fails() {
         let mut proof = BulletproofsReputationProof::prove(ReputationScore(0.8), 0.5);
         assert!(BulletproofsReputationProof::verify(&proof, 0.5));

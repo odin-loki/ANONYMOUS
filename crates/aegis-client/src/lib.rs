@@ -9,16 +9,14 @@
 //! ## Transport decoupling
 //!
 //! Sending onto the mixnet is modeled by [`Transport`]: the emitter calls
-//! `send(tick, cell)` each slot. Phase 4 tests use a mock that records only
-//! observer-visible cadence and size. Wiring to [`aegis-relay`] is deliberate
-//! out-of-scope integration work for a later phase.
-//!
-//! [`aegis-relay`]: ../aegis-relay
+//! `send(tick, cell)` each slot. Production egress uses [`TcpCellTransport`]
+//! over a long-lived [`aegis_relay::LinkSession`]; tests use mock recorders.
 
 pub mod driver;
 pub mod emitter;
 pub mod padding;
 pub mod send;
+pub mod tcp_transport;
 pub mod transport;
 
 pub use driver::{config_with_tau_secs, run_emitter_loop};
@@ -30,6 +28,8 @@ pub use padding::{
     HardCapStats, RoundOutput,
 };
 pub use send::{
-    build_packet, send_payload, hops_from_keys, ClientHop, ClientLink, SendError,
+    build_packet, send_payload, send_payload_paced, send_payload_paced_default, hops_from_keys,
+    ClientHop, ClientLink, SendError,
 };
+pub use tcp_transport::TcpCellTransport;
 pub use transport::{ObserverRecord, OutboundCell, Transport};

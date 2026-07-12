@@ -29,7 +29,7 @@ pub use path::{
     select_diverse_path, select_diverse_reputation_path, select_path,
     select_path_reputation_weighted, JurisdictionPolicy,
 };
-pub use roster::{ConsortiumKey, RelayRoster, SignedRelayRecord};
+pub use roster::{ConsortiumKey, RelayRoster, RosterAdmissionPolicy, SignedRelayRecord};
 pub use types::{JurisdictionId, RelayId, RelayRecord, TopologyConfig};
 
 #[cfg(test)]

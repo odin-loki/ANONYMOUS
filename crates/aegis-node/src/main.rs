@@ -62,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         outbound_rx,
         None,
         OsRng,
+        runtime.link_bridge_config,
     );
 
     eprintln!(

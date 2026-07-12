@@ -21,8 +21,8 @@
 //! ## TCP link bridge
 //!
 //! Real hop links are implemented in [`net`]: fixed-width AEAD frames over
-//! `tokio::net::TcpStream`, with Sphinx fragmentation. See that module's docs
-//! for link-key provisioning limits (pre-shared keys; no handshake yet).
+//! `tokio::net::TcpStream`, with Sphinx fragmentation and per-connection
+//! ephemeral handshake for link-layer forward secrecy.
 
 pub mod config;
 pub mod cover_flow;
@@ -38,7 +38,9 @@ pub use cover_flow::{
 };
 pub use delay::sample_mixing_delay;
 pub use net::{
-    send_sphinx_packet, write_packet, NetError, PeerInfo, ExitSink, spawn_link_bridge,
+    send_link_cell, send_sphinx_packet, write_packet, LinkBridgeConfig, LinkSession, NetError,
+    PeerInfo, ExitSink, spawn_link_bridge, run_initiator_handshake, run_responder_handshake,
+    DEFAULT_LINK_READ_TIMEOUT, DEFAULT_MAX_INBOUND_CONNECTIONS,
 };
 pub use node::{packet_delta, ForwardedPacket, RelayHandle, RelayNode};
 pub use relay_id::RelayId;

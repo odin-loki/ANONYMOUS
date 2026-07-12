@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 
 use aegis_crypto::kem::RelayKemSecret;
-use aegis_relay::{PeerInfo, RelayConfig, RelayId};
+use aegis_relay::{PeerInfo, RelayConfig, RelayId, LinkBridgeConfig};
 use rand_core::{CryptoRngCore, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -37,6 +37,35 @@ pub struct NodeConfigFile {
     pub ingress: Option<IngressConfig>,
     #[serde(default)]
     pub peers: Vec<PeerConfig>,
+    #[serde(default)]
+    pub link: LinkNetConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LinkNetConfig {
+    /// Per-read timeout on link-layer TCP I/O (seconds).
+    #[serde(default = "default_link_read_timeout_secs")]
+    pub read_timeout_secs: u64,
+    /// Maximum concurrent inbound TCP connections.
+    #[serde(default = "default_max_inbound_connections")]
+    pub max_inbound_connections: usize,
+}
+
+impl Default for LinkNetConfig {
+    fn default() -> Self {
+        Self {
+            read_timeout_secs: default_link_read_timeout_secs(),
+            max_inbound_connections: default_max_inbound_connections(),
+        }
+    }
+}
+
+fn default_link_read_timeout_secs() -> u64 {
+    aegis_relay::DEFAULT_LINK_READ_TIMEOUT.as_secs()
+}
+
+fn default_max_inbound_connections() -> usize {
+    aegis_relay::DEFAULT_MAX_INBOUND_CONNECTIONS
 }
 
 fn default_mu() -> f64 {
@@ -70,6 +99,7 @@ pub struct NodeRuntimeConfig {
     pub kem_secret: RelayKemSecret,
     pub ingress_link_key: Option<[u8; 32]>,
     pub peer_table: HashMap<RelayId, PeerInfo>,
+    pub link_bridge_config: LinkBridgeConfig,
 }
 
 impl NodeConfigFile {
@@ -138,6 +168,10 @@ impl NodeConfigFile {
             kem_secret,
             ingress_link_key,
             peer_table,
+            link_bridge_config: LinkBridgeConfig {
+                read_timeout: std::time::Duration::from_secs(self.link.read_timeout_secs),
+                max_inbound_connections: self.link.max_inbound_connections,
+            },
         })
     }
 }

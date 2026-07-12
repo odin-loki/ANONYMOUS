@@ -24,7 +24,15 @@ pub use kem::{
     blind_next, encapsulate, KemHeader, RelayKemPublic, RelayKemSecret, SharedSecret,
     KEM_HEADER_LEN, MLKEM768_CT_LEN,
 };
-pub use link::{LinkKey, LINK_FRAME_LEN, LINK_NONCE_LEN};
+pub use link::{
+    derive_link_session_key, link_handshake_confirm_mac, link_handshake_finish_mac,
+    link_handshake_init_write, link_handshake_resp_write, link_handshake_initiator_finish,
+    link_handshake_responder_finish, parse_link_handshake_init, parse_link_handshake_mac,
+    parse_link_handshake_resp, verify_link_handshake_confirm_mac, verify_link_handshake_finish_mac,
+    LinkHandshakeInit, LinkHandshakeResp, LinkHandshakeTranscript, LinkKey, LINK_EPH_PUB_LEN,
+    LINK_FRAME_LEN, LINK_HANDSHAKE_CONFIRM_LEN, LINK_HANDSHAKE_FINISH_LEN, LINK_HANDSHAKE_INIT_LEN,
+    LINK_HANDSHAKE_MAC_LEN, LINK_HANDSHAKE_NONCE_LEN, LINK_HANDSHAKE_RESP_LEN, LINK_NONCE_LEN,
+};
 pub use replay::{ReplayCache, ReplayTag, DEFAULT_REPLAY_CACHE_CAPACITY};
 pub use fragment::{
     fragment, fragment_with_random_id, reassemble, FragmentError, PacketId, SphinxReassembler,

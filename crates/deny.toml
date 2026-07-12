@@ -1,0 +1,81 @@
+# AEGIS workspace supply-chain policy (cargo-deny 0.20).
+# Run from `crates/`: cargo deny check
+
+[advisories]
+version = 2
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "warn"
+unmaintained = "all"
+unsound = "all"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "LicenseRef-Proprietary",
+]
+
+[[licenses.clarify]]
+name = "unicode-ident"
+expression = "(MIT OR Apache-2.0) AND Unicode-3.0"
+license-files = [{ path = "LICENSE-UNICODE", hash = 0x001c7e6c }]
+
+[[licenses.clarify]]
+name = "aegis-crypto"
+expression = "LicenseRef-Proprietary"
+license-files = []
+
+[[licenses.clarify]]
+name = "aegis-topology"
+expression = "LicenseRef-Proprietary"
+license-files = []
+
+[[licenses.clarify]]
+name = "aegis-relay"
+expression = "LicenseRef-Proprietary"
+license-files = []
+
+[[licenses.clarify]]
+name = "aegis-client"
+expression = "LicenseRef-Proprietary"
+license-files = []
+
+[[licenses.clarify]]
+name = "aegis-node"
+expression = "LicenseRef-Proprietary"
+license-files = []
+
+[[licenses.clarify]]
+name = "aegis-negotiator"
+expression = "LicenseRef-Proprietary"
+license-files = []
+
+[[licenses.clarify]]
+name = "aegis-trust"
+expression = "LicenseRef-Proprietary"
+license-files = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,7 +1,8 @@
-//! Wire transport abstraction — decouples shaping logic from `aegis-relay`.
+//! Wire transport abstraction — decouples shaping logic from link I/O.
 //!
-//! Phase 4 implements only the emitter/padder; a production transport that hands
-//! cells to the mix relay is future integration work (see crate root docs).
+//! Production egress uses [`crate::tcp_transport::TcpCellTransport`] over a
+//! long-lived [`aegis_relay::LinkSession`]. Tests record observer-visible cadence
+//! and size via mock implementations of this trait.
 
 use aegis_crypto::cell::{Cell, CELL_LEN};
 

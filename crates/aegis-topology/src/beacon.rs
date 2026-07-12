@@ -48,6 +48,9 @@ pub enum BeaconError {
 
     #[error("combined threshold signature failed verification")]
     InvalidCombinedSignature,
+
+    #[error("participant index {0} out of committee range")]
+    ParticipantOutOfRange(usize),
 }
 
 /// Domain-separated message signed by beacon committee members for `round`.
@@ -138,9 +141,22 @@ impl ThresholdBeacon {
 }
 
 impl Beacon for ThresholdBeacon {
+    /// Prefer [`Self::randomness_result`] when share sets may be incomplete or
+    /// originate from untrusted peers. This infallible trait path assumes the
+    /// caller already ensured a complete, verified quorum (e.g. via
+    /// [`ThresholdBeaconCommittee::build_beacon_for_round`]).
     fn randomness(&self, round: u64) -> [u8; 32] {
-        self.randomness_result(round)
-            .expect("threshold beacon missing quorum shares for round")
+        match self.randomness_result(round) {
+            Ok(r) => r,
+            Err(_err) => {
+                // Release builds: deterministic sentinel — not valid beacon randomness.
+                // Callers processing untrusted share sets must use `randomness_result`.
+                let mut h = Sha3_256::new();
+                h.update(b"aegis-beacon-missing-quorum");
+                h.update(&round.to_le_bytes());
+                h.finalize().into()
+            }
+        }
     }
 }
 
@@ -199,8 +215,8 @@ impl ThresholdBeaconCommittee {
         }
     }
 
-    pub fn participant(&self, index: usize) -> &BeaconParticipant {
-        &self.participants[index]
+    pub fn participant(&self, index: usize) -> Option<&BeaconParticipant> {
+        self.participants.get(index)
     }
 
     pub fn participants(&self) -> &[BeaconParticipant] {
@@ -216,7 +232,11 @@ impl ThresholdBeaconCommittee {
         let msg = beacon_round_message(round);
         let mut shares = BTreeMap::new();
         for &i in indices {
-            let share = self.participants[i].sign_round(round);
+            let participant = self
+                .participants
+                .get(i)
+                .ok_or(BeaconError::ParticipantOutOfRange(i))?;
+            let share = participant.sign_round(round);
             if !self.pk_set.public_key_share(i).verify(&share, &msg) {
                 return Err(BeaconError::InvalidShare(i));
             }
@@ -267,11 +287,20 @@ pub fn committee_for_round<B: Beacon>(
     round: u64,
     committee_size: usize,
 ) -> Vec<RelayId> {
+    committee_from_randomness(beacon.randomness(round), pool, committee_size)
+}
+
+/// Like [`committee_for_round`] but takes pre-derived 32-byte randomness (e.g. from
+/// [`ThresholdBeacon::randomness_result`] on untrusted share sets).
+pub fn committee_from_randomness(
+    randomness: [u8; 32],
+    pool: &[RelayId],
+    committee_size: usize,
+) -> Vec<RelayId> {
     if pool.is_empty() || committee_size == 0 {
         return Vec::new();
     }
     let mut candidates = pool.to_vec();
-    let randomness = beacon.randomness(round);
     let n = candidates.len();
     let take = committee_size.min(n);
 
@@ -279,10 +308,15 @@ pub fn committee_for_round<B: Beacon>(
         // Deterministic pseudo-random index derived from beacon randomness + i,
         // re-hashed so a single 32-byte draw can seed many swaps.
         let mut h = Sha3_256::new();
-        h.update(&randomness);
-        h.update(&(i as u64).to_le_bytes());
+        h.update(randomness);
+        h.update((i as u64).to_le_bytes());
         let digest = h.finalize();
-        let raw = u64::from_le_bytes(digest[..8].try_into().expect("8 bytes"));
+        let raw = u64::from_le_bytes(
+            digest
+                .get(..8)
+                .and_then(|s| s.try_into().ok())
+                .unwrap_or([0u8; 8]),
+        );
         let j = i + (raw as usize % (n - i));
         candidates.swap(i, j);
     }
@@ -419,6 +453,30 @@ mod tests {
     }
 
     #[test]
+    fn threshold_beacon_missing_quorum_does_not_panic_on_randomness() {
+        let mut rng = thread_rng();
+        let committee = ThresholdBeaconCommittee::dealer_setup(5, 3, &mut rng);
+        let beacon = ThresholdBeacon::new(committee.pk_set.clone());
+        // No shares added — must not abort; prefer randomness_result in production.
+        let _ = beacon.randomness(0);
+        assert_eq!(
+            beacon.randomness_result(0).unwrap_err(),
+            BeaconError::NoSharesForRound(0)
+        );
+    }
+
+    #[test]
+    fn build_beacon_rejects_out_of_range_participant_index() {
+        let mut rng = thread_rng();
+        let committee = ThresholdBeaconCommittee::dealer_setup(5, 3, &mut rng);
+        let err = committee.build_beacon_for_round(1, &[0, 1, 99]);
+        assert!(matches!(
+            err,
+            Err(BeaconError::ParticipantOutOfRange(99))
+        ));
+    }
+
+    #[test]
     fn threshold_beacon_tampered_share_rejected() {
         let mut rng = thread_rng();
         let committee = ThresholdBeaconCommittee::dealer_setup(5, 3, &mut rng);
@@ -427,11 +485,17 @@ mod tests {
 
         let mut shares = BTreeMap::new();
         for i in 0..3 {
-            shares.insert(i, committee.participant(i).sign_round(round));
+            shares.insert(
+                i,
+                committee.participant(i).expect("participant").sign_round(round),
+            );
         }
 
         // Replace one share with a signature over a different message.
-        let bad_share = committee.participant(3).sign_round(round + 1);
+        let bad_share = committee
+            .participant(3)
+            .expect("participant")
+            .sign_round(round + 1);
         shares.insert(1, bad_share);
 
         let beacon = ThresholdBeacon::from_quorum(committee.pk_set.clone(), round, shares);
@@ -445,7 +509,7 @@ mod tests {
         );
 
         // Sanity: valid shares still verify individually before tamper.
-        let good = committee.participant(1).sign_round(round);
+        let good = committee.participant(1).expect("participant").sign_round(round);
         assert!(committee.pk_set.public_key_share(1).verify(&good, &msg));
     }
 }

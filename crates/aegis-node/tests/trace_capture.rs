@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use aegis_client::send::{send_payload, ClientHop, ClientLink};
 use aegis_crypto::fragment::SPHINX_FRAGMENT_COUNT;
 use aegis_crypto::kem::RelayKemSecret;
-use aegis_relay::{spawn_link_bridge, PeerInfo, RelayConfig, RelayId, RelayNode};
+use aegis_relay::{spawn_link_bridge, LinkBridgeConfig, PeerInfo, RelayConfig, RelayId, RelayNode};
 use rand_core::{OsRng, RngCore};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -142,6 +142,7 @@ impl TcpTestnet {
                 outbound_rx,
                 None,
                 OsRng,
+                LinkBridgeConfig::default(),
             );
 
             relays.push(TcpRelaySlot {
@@ -247,4 +248,99 @@ async fn capture_burst_trace_to_csv() {
     );
     assert!(duration >= 5.0, "trace should span multiple seconds");
     assert_eq!(rows.len(), N_SENDS);
+}
+
+fn workspace_malicious_trace_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("sim")
+        .join("data")
+        .join("real_testnet_malicious_trace.csv")
+}
+
+const MALICIOUS_SENDS: usize = 80;
+/// Minimal inter-send gap (ms) — tight flood well above any negotiated round rate.
+const MALICIOUS_GAP_MS: u64 = 2;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "regenerates sim/data/real_testnet_malicious_trace.csv; run with --ignored"]
+async fn capture_malicious_burst_trace_to_csv() {
+    let testnet = TcpTestnet::build(PATH_LEN).await;
+    let mut rng = OsRng;
+
+    let mut rows: Vec<(f64, usize, usize, bool)> = Vec::with_capacity(MALICIOUS_SENDS);
+    let mut send_errors = 0u32;
+
+    for i in 0..MALICIOUS_SENDS {
+        let payload_len = 32 + (rng.next_u32() as usize % 225);
+        let mut payload = vec![0u8; payload_len];
+        payload[0] = (i as u8).wrapping_add(0xF0);
+        payload[payload_len - 1] = (i as u8).wrapping_add(0x0F);
+
+        let ts = wall_secs();
+        let ok = send_payload(
+            &testnet.hops,
+            &testnet.client_link,
+            &payload,
+            &mut rng,
+        )
+        .await
+        .is_ok();
+        if !ok {
+            send_errors += 1;
+        }
+        rows.push((ts, payload_len, SPHINX_FRAGMENT_COUNT, ok));
+
+        if i + 1 < MALICIOUS_SENDS {
+            tokio::time::sleep(Duration::from_millis(MALICIOUS_GAP_MS)).await;
+        }
+    }
+
+    // Allow mixing queue to drain (or saturate).
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+
+    let ingress = testnet.relay_handle(0);
+    let forwarded = ingress.forwarded_count();
+    let integrity_err = ingress.integrity_error_count();
+    let dropped = ingress.dropped_count();
+
+    let out_path = workspace_malicious_trace_path();
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent).expect("create sim/data");
+    }
+    let mut f = File::create(&out_path).expect("create malicious trace csv");
+    writeln!(f, "timestamp,payload_bytes,cell_count,send_ok").expect("header");
+    writeln!(f, "# vantage=client_send_wall_clock").expect("meta");
+    writeln!(
+        f,
+        "# capture=malicious_flood path_len={PATH_LEN} n_sends={MALICIOUS_SENDS} gap_ms={MALICIOUS_GAP_MS}"
+    )
+    .expect("meta");
+    writeln!(
+        f,
+        "# relay_stats forwarded={forwarded} integrity_err={integrity_err} dropped={dropped} send_errors={send_errors}"
+    )
+    .expect("meta");
+    for (ts, payload_bytes, cell_count, ok) in &rows {
+        writeln!(
+            f,
+            "{ts:.6},{payload_bytes},{cell_count},{}",
+            if *ok { 1 } else { 0 }
+        )
+        .expect("row");
+    }
+
+    let duration = rows.last().unwrap().0 - rows.first().unwrap().0;
+    let ok_count = rows.iter().filter(|(_, _, _, ok)| *ok).count();
+    eprintln!(
+        "wrote {} events ({duration:.2}s span, {ok_count}/{} client sends ok, ingress forwarded={forwarded}) to {}",
+        rows.len(),
+        rows.len(),
+        out_path.display()
+    );
+
+    // Flood completes far faster than the benign ~72 s capture despite per-send crypto cost.
+    assert!(duration < 30.0, "malicious flood should be tight vs benign: {duration:.2}s");
+    assert!(ok_count > 0, "at least some sends should succeed");
 }
