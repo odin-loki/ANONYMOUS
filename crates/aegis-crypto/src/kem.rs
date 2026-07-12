@@ -22,7 +22,7 @@
 //! `x25519-dalek` v2 does not re-export Montgomery arithmetic).
 
 use curve25519_dalek::{montgomery::MontgomeryPoint, scalar::Scalar};
-use kem::{Decapsulate, Encapsulate};
+use kem_api::{Decapsulate, Encapsulate};
 use ml_kem::{kem::DecapsulationKey, kem::EncapsulationKey, Ciphertext, KemCore, MlKem768};
 use rand_core::CryptoRngCore;
 use sha3::{Digest, Sha3_256};

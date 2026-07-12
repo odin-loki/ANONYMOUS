@@ -14,4 +14,7 @@ rand_core = { workspace = true, features = ["getrandom"] }
 subtle.workspace = true
 zeroize.workspace = true
 thiserror.workspace = true
-kem = "0.3.0-pre.0"
+kem-api = { package = "kem", version = "0.3.0-pre.0" }
+
+[dev-dependencies]
+proptest = "1"

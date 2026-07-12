@@ -6,3 +6,8 @@ license.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+bulletproofs = "5.0.0"
+curve25519-dalek = { version = "4.1.1", features = ["digest", "group", "rand_core", "serde"] }
+merlin = "3"
+rand = "0.8"
+rand_core = "0.6"

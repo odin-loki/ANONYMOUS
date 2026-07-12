@@ -2,8 +2,10 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// Placeholder relay identity (future: public-key-derived from `aegis-crypto`).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RelayId(pub [u8; 32]);
 
 impl RelayId {
@@ -11,6 +13,11 @@ impl RelayId {
         let mut bytes = [0u8; 32];
         bytes[..8].copy_from_slice(&n.to_le_bytes());
         Self(bytes)
+    }
+
+    /// Raw 32-byte identity for [`aegis_trust::reputation::ReputationLedger`] lookups.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
     }
 }
 
@@ -21,7 +28,7 @@ impl fmt::Debug for RelayId {
 }
 
 /// ISO-style jurisdiction label for diversity checks (e.g. `"US"`, `"DE"`).
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct JurisdictionId(pub String);
 
 impl JurisdictionId {
@@ -37,7 +44,7 @@ impl fmt::Debug for JurisdictionId {
 }
 
 /// Metadata for a permissioned relay on the admission roster.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayRecord {
     pub id: RelayId,
     pub jurisdiction: JurisdictionId,

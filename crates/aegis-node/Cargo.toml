@@ -1,16 +1,26 @@
 [package]
-name = "aegis-relay"
+name = "aegis-node"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "aegis-node"
+path = "src/main.rs"
+
 [dependencies]
+aegis-relay = { path = "../aegis-relay" }
 aegis-crypto = { path = "../aegis-crypto" }
-aegis-negotiator = { path = "../aegis-negotiator" }
+aegis-topology = { path = "../aegis-topology" }
 tokio.workspace = true
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 thiserror.workspace = true
 rand_core = { workspace = true, features = ["getrandom"] }
 
 [dev-dependencies]
 aegis-crypto = { path = "../aegis-crypto" }
+aegis-relay = { path = "../aegis-relay" }
+aegis-client = { path = "../aegis-client" }
 rand_core = { workspace = true, features = ["getrandom"] }

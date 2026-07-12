@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::types::RelayId;
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error, PartialEq)]
 pub enum TopologyError {
     #[error("no admitted relays on roster")]
     EmptyRoster,
@@ -23,4 +23,32 @@ pub enum TopologyError {
 
     #[error("relay {relay:?} not found in roster")]
     RelayNotFound { relay: RelayId },
+
+    #[error(
+        "not enough relays above reputation floor {min_reputation} ({available} available, {needed} needed)"
+    )]
+    InsufficientReputation {
+        available: usize,
+        needed: usize,
+        min_reputation: f64,
+    },
+
+    #[error("could not select a reputation-compliant path after {attempts} attempts")]
+    ReputationPathExhausted { attempts: usize },
+}
+
+/// Errors from signed admission and roster persistence (spec §4.9).
+#[derive(Debug, Error)]
+pub enum RosterError {
+    #[error("invalid admission signature for relay {relay:?}")]
+    InvalidSignature { relay: RelayId },
+
+    #[error("admission authority public key mismatch")]
+    AuthorityMismatch,
+
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("deserialize error: {0}")]
+    Deserialize(String),
 }

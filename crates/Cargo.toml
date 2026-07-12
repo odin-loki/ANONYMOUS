@@ -7,6 +7,7 @@ members = [
     "aegis-topology",    # Phase 3: stratified L-tier topology, path selection
     "aegis-relay",       # Phase 3: mix relay (Sphinx process, Exp(mu) delay)
     "aegis-client",      # Phase 4: constant-rate emitter + hard-cap receiver
+    "aegis-node",        # Runnable relay binary + TCP link bridge
     "aegis-negotiator",  # Phase 6: bulk plane dial + batched-round scheduler
     "aegis-trust",       # Phase 7: reputation ledger, ZK interface, TEE gate, anomaly detection
 ]

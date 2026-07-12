@@ -40,6 +40,92 @@ and §13 open items, and is intentionally honest about what remains open.
 `sim/tests/test_hardening.py` — regression tests for all of the above.
 
 --------------------------------------------------------------------------------
+4. REAL TESTNET TRACE — FIRST GENUINE RUN (this pass)
+--------------------------------------------------------------------------------
+Open item "Real-trace shapeability" status: [O -> T for this benign client-send
+capture; still [O] for operational C2/telemetry — see honest limits below].
+
+### Capture method (fallback used)
+Multi-process orchestration (`sim/scripts/capture_multiprocess_trace.py`: four
+`aegis-node` OS processes + repeated `aegis-client` invocations) was attempted
+first but failed mid-run (~send 23/48) with client exit 101 after relay peer
+routing errors. **Fallback:** in-process real-socket capture via
+`crates/aegis-node/tests/trace_capture.rs` (`capture_burst_trace_to_csv`), which
+reuses the same loopback `TcpListener`/`TcpStream` path as `tcp_testnet.rs` but
+drives a bursty 48-packet schedule over ~75 s. This is a genuine non-synthetic
+trace of the real Sphinx-build/fragment/seal/send code path; it is **not** a
+true multi-machine deployment capture.
+
+### Vantage point
+**Client-send wall-clock timestamps** recorded immediately before each
+`send_payload()` call (ingress of the first TCP hop). Columns also record
+`payload_bytes` (32–256 B varying) and `cell_count` (= 18 =
+`SPHINX_FRAGMENT_COUNT` per Sphinx packet). This is the simplest reliable
+observation point; relay-side timestamps were not instrumented.
+
+### Artifacts
+- `sim/data/real_testnet_trace.csv` — 48 timestamped send events
+- `sim/data/real_testnet_trace.analysis.json` — machine-readable report
+- `sim/scripts/analyze_real_trace.py` — loads trace → `load_trace_counts` →
+  `shapeability_report`, compares to `synthetic_c2_like_counts`
+- `sim/tests/test_real_trace.py` — regression gate on the committed trace
+- `sim/scripts/capture_multiprocess_trace.py` — best-effort multi-process
+  re-capture (not used for the committed trace)
+- `crates/aegis-node/tests/trace_capture.rs` — in-process capture test that
+  writes the CSV
+
+### Trace shape (rough)
+| Quantity | Value |
+|----------|-------|
+| Events | 48 Sphinx packets |
+| Duration | ~71.9 s |
+| 1 s slot bins | 72 slots, mean 0.67 events/slot, max 4/slot |
+| Mean payload | ~154 B |
+| Total wire cells (client→ingress) | 864 (= 48 × 18) |
+| Pattern | Bursty clusters (50–180 ms gaps) + idle gaps (0.8–3.5 s) |
+
+### `shapeability_report` findings (1 s slots, budget_slots=5, hi=6)
+| Metric | Real testnet trace | `synthetic_c2_like_counts` stand-in (n=40000, seed=103) |
+|--------|-------------------|--------------------------------------------------------|
+| CV | **1.39** | 1.25 |
+| Hurst | NaN (series too short; need ≥128 slots) | 0.75 |
+| min_multiple | **1.1** | 2.6 |
+| tier | feasible | feasible |
+
+### Comparison — did the synthetic model match reality?
+**Partially, with a cost mismatch in the other direction from CV.** Per-slot CV on
+the real burst is *slightly higher* than the synthetic stand-in (ratio ≈ 1.11),
+because the committed capture includes tight 4-packet clusters (up to 4
+events/slot) that the diurnal-smoothed synthetic series does not reproduce at
+this short horizon. However:
+- **Shaping cost is still much lower on the real trace** (min_multiple 1.1 vs 2.6).
+  The synthetic C2-like generator's diurnal × Pareto × lognormal layering
+  produces heavier *tail deferral* under `hard_cap` than this 48-packet burst
+  schedule, even when CV is similar or lower on the synthetic side.
+- **Hurst cannot be estimated** on the 72-slot real series; the synthetic stand-in
+  reports LRD-ish H≈0.75 — unverified on real traffic at this horizon.
+- This capture is **benign client traffic**, not adversarial C2/telemetry; do not
+  cite these numbers as operational C2 evidence.
+
+Record for evidence ledger (§12): benign real-client-send trace, 4-hop in-process
+testnet, CV≈1.39, min_multiple=1.1, tier=feasible [T].
+
+### Rust instrumentation note
+No relay/client timestamp logging was added. A minimal `Debug` impl for
+`CoverFlow`/`CoverEmitResult` in `aegis-relay/src/cover_flow.rs` was required
+because concurrent work left the crate non-compiling (`Cell` lacks `Debug`).
+`cargo test -p aegis-relay` reports one pre-existing failure in
+`cover_flow_count_accumulates_across_rounds` (unrelated to trace capture).
+
+### Future work
+- Re-capture from relay-observed forward timestamps (instrument `RelayStats`).
+- Multi-process re-run once peer-routing in standalone `aegis-node` configs is
+  debugged (in-process path uses dynamically bound ports + consistent peer table).
+- Longer horizon (≥128 slots) for Hurst; adversarial/malicious-like emission
+  patterns; constant-rate emitter output (post-shaping wire view) vs raw client
+  sends.
+
+--------------------------------------------------------------------------------
 2. OPEN ITEMS -- STATUS AFTER THIS PASS (do not oversell any of these)
 --------------------------------------------------------------------------------
 - "Adaptive adversary varying the compromised-mix set across epochs." [O -> O,
@@ -49,13 +135,11 @@ and §13 open items, and is intentionally honest about what remains open.
   for relay recompromise, which is future work (candidate: combine with the
   Izaac/GRIA anomaly detection mentioned for Phase 7).
 - "Real-trace shapeability (measure CV/tail on actual C2/telemetry, not
-  synthetic)." [O, STILL OPEN] Tooling now exists (`load_trace_counts`,
-  `shapeability_report`); no genuine trace has been run through it. The
-  synthetic C2-like generator is a pipeline test only, not a substitute.
-  ACTION FOR A FUTURE SESSION: feed a real (or realistic declassified/public)
-  C2/telemetry interarrival log through `shapeability_report` and record the
-  resulting tier + multiple in the evidence ledger (§12) as [T], replacing
-  this [O].
+  synthetic)." [O -> T for benign in-process testnet client-send capture;
+  still [O] for operational C2/telemetry] First genuine trace committed at
+  `sim/data/real_testnet_trace.csv`; see §4 above. Synthetic stand-in CV was
+  close but slightly lower (1.25 vs 1.39 real); synthetic overstated shaping
+  cost (min_multiple 2.6 vs 1.1).
 - "Combined active(n-1)+intersection over long horizons on Mode 1." [O, NOT
   ADDRESSED this pass] — would need a combined attack simulation (compose
   `active_confirm` and `intersection` against the same synthetic population

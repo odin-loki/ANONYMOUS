@@ -4,11 +4,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "aegis-client"
+path = "src/bin/aegis-client.rs"
+
 [dependencies]
 aegis-crypto = { path = "../aegis-crypto" }
+aegis-relay = { path = "../aegis-relay" }
+aegis-topology = { path = "../aegis-topology" }
 tokio.workspace = true
 thiserror.workspace = true
 rand_core = "0.6"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [dev-dependencies]
 rand_core = "0.6"

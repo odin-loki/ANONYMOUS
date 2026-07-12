@@ -1,0 +1,44 @@
+[workspace]
+
+[package]
+name = "aegis-crypto-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.aegis-crypto]
+path = ".."
+
+[[bin]]
+name = "fuzz_sphinx_process"
+path = "fuzz_targets/fuzz_sphinx_process.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_link_open"
+path = "fuzz_targets/fuzz_link_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_fragment_reassemble"
+path = "fuzz_targets/fuzz_fragment_reassemble.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_kem_decap"
+path = "fuzz_targets/fuzz_kem_decap.rs"
+test = false
+doc = false
+bench = false

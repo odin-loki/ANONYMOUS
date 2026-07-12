@@ -15,6 +15,7 @@ pub enum Command {
     Data = 0x03,
     Drop = 0x04,       // dummy / cover cell — dropped inside the network
     LoopToSelf = 0x05, // client/mix loop cover (active-attack detection, §4.6/§5)
+    SphinxFragment = 0x06, // link-layer fragment of a [`crate::sphinx::SphinxPacket`]
 }
 
 impl Command {
@@ -25,6 +26,7 @@ impl Command {
             0x03 => Self::Data,
             0x04 => Self::Drop,
             0x05 => Self::LoopToSelf,
+            0x06 => Self::SphinxFragment,
             _ => return None,
         })
     }

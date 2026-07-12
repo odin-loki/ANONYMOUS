@@ -1,5 +1,6 @@
 //! Stable vetted layered guards (spec §4.6) and exposure plateau math.
 
+use aegis_trust::reputation::ReputationLedger;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -71,6 +72,58 @@ impl GuardSelector {
         })
     }
 
+    /// Like [`Self::new`] but only considers layer-1 relays whose
+    /// [`ReputationLedger`] score is at or above `min_reputation` before the
+    /// deterministic random pick. Returns an error rather than admitting a
+    /// sub-floor relay when too few candidates remain.
+    pub fn new_reputation_weighted(
+        topology: &Topology,
+        config: &GuardConfig,
+        client_seed: u64,
+        ledger: &ReputationLedger,
+        min_reputation: f64,
+    ) -> Result<Self, TopologyError> {
+        let layer1 = topology
+            .layer(0)
+            .ok_or(TopologyError::EmptyLayer {
+                layer: 1,
+                epoch: topology.epoch,
+            })?;
+
+        let needed = config.guard_count as usize;
+        let candidates: Vec<RelayId> = layer1
+            .iter()
+            .copied()
+            .filter(|id| ledger.score(*id.as_bytes()).0 >= min_reputation)
+            .collect();
+
+        if candidates.len() < needed {
+            return Err(TopologyError::InsufficientReputation {
+                available: candidates.len(),
+                needed,
+                min_reputation,
+            });
+        }
+
+        let mut candidates = candidates;
+        let mut rng = StdRng::seed_from_u64(
+            client_seed
+                .wrapping_mul(0x517c_c1b7_2722_0a95)
+                .wrapping_add(topology.epoch),
+        );
+
+        for i in 0..needed {
+            let j = rng.gen_range(i..candidates.len());
+            candidates.swap(i, j);
+        }
+        candidates.truncate(needed);
+
+        Ok(Self {
+            epoch: topology.epoch,
+            guards: candidates,
+        })
+    }
+
     /// Primary entry guard — stable for all packets in this epoch.
     pub fn primary_guard(&self) -> RelayId {
         self.guards[0]
@@ -94,4 +147,84 @@ impl GuardSelector {
 /// accordingly — matching the spec's "27% plateau → ~3% plateau" narrative.
 pub fn guard_exposure_plateau(c: f64, g: u32) -> f64 {
     1.0 - (1.0 - c).powi(g as i32)
+}
+
+#[cfg(test)]
+mod tests {
+    use aegis_trust::reputation::ReputationLedger;
+
+    use super::*;
+    use crate::layers::build_topology;
+    use crate::roster::RelayRoster;
+    use crate::types::{JurisdictionId, RelayId, RelayRecord, TopologyConfig};
+
+    fn sample_roster(n: u64) -> RelayRoster {
+        let mut roster = RelayRoster::new();
+        for i in 0..n {
+            roster.admit(RelayRecord {
+                id: RelayId::from_u64(i + 1),
+                jurisdiction: JurisdictionId::new("US"),
+            });
+        }
+        roster
+    }
+
+    fn ledger_with_bad_relay(bad_id: RelayId, failures: usize) -> ReputationLedger {
+        let mut ledger = ReputationLedger::new(0.5).unwrap();
+        for _ in 0..failures {
+            ledger.record_failure(*bad_id.as_bytes());
+        }
+        ledger
+    }
+
+    #[test]
+    fn reputation_weighted_guard_excludes_sub_floor_relay() {
+        let roster = sample_roster(12);
+        let topo = build_topology(&roster, 1, &TopologyConfig::high_threat(), 0).unwrap();
+        let bad = RelayId::from_u64(1);
+        let ledger = ledger_with_bad_relay(bad, 20);
+        assert!(ledger.score(*bad.as_bytes()).0 < 0.3);
+
+        let config = GuardConfig { guard_count: 3 };
+        for seed in 0..100u64 {
+            let guards =
+                GuardSelector::new_reputation_weighted(&topo, &config, seed, &ledger, 0.3).unwrap();
+            assert!(
+                !guards.guards.contains(&bad),
+                "sub-floor relay must never be selected as guard"
+            );
+        }
+    }
+
+    #[test]
+    fn reputation_weighted_guard_errors_when_too_few_candidates() {
+        let roster = sample_roster(6);
+        let topo = build_topology(&roster, 0, &TopologyConfig::standard(), 0).unwrap();
+        let mut ledger = ReputationLedger::new(0.5).unwrap();
+        for id in &topo.layers[0] {
+            ledger.record_failure(*id.as_bytes());
+        }
+
+        let err = GuardSelector::new_reputation_weighted(
+            &topo,
+            &GuardConfig::default(),
+            0,
+            &ledger,
+            0.3,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            TopologyError::InsufficientReputation { needed: 3, .. }
+        ));
+    }
+
+    #[test]
+    fn reputation_unaware_guard_selector_unchanged() {
+        let roster = sample_roster(12);
+        let topo = build_topology(&roster, 5, &TopologyConfig::high_threat(), 0).unwrap();
+        let guards = GuardSelector::new(&topo, &GuardConfig::default(), 123).unwrap();
+        assert_eq!(guards.guards.len(), 3);
+        assert_eq!(guards.epoch, 5);
+    }
 }

@@ -18,13 +18,18 @@ pub mod kem;
 pub mod replay;
 pub mod sphinx;
 pub mod link;
+pub mod fragment;
 
 pub use kem::{
     blind_next, encapsulate, KemHeader, RelayKemPublic, RelayKemSecret, SharedSecret,
     KEM_HEADER_LEN, MLKEM768_CT_LEN,
 };
 pub use link::{LinkKey, LINK_FRAME_LEN, LINK_NONCE_LEN};
-pub use replay::{ReplayCache, ReplayTag};
+pub use replay::{ReplayCache, ReplayTag, DEFAULT_REPLAY_CACHE_CAPACITY};
+pub use fragment::{
+    fragment, fragment_with_random_id, reassemble, FragmentError, PacketId, SphinxReassembler,
+    FRAGMENT_HEADER_LEN, FRAGMENT_PAYLOAD_LEN, LAST_FRAGMENT_DATA_LEN, SPHINX_FRAGMENT_COUNT,
+};
 pub use sphinx::{
     build, process, process_cell, replay_tag, verify_mac, PathHop, Processed, SphinxPacket,
     ALPHA_LEN, BETA_LEN, DELTA_LEN, GAMMA_LEN, MAX_HOPS, ROUTING_SLOT_LEN, SPHINX_PACKET_LEN,

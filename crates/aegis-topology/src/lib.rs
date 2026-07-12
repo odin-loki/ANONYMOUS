@@ -17,15 +17,19 @@ pub mod path;
 pub mod roster;
 pub mod types;
 
-pub use beacon::{committee_for_round, round_at, Beacon, HashChainBeacon};
-pub use error::TopologyError;
-pub use guards::{guard_exposure_plateau, GuardConfig, GuardSelector};
-pub use layers::{build_topology, Topology};
-pub use path::{
-    path_compromise_probability, path_satisfies_jurisdiction, select_diverse_path, select_path,
-    JurisdictionPolicy,
+pub use beacon::{
+    committee_for_round, round_at, Beacon, BeaconError, BeaconParticipant, HashChainBeacon,
+    ThresholdBeacon, ThresholdBeaconCommittee,
 };
-pub use roster::RelayRoster;
+pub use error::{RosterError, TopologyError};
+pub use guards::{guard_exposure_plateau, GuardConfig, GuardSelector};
+pub use layers::{build_topology, build_topology_reputation_filtered, Topology};
+pub use path::{
+    path_compromise_probability, path_satisfies_jurisdiction, path_satisfies_reputation,
+    select_diverse_path, select_diverse_reputation_path, select_path,
+    select_path_reputation_weighted, JurisdictionPolicy,
+};
+pub use roster::{ConsortiumKey, RelayRoster, SignedRelayRecord};
 pub use types::{JurisdictionId, RelayId, RelayRecord, TopologyConfig};
 
 #[cfg(test)]

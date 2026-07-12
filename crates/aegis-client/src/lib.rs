@@ -18,6 +18,7 @@
 pub mod driver;
 pub mod emitter;
 pub mod padding;
+pub mod send;
 pub mod transport;
 
 pub use driver::{config_with_tau_secs, run_emitter_loop};
@@ -27,5 +28,8 @@ pub use emitter::{
 pub use padding::{
     analyze_hard_cap, CountHardCapPadder, DeliverySlot, HardCapConfig, HardCapPadder,
     HardCapStats, RoundOutput,
+};
+pub use send::{
+    build_packet, send_payload, hops_from_keys, ClientHop, ClientLink, SendError,
 };
 pub use transport::{ObserverRecord, OutboundCell, Transport};

@@ -12,17 +12,33 @@
 //! [`aegis_crypto::sphinx::Processed::LoopReturned`]. Full active-confirmation
 //! detection logic is deferred to later phases; this crate only wires the counter.
 //!
-//! ## In-process wiring
+//! ## Bulk cover-flow padding (spec §5.2 L2, §5.3)
 //!
-//! Production transport (TCP/QUIC) is out of scope for Phase 3. Relays communicate
-//! via `tokio::sync::mpsc` channels; see `tests/testnet.rs` for the e2e gate.
+//! [`cover_flow`] synthesizes `Command::Drop` cell bursts so observed bulk flow count
+//! reaches the negotiator target. Use [`RelayHandle::begin_bulk_round`] /
+//! [`RelayHandle::end_bulk_round`] to open and close a counting window.
+//!
+//! ## TCP link bridge
+//!
+//! Real hop links are implemented in [`net`]: fixed-width AEAD frames over
+//! `tokio::net::TcpStream`, with Sphinx fragmentation. See that module's docs
+//! for link-key provisioning limits (pre-shared keys; no handshake yet).
 
 pub mod config;
+pub mod cover_flow;
 pub mod delay;
+pub mod net;
 pub mod node;
 pub mod relay_id;
 
 pub use config::{RelayConfig, DEFAULT_MU};
+pub use cover_flow::{
+    BulkRoundCommand, BulkRoundTracker, CoverEmitResult, CoverFlow, CoverFlowConfig,
+    CoverFlowGenerator,
+};
 pub use delay::sample_mixing_delay;
+pub use net::{
+    send_sphinx_packet, write_packet, NetError, PeerInfo, ExitSink, spawn_link_bridge,
+};
 pub use node::{packet_delta, ForwardedPacket, RelayHandle, RelayNode};
 pub use relay_id::RelayId;

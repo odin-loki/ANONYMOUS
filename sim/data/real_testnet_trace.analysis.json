@@ -1,0 +1,29 @@
+{
+  "trace_file": "C:\\Users\\odinl\\OneDrive\\Desktop\\ANONYMOUS\\sim\\data\\real_testnet_trace.csv",
+  "meta": {
+    "path": "C:\\Users\\odinl\\OneDrive\\Desktop\\ANONYMOUS\\sim\\data\\real_testnet_trace.csv",
+    "vantage": "client_send_wall_clock",
+    "capture": "in_process_tcp_testnet path_len=4 n_sends=48"
+  },
+  "n_events": 48,
+  "duration_seconds": 71.88525104522705,
+  "slot_seconds": 1.0,
+  "n_slots": 72,
+  "events_per_slot_mean": 0.6666666666666666,
+  "events_per_slot_max": 4.0,
+  "total_cells_on_wire": 864,
+  "payload_bytes_mean": 132.70833333333334,
+  "real_shapeability": {
+    "cv": 1.3919410907054177,
+    "hurst": null,
+    "min_multiple": 1.1,
+    "tier": "feasible"
+  },
+  "synthetic_c2_like_shapeability": {
+    "cv": 1.2540288577641916,
+    "hurst": 0.7541875791808322,
+    "min_multiple": 2.6,
+    "tier": "feasible"
+  },
+  "cv_ratio_real_over_synthetic": 1.1099753263948884
+}

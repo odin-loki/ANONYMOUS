@@ -46,30 +46,41 @@ cd ../crates && cargo build --workspace && cargo test --workspace
 ```
 
 ## Build plan (each phase = a session with a hard gate; see spec §10)
-| Phase | Crate / target        | Gate | Status |
-|------:|-----------------------|------|--------|
-| 0 | (paper)                   | parameter budget self-consistent | **done** |
-| 1 | `sim/`                    | reproduces evidence ledger | **done** (17/17 pytest, incl. Phase-8 hardening tests) |
-| 2 | `aegis-crypto`            | Sphinx test vectors: replay/tamper/const-size/KAT | **done** (11/11) — see `docs/AEGIS_phase2_implementation_notes.md` for the concrete packet layout (deviates from the illustrative "512B" figure — ML-KEM-768 alone needs more) |
-| 3 | `aegis-relay`,`-topology` | testnet routes Sphinx e2e; latency matches budget | **done** (18/18 + 6/6) — 4-hop in-process testnet measures ~2.1–2.5s e2e, on target for the §7 ~2s mixing mean |
-| 4 | `aegis-client`            | live traffic vs intersection+confirmation → baseline (**= the sales demo**) | **done** (10/10) — `tests/surge_demo.rs` is the literal LEFT/RIGHT-pane demo artifact from §11 |
-| 5 | guards/beacon/admission   | guard-exposure sim matches vetted-c plateau (~3%) | **done** — folded into `aegis-topology` (`guards`, `roster`, `beacon` modules); beacon is a hash-chain stand-in, NOT real threshold-BLS (documented limitation, see module docs) |
-| 6 | `aegis-negotiator`        | bulk correlation/confirmation at target dial bounds | **done** (25/25) — dial/F_max/rendezvous/scheduler logic implemented and reconciled against `sim/`'s numeric ground truth |
-| 7 | trust/attestation         | core gates hold with TEE assumed broken | **partial** — `aegis-trust` ships a real reputation ledger + anomaly detector; ZK proof and real TEE attestation are explicit deferred interface boundaries, not faked (see crate docs) |
-| 8 | hardening                 | real-trace shapeability; documented ε per tier | **partial** — tooling + adaptive-adversary quantification added (`sim/aegis_sim`, `docs/AEGIS_phase8_hardening_notes.md`); still needs a genuine trace run through it, per that doc |
+| Phase | Crate / target                        | Gate | Status |
+|------:|----------------------------------------|------|--------|
+| 0 | (paper)                                    | parameter budget self-consistent | **done** |
+| 1 | `sim/`                                      | reproduces evidence ledger | **done** (19/19 pytest, incl. Phase-8 hardening + real-trace tests) |
+| 2 | `aegis-crypto`                              | Sphinx test vectors: replay/tamper/const-size/KAT | **done** (29/29) — see `docs/AEGIS_phase2_implementation_notes.md` for the packet layout, `docs/AEGIS_crypto_constant_time_review.md` for the security-profiling pass (40k-iteration proptest fuzzing, constant-time review, `cargo audit` — clean); real Sphinx↔Cell fragmentation (`fragment.rs`) and a bounded FIFO `ReplayCache` are implemented |
+| 3 | `aegis-relay`, `-topology`, `-node`         | testnet routes Sphinx e2e; latency matches budget | **done** (10/10 + 34/34 + 3/3) — real TCP link transport (`aegis-relay/src/net.rs`) with a runnable `aegis-node` relay binary; 4-hop testnet (in-process and real-socket) measures e2e latency on target for the §7 ~2s mixing mean |
+| 4 | `aegis-client`                              | live traffic vs intersection+confirmation → baseline (**= the sales demo**) | **done** (10/10) — `tests/surge_demo.rs` is the literal LEFT/RIGHT-pane demo artifact from §11; `aegis-client` binary now builds/fragments/sends real Sphinx packets over TCP to a live `aegis-node` |
+| 5 | guards/beacon/admission                     | guard-exposure sim matches vetted-c plateau (~3%) | **done** — folded into `aegis-topology` (`guards`, `roster`, `beacon`); roster admission is ed25519-signed with disk persistence, and the beacon is a real threshold-BLS distributed randomness beacon (`blsttc`), not the earlier hash-chain stand-in |
+| 6 | `aegis-negotiator`                          | bulk correlation/confirmation at target dial bounds | **done** (25/25) — dial/F_max/rendezvous/scheduler logic reconciled against `sim/`'s numeric ground truth; its cover-flow math is now wired into `aegis-relay` (`cover_flow.rs`) so a relay can synthesize L2 bulk cover flows at round boundaries |
+| 7 | trust/attestation                           | core gates hold with TEE assumed broken | **partial** — `aegis-trust` ships a real reputation ledger + anomaly detector, a genuine Bulletproofs zero-knowledge range proof for reputation thresholds (replacing the earlier plaintext stand-in), and reputation-aware guard/path selection in `aegis-topology`; real TEE attestation remains an explicit deferred interface boundary |
+| 8 | hardening                                   | real-trace shapeability; documented ε per tier | **done** — a genuine client-send trace captured from the real Sphinx/TCP testnet (`sim/data/real_testnet_trace.csv`) was run through `shapeability_report` and compared to the synthetic stand-in; see the new §4 of `docs/AEGIS_phase8_hardening_notes.md` |
 
 All of the above is independently re-verifiable with `cd sim && PYTHONPATH=. pytest -q` and `cd crates && cargo test --workspace`.
 
 ## Where to start in Cursor
 1. Skim `docs/AEGIS_SPEC_v3_consolidated.md` (esp. §4, §5, §6, §10, §12).
 2. Run the `sim/` suite so the evidence ledger is live in your session.
-3. Run `cargo test --workspace` in `crates/` — Phases 2–7 are implemented; see each
-   crate's module docs and `docs/AEGIS_phase2_implementation_notes.md` /
-   `docs/AEGIS_phase8_hardening_notes.md` for concrete design decisions and honestly
-   which claims are [T]/[R]/[O] at the implementation (not just simulation) level.
-   Remaining real work: a production network transport for `aegis-relay` (currently
-   in-process channels), wiring `aegis-client` to it, a genuine threshold-BLS beacon,
-   a real ZK reputation circuit, and running a real trace through the Phase-8 tooling.
+3. Run `cargo test --workspace` in `crates/` — Phases 2–8 are implemented; see each
+   crate's module docs, `docs/AEGIS_phase2_implementation_notes.md`,
+   `docs/AEGIS_crypto_constant_time_review.md`, and `docs/AEGIS_phase8_hardening_notes.md`
+   for concrete design decisions and honestly which claims are [T]/[R]/[O] at the
+   implementation (not just simulation) level.
+4. Try the real testnet: `cargo run -p aegis-node -- --config <toml>` for one or more
+   relays, then `cargo run -p aegis-client -- --config <toml>` to send a real Sphinx
+   packet over TCP (see `crates/aegis-node/tests/tcp_testnet.rs` for a runnable example
+   of the config shape). `crates/aegis-node/tests/trace_capture.rs` (run with
+   `-- --ignored`) reproduces the Phase-8 real trace capture.
+
+   Remaining real work: real TEE attestation for Phase 7, wiring cover-flow bursts
+   from `aegis-relay` onto the outbound wire (currently accounted for at the library
+   level only), multi-process testnet orchestration (the committed real trace used the
+   in-process fallback — multi-process port/peer-routing had orchestration issues),
+   and running `cargo-fuzz` for real on Linux/macOS CI (Windows lacks libFuzzer
+   sanitizer support here, so `aegis-crypto` currently falls back to 40k-iteration
+   `proptest` harnesses covering the same attack surface).
 
 ## Honest boundaries (do not oversell — see spec §8, §9)
 - Strong guarantees are for **internal** (client↔client) traffic. Clearnet exit is
