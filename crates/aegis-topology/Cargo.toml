@@ -1,0 +1,11 @@
+[package]
+name = "aegis-topology"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rand = { version = "0.8", features = ["std_rng"] }
+rand_core.workspace = true
+thiserror.workspace = true
+sha3.workspace = true

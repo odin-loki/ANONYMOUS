@@ -1,0 +1,17 @@
+[package]
+name = "aegis-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chacha20poly1305.workspace = true
+x25519-dalek = { workspace = true, features = ["static_secrets", "getrandom", "zeroize"] }
+ml-kem = { workspace = true, features = ["deterministic", "zeroize"] }
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
+sha3.workspace = true
+rand_core = { workspace = true, features = ["getrandom"] }
+subtle.workspace = true
+zeroize.workspace = true
+thiserror.workspace = true
+kem = "0.3.0-pre.0"

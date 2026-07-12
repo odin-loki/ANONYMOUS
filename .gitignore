@@ -1,0 +1,11 @@
+# Rust
+/target
+**/target
+Cargo.lock
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+# misc
+.DS_Store

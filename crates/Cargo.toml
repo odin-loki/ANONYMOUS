@@ -1,0 +1,30 @@
+# AEGIS Rust workspace. Datapath crates for Phases 2-7 of the build plan.
+# See ../../docs/AEGIS_SPEC_v3_consolidated.md (Section 10) for phase gates.
+[workspace]
+resolver = "2"
+members = [
+    "aegis-crypto",      # Phase 2: Sphinx packet, hybrid KEM, cell, replay, link
+    "aegis-topology",    # Phase 3: stratified L-tier topology, path selection
+    "aegis-relay",       # Phase 3: mix relay (Sphinx process, Exp(mu) delay)
+    "aegis-client",      # Phase 4: constant-rate emitter + hard-cap receiver
+    "aegis-negotiator",  # Phase 6: bulk plane dial + batched-round scheduler
+    "aegis-trust",       # Phase 7: reputation ledger, ZK interface, TEE gate, anomaly detection
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Proprietary"
+
+[workspace.dependencies]
+# crypto (Phase 2)
+chacha20poly1305 = "0.10"   # AEAD link layer
+x25519-dalek     = "2"      # classical half of the hybrid KEM
+ml-kem           = "0.2"    # ML-KEM-768 (post-quantum half); verify latest at build
+sha3             = "0.10"   # SHA3-256 / SHAKE for KDF and MAC
+rand_core        = "0.6"
+subtle           = "2"      # constant-time comparisons
+zeroize          = "1"      # key hygiene
+# runtime (Phase 3+)
+tokio            = { version = "1", features = ["full"] }
+thiserror        = "1"
