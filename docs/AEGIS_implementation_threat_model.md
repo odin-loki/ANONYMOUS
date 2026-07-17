@@ -111,7 +111,7 @@ Simulations backing numeric claims:
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
 | Per-hop mixing delay sampled from Exp(μ) — timing visible to GPA on link. | `delay::sample_mixing_delay` | **By design** — delay is not the security primitive (spec §4.4); cover provides metadata hiding. | informational |
-| Cover flows are emitted as [`Command::SphinxFragment`] bursts on hop links (AEAD-sealed, same frame width as real bulk). Residual: random payload reassembles to invalid Sphinx at downstream peel; inter-cell timing and multi-hop semantics differ from genuine bulk. | `cover_flow.rs`, `node.rs` cover channel, `net.rs` cover dispatcher | **Partial** — wire volume/count padded; timing/shape GPA still possible. |
+| Cover flows are emitted as [`Command::SphinxFragment`] bursts on hop links (AEAD-sealed, same frame width as real bulk). Reserved-byte marker `COVER_FRAGMENT_RESERVED` prevents inbound reassembly/peel; cover never enters the Sphinx forward path. Residual: inter-cell timing and multi-hop semantics differ from genuine bulk. | `cover_flow.rs`, `node.rs` cover channel, `net.rs` cover dispatcher | **Partial** — wire volume/count padded; timing/shape GPA still possible. |
 | `RelayCoarseStats` exposes only aggregated `processed_ok` / `processed_fail` / `cover_emitted` for external export. Fine-grained per-error counters live in [`RelayHandle::debug_stats`] (documented internal-only). | `node::RelayCoarseStats`, `node::RelayDebugStats` | **Mitigated** for external metrics — do not export `debug_stats`. Residual if coarse buckets scraped under flood. | Low–medium |
 | `ForwardedPacket::delay_applied` records delay (internal struct). | `node::ForwardedPacket` | Low risk unless logged. | Low |
 
@@ -227,7 +227,7 @@ Simulations backing numeric claims:
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
 | Unseen relay gets NEUTRAL 0.5 — immediately eligible for reputation-filtered paths/guards at min 0.3. | `reputation::score` L53–55 | **Partial** — relays with **no** ledger entry still default to NEUTRAL (backward compat / test-only `admit()`). Signed admissions seed `PROBATIONARY` (0.1) via `admit_new_relay`. | **Low–medium** (was High) |
-| `AnomalyDetector` not wired to admission; path/guard **selection APIs** accept [`RelayPruningPolicy`](../../crates/aegis-trust/src/policy.rs) via `*_pruned` helpers (callers must feed metrics). | `anomaly.rs`, `aegis-topology::{path,guards}` | **Partial** — demotion wired into topology selection; admission + live relay metric feed still open. | Medium |
+| `AnomalyDetector` not wired to admission; path/guard **selection APIs** accept [`RelayPruningPolicy`](../../crates/aegis-trust/src/policy.rs) via `*_pruned` helpers; [`PeerHealthTracker`](../../crates/aegis-relay/src/peer_health.rs) records outbound link outcomes and feeds failure rates via [`feed_peer_metric`](../../crates/aegis-trust/src/policy.rs) (`aegis-node` drains every 30s). | `anomaly.rs`, `aegis-topology::{path,guards}`, `aegis-relay::{peer_health,net}` | **Partial** — local peer-metric feed wired; admission still open; no cross-relay health gossip. | Medium |
 | `core_gates_hold_under(BrokenEnclave)` vacuously true — no TEE dependency yet. | `tee::core_gates_hold_under` | **Mitigated** (honestly documented). | — |
 
 ---
@@ -435,7 +435,7 @@ Relay ──peel──► sphinx::process ──delay──► forward (GPA sees
 4. Link-layer **mutual auth** or Noise handshake derived from roster keys.
 5. Export **coarse-grained** metrics only via [`RelayHandle::coarse_stats`]; keep [`RelayHandle::debug_stats`] in-process. ~~Avoid per-error-type telemetry visible to external GPA.~~ **Done (2026-07-17):** `RelayCoarseStats` + documented `debug_stats` boundary.
 6. Constant-time replay cache or epoch-shortening under load (see crypto review).
-7. ~~Wire `AnomalyDetector` to admission/pruning decisions.~~ **Partial (2026-07-17):** `RelayPruningPolicy` demotes on anomaly; `aegis-topology` `*_pruned` path/guard selection APIs call `is_eligible`. Residual: relays must feed metrics into the policy; admission still unwired.
+7. ~~Wire `AnomalyDetector` to admission/pruning decisions.~~ **Partial (2026-07-17):** `RelayPruningPolicy` demotes on anomaly; `aegis-topology` `*_pruned` path/guard selection APIs call `is_eligible`; [`PeerHealthTracker`](../../crates/aegis-relay/src/peer_health.rs) records outbound send/handshake outcomes on the link bridge and [`drain_into_policy`](../../crates/aegis-relay/src/peer_health.rs) feeds failure rates via [`feed_peer_metric`](../../crates/aegis-trust/src/policy.rs) (`aegis-node` periodic drain). Residual: admission still unwired; observations are local-only (no peer-health gossip); inbound handshake failures not keyed to peer id.
 8. Relay-side timestamp instrumentation for shapeability at **post-shaping** vantage (Phase 8 notes §4 future work).
 
 ---

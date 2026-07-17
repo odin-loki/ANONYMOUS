@@ -31,12 +31,13 @@ pub mod cover_flow;
 pub mod delay;
 pub mod net;
 pub mod node;
+pub mod peer_health;
 pub mod relay_id;
 
 pub use config::{RelayConfig, DEFAULT_MU};
 pub use cover_flow::{
-    BulkRoundCommand, BulkRoundTracker, CoverEmitResult, CoverFlow, CoverFlowConfig,
-    CoverFlowGenerator,
+    is_relay_cover_fragment, BulkRoundCommand, BulkRoundTracker, CoverEmitResult, CoverFlow,
+    CoverFlowConfig, CoverFlowGenerator, COVER_FRAGMENT_RESERVED,
 };
 pub use delay::sample_mixing_delay;
 pub use net::{
@@ -47,4 +48,5 @@ pub use net::{
 pub use node::{
     packet_delta, ForwardedPacket, RelayCoarseStats, RelayDebugStats, RelayHandle, RelayNode,
 };
+pub use peer_health::PeerHealthTracker;
 pub use relay_id::RelayId;

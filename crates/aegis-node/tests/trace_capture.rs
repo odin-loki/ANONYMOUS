@@ -145,6 +145,7 @@ impl TcpTestnet {
                 None,
                 OsRng,
                 LinkBridgeConfig::default(),
+                None,
             );
 
             relays.push(TcpRelaySlot {

@@ -44,7 +44,9 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use thiserror::Error;
 
+use crate::cover_flow::is_relay_cover_fragment;
 use crate::node::ForwardedPacket;
+use crate::peer_health::PeerHealthTracker;
 use crate::relay_id::RelayId;
 
 /// Default per-read timeout: slow-loris peers cannot hold a task indefinitely.
@@ -110,6 +112,10 @@ pub enum NetError {
 /// [`crate::RelayNode::spawn`] and writes them on a hop link (same AEAD framing as
 /// real traffic).
 ///
+/// When `peer_health` is set, outbound send/handshake outcomes are recorded per peer
+/// for periodic feeding into [`RelayPruningPolicy`](aegis_trust::RelayPruningPolicy)
+/// via [`PeerHealthTracker::drain_into_policy`].
+///
 /// Returns join handles for the listener and dispatcher tasks.
 pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
     listen_addr: SocketAddr,
@@ -121,6 +127,7 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
     exit_tx: Option<ExitSink>,
     rng: R,
     bridge_config: LinkBridgeConfig,
+    peer_health: Option<Arc<PeerHealthTracker>>,
 ) -> (JoinHandle<()>, JoinHandle<()>) {
     let rng = Arc::new(Mutex::new(rng));
     let listener = spawn_inbound_listener(
@@ -136,6 +143,7 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
             peer_table.clone(),
             Arc::clone(&rng),
             bridge_config.clone(),
+            peer_health.clone(),
         );
     }
     let dispatcher = spawn_outbound_dispatcher(
@@ -144,8 +152,23 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
         exit_tx,
         Arc::clone(&rng),
         bridge_config,
+        peer_health,
     );
     (listener, dispatcher)
+}
+
+fn record_peer_outcome(
+    health: &Option<Arc<PeerHealthTracker>>,
+    peer_id: RelayId,
+    success: bool,
+) {
+    if let Some(tracker) = health {
+        if success {
+            tracker.record_success(*peer_id.as_bytes());
+        } else {
+            tracker.record_failure(*peer_id.as_bytes());
+        }
+    }
 }
 
 /// Established TCP hop link: one handshake, many sealed cell frames on the same session key.
@@ -427,6 +450,7 @@ async fn run_inbound_connection(
         // them here so continuous dummy cover does not poison reassembly.
         match Command::from_u8(cell.as_bytes()[0]) {
             Some(Command::Drop) | Some(Command::LoopToSelf) => continue,
+            Some(Command::SphinxFragment) if is_relay_cover_fragment(&cell) => continue,
             Some(Command::SphinxFragment) => {}
             _ => continue,
         }
@@ -439,9 +463,12 @@ async fn run_inbound_connection(
     Ok(())
 }
 
-fn pick_cover_egress(peer_table: &HashMap<RelayId, PeerInfo>) -> Option<PeerInfo> {
-    let mut peers: Vec<_> = peer_table.values().cloned().collect();
-    peers.sort_by_key(|p| p.addr);
+fn pick_cover_egress(peer_table: &HashMap<RelayId, PeerInfo>) -> Option<(RelayId, PeerInfo)> {
+    let mut peers: Vec<_> = peer_table
+        .iter()
+        .map(|(id, info)| (*id, info.clone()))
+        .collect();
+    peers.sort_by_key(|(_, p)| p.addr);
     peers.into_iter().next()
 }
 
@@ -450,18 +477,34 @@ fn spawn_cover_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
     peer_table: HashMap<RelayId, PeerInfo>,
     rng: Arc<Mutex<R>>,
     bridge_config: LinkBridgeConfig,
+    peer_health: Option<Arc<PeerHealthTracker>>,
 ) {
     tokio::spawn(async move {
         let pool = Arc::new(Mutex::new(ConnectionPool::new()));
         let mut cover_rx = cover_rx;
+        let mut logged_empty_peer = false;
         while let Some(cells) = cover_rx.recv().await {
-            let peer = match pick_cover_egress(&peer_table) {
+            let (peer_id, peer) = match pick_cover_egress(&peer_table) {
                 Some(p) => p,
-                None => continue,
+                None => {
+                    if !logged_empty_peer {
+                        eprintln!("aegis-relay net: cover egress skipped (empty peer table)");
+                        logged_empty_peer = true;
+                    }
+                    continue;
+                }
             };
             let mut guard = rng.lock().await;
-            if let Err(e) =
-                write_cover_cells(&pool, &peer, &cells, &mut *guard, &bridge_config).await
+            if let Err(e) = write_cover_cells(
+                &pool,
+                peer_id,
+                &peer,
+                &cells,
+                &mut *guard,
+                &bridge_config,
+                &peer_health,
+            )
+            .await
             {
                 eprintln!("aegis-relay net: cover egress to {:?}: {e}", peer.addr);
             }
@@ -471,14 +514,22 @@ fn spawn_cover_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
 
 async fn write_cover_cells<R: RngCore + CryptoRngCore>(
     pool: &Arc<Mutex<ConnectionPool>>,
+    peer_id: RelayId,
     peer: &PeerInfo,
     cells: &[Cell],
     rng: &mut R,
     bridge_config: &LinkBridgeConfig,
+    peer_health: &Option<Arc<PeerHealthTracker>>,
 ) -> Result<(), NetError> {
-    let conn = {
+    let conn = match {
         let mut pool = pool.lock().await;
-        pool.get_or_handshake(peer, rng, bridge_config).await?
+        pool.get_or_handshake(peer, rng, bridge_config).await
+    } {
+        Ok(c) => c,
+        Err(e) => {
+            record_peer_outcome(peer_health, peer_id, false);
+            return Err(e);
+        }
     };
     let mut guard = conn.lock().await;
     let session_key = LinkKey::new(*guard.session_key.as_bytes());
@@ -491,14 +542,25 @@ async fn write_cover_cells<R: RngCore + CryptoRngCore>(
     )
     .await
     {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            record_peer_outcome(peer_health, peer_id, true);
+            Ok(())
+        }
         Err(NetError::Io(_)) | Err(NetError::ReadTimeout(_)) => {
             drop(guard);
-            let mut pool = pool.lock().await;
-            let conn = pool.reconnect(peer, rng, bridge_config).await?;
+            let conn = match {
+                let mut pool = pool.lock().await;
+                pool.reconnect(peer, rng, bridge_config).await
+            } {
+                Ok(c) => c,
+                Err(e) => {
+                    record_peer_outcome(peer_health, peer_id, false);
+                    return Err(e);
+                }
+            };
             let mut guard = conn.lock().await;
             let session_key = LinkKey::new(*guard.session_key.as_bytes());
-            write_cells_on_stream(
+            match write_cells_on_stream(
                 &mut guard.stream,
                 &session_key,
                 cells,
@@ -506,8 +568,21 @@ async fn write_cover_cells<R: RngCore + CryptoRngCore>(
                 bridge_config.read_timeout,
             )
             .await
+            {
+                Ok(()) => {
+                    record_peer_outcome(peer_health, peer_id, true);
+                    Ok(())
+                }
+                Err(e) => {
+                    record_peer_outcome(peer_health, peer_id, false);
+                    Err(e)
+                }
+            }
         }
-        Err(e) => Err(e),
+        Err(e) => {
+            record_peer_outcome(peer_health, peer_id, false);
+            Err(e)
+        }
     }
 }
 
@@ -524,43 +599,6 @@ async fn write_cells_on_stream<R: RngCore + CryptoRngCore>(
     }
     stream.flush().await?;
     Ok(())
-}
-
-fn spawn_outbound_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
-    outbound_rx: mpsc::Receiver<ForwardedPacket>,
-    peer_table: HashMap<RelayId, PeerInfo>,
-    exit_tx: Option<ExitSink>,
-    rng: Arc<Mutex<R>>,
-    bridge_config: LinkBridgeConfig,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let pool = Arc::new(Mutex::new(ConnectionPool::new()));
-        let mut outbound_rx = outbound_rx;
-        while let Some(fwd) = outbound_rx.recv().await {
-            if let Some(ref tx) = exit_tx {
-                if peer_table.get(&fwd.next_hop).is_none() {
-                    let _ = tx.send(fwd.packet).await;
-                    continue;
-                }
-            }
-            let peer = match peer_table.get(&fwd.next_hop) {
-                Some(p) => p.clone(),
-                None => {
-                    eprintln!(
-                        "aegis-relay net: no peer for next_hop {:?}",
-                        fwd.next_hop
-                    );
-                    continue;
-                }
-            };
-            let mut guard = rng.lock().await;
-            if let Err(e) =
-                forward_to_peer(&pool, &peer, &fwd.packet, &mut *guard, &bridge_config).await
-            {
-                eprintln!("aegis-relay net: forward to {:?}: {e}", fwd.next_hop);
-            }
-        }
-    })
 }
 
 struct PooledConnection {
@@ -612,16 +650,68 @@ impl ConnectionPool {
     }
 }
 
+fn spawn_outbound_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
+    outbound_rx: mpsc::Receiver<ForwardedPacket>,
+    peer_table: HashMap<RelayId, PeerInfo>,
+    exit_tx: Option<ExitSink>,
+    rng: Arc<Mutex<R>>,
+    bridge_config: LinkBridgeConfig,
+    peer_health: Option<Arc<PeerHealthTracker>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let pool = Arc::new(Mutex::new(ConnectionPool::new()));
+        let mut outbound_rx = outbound_rx;
+        while let Some(fwd) = outbound_rx.recv().await {
+            if let Some(ref tx) = exit_tx {
+                if peer_table.get(&fwd.next_hop).is_none() {
+                    let _ = tx.send(fwd.packet).await;
+                    continue;
+                }
+            }
+            let peer = match peer_table.get(&fwd.next_hop) {
+                Some(p) => p.clone(),
+                None => {
+                    // Terminal peel (exit hop) or misconfiguration — no peer route.
+                    // When `exit_tx` is set the packet was already delivered above.
+                    continue;
+                }
+            };
+            let mut guard = rng.lock().await;
+            if let Err(e) = forward_to_peer(
+                &pool,
+                fwd.next_hop,
+                &peer,
+                &fwd.packet,
+                &mut *guard,
+                &bridge_config,
+                &peer_health,
+            )
+            .await
+            {
+                eprintln!("aegis-relay net: forward to {:?}: {e}", fwd.next_hop);
+            }
+        }
+    })
+}
+
 async fn forward_to_peer<R: RngCore + CryptoRngCore>(
     pool: &Arc<Mutex<ConnectionPool>>,
+    peer_id: RelayId,
     peer: &PeerInfo,
     packet: &SphinxPacket,
     rng: &mut R,
     bridge_config: &LinkBridgeConfig,
+    peer_health: &Option<Arc<PeerHealthTracker>>,
 ) -> Result<(), NetError> {
-    let conn = {
+    let conn = match {
         let mut pool = pool.lock().await;
-        pool.get_or_handshake(peer, rng, bridge_config).await?
+        pool.get_or_handshake(peer, rng, bridge_config).await
+    } {
+        Ok(c) => c,
+        Err(e) => {
+            record_peer_outcome(peer_health, peer_id, false);
+            return Err(e);
+        }
     };
     let mut guard = conn.lock().await;
     let session_key = LinkKey::new(*guard.session_key.as_bytes());
@@ -634,14 +724,25 @@ async fn forward_to_peer<R: RngCore + CryptoRngCore>(
     )
     .await
     {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            record_peer_outcome(peer_health, peer_id, true);
+            Ok(())
+        }
         Err(NetError::Io(_)) | Err(NetError::ReadTimeout(_)) => {
             drop(guard);
-            let mut pool = pool.lock().await;
-            let conn = pool.reconnect(peer, rng, bridge_config).await?;
+            let conn = match {
+                let mut pool = pool.lock().await;
+                pool.reconnect(peer, rng, bridge_config).await
+            } {
+                Ok(c) => c,
+                Err(e) => {
+                    record_peer_outcome(peer_health, peer_id, false);
+                    return Err(e);
+                }
+            };
             let mut guard = conn.lock().await;
             let session_key = LinkKey::new(*guard.session_key.as_bytes());
-            write_packet_with_key(
+            match write_packet_with_key(
                 &mut guard.stream,
                 &session_key,
                 packet,
@@ -649,8 +750,21 @@ async fn forward_to_peer<R: RngCore + CryptoRngCore>(
                 bridge_config.read_timeout,
             )
             .await
+            {
+                Ok(()) => {
+                    record_peer_outcome(peer_health, peer_id, true);
+                    Ok(())
+                }
+                Err(e) => {
+                    record_peer_outcome(peer_health, peer_id, false);
+                    Err(e)
+                }
+            }
         }
-        Err(e) => Err(e),
+        Err(e) => {
+            record_peer_outcome(peer_health, peer_id, false);
+            Err(e)
+        }
     }
 }
 
@@ -835,6 +949,7 @@ mod tests {
             None,
             OsRng,
             cfg.clone(),
+            None,
         );
 
         let gen = CoverFlowGenerator::new(CoverRequirement::new(4));
@@ -866,5 +981,116 @@ mod tests {
         client.write_all(&[0u8; LINK_HANDSHAKE_INIT_LEN - 1]).await.unwrap();
         let err = server.await.unwrap();
         assert!(matches!(err, Err(NetError::ReadTimeout(_))));
+    }
+
+    #[tokio::test]
+    async fn cover_emit_empty_peer_table_is_quiet() {
+        use crate::cover_flow::CoverFlowGenerator;
+        use aegis_negotiator::cover::CoverRequirement;
+
+        let (cover_tx, cover_rx) = mpsc::channel(4);
+        let (inbound_tx, mut inbound_rx) = mpsc::channel(4);
+        let (_listener_task, _dispatcher_task) = spawn_link_bridge(
+            "127.0.0.1:0".parse().unwrap(),
+            HashMap::new(),
+            None,
+            inbound_tx,
+            mpsc::channel(1).1,
+            Some(cover_rx),
+            None,
+            OsRng,
+            LinkBridgeConfig::default(),
+            None,
+        );
+
+        let gen = CoverFlowGenerator::new(CoverRequirement::new(1));
+        let flow = gen.generate(0, &mut OsRng).into_iter().next().unwrap();
+        cover_tx.send(flow.cells).await.unwrap();
+        drop(cover_tx);
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            inbound_rx.try_recv().is_err(),
+            "cover must not enter Sphinx inbound when peer table is empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn inbound_skips_relay_cover_fragments() {
+        use crate::cover_flow::CoverFlowGenerator;
+        use aegis_negotiator::cover::CoverRequirement;
+
+        let psk = test_psk(0xCF);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = LinkBridgeConfig::default();
+        let (inbound_tx, mut inbound_rx) = mpsc::channel(4);
+
+        let server_cfg = cfg.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            run_inbound_connection(stream, HashMap::new(), Some(psk), inbound_tx, &server_cfg).await
+        });
+
+        let gen = CoverFlowGenerator::new(CoverRequirement::new(1));
+        let flow = gen.generate(0, &mut OsRng).into_iter().next().unwrap();
+
+        let client = tokio::spawn(async move {
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            let mut rng = OsRng;
+            let session_key =
+                run_initiator_handshake(&mut stream, &psk, &mut rng, cfg.read_timeout).await.unwrap();
+            write_cells_on_stream(
+                &mut stream,
+                &session_key,
+                &flow.cells,
+                &mut rng,
+                cfg.read_timeout,
+            )
+            .await
+            .unwrap();
+        });
+
+        client.await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("inbound should finish after cover burst");
+        assert!(
+            inbound_rx.try_recv().is_err(),
+            "relay-cover fragments must not reassemble into Sphinx inbound"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_next_hop_without_exit_sink_is_silent() {
+        use aegis_crypto::sphinx::SPHINX_PACKET_LEN;
+
+        let (outbound_tx, outbound_rx) = mpsc::channel(4);
+        let (_listener_task, dispatcher_task) = spawn_link_bridge(
+            "127.0.0.1:0".parse().unwrap(),
+            HashMap::new(),
+            None,
+            mpsc::channel(1).0,
+            outbound_rx,
+            None,
+            None,
+            OsRng,
+            LinkBridgeConfig::default(),
+            None,
+        );
+
+        let mut random_next = [0u8; 32];
+        OsRng.fill_bytes(&mut random_next);
+        outbound_tx
+            .send(ForwardedPacket {
+                next_hop: RelayId(random_next),
+                packet: aegis_crypto::sphinx::SphinxPacket::from_bytes([0u8; SPHINX_PACKET_LEN]),
+                delay_applied: Duration::ZERO,
+            })
+            .await
+            .unwrap();
+        drop(outbound_tx);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        dispatcher_task.abort();
     }
 }

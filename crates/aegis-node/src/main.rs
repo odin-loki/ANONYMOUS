@@ -3,10 +3,14 @@
 mod config;
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
-use aegis_relay::{RelayNode, spawn_link_bridge};
+use aegis_relay::{PeerHealthTracker, RelayNode, spawn_link_bridge};
+use aegis_trust::RelayPruningPolicy;
 use clap::Parser;
 use rand_core::OsRng;
+use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
 #[derive(Parser, Debug)]
@@ -44,6 +48,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime.listen
     );
 
+    let peer_health = Arc::new(PeerHealthTracker::new());
+    let pruning_policy = Arc::new(Mutex::new(RelayPruningPolicy::new(0.9, 0.2, 3.0)?));
+
+    let health_drain = Arc::clone(&peer_health);
+    let policy_drain = Arc::clone(&pruning_policy);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            let fed = health_drain.drain_into_policy(
+                &mut *policy_drain.lock().await,
+                PeerHealthTracker::DEFAULT_MIN_SAMPLES,
+            );
+            if fed > 0 {
+                eprintln!("peer health: fed {fed} peer failure-rate sample(s) into pruning policy");
+            }
+        }
+    });
+
     let (inbound_tx, inbound_rx) = mpsc::channel(64);
     let (outbound_tx, outbound_rx) = mpsc::channel(64);
     let (cover_tx, cover_rx) = mpsc::channel(64);
@@ -65,6 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None,
         OsRng,
         runtime.link_bridge_config,
+        Some(peer_health),
     );
 
     eprintln!(

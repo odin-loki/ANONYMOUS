@@ -68,9 +68,11 @@ bound ports; peer table built in-memory.
    new TCP session, ran cover, then closed; 48× ~7 s ≈ 7 min and increased
    connection churn. Trace capture now uses `--raw` (unpaced one-shot sends).
 4. **Misdiagnosed “peer routing errors”** — exit relay logs
-   `no peer for next_hop RelayId([random…])` for **cover egress**, not client
-   Sphinx forwards; client sends still succeed. Real peer tables (link keys
-   `link_key(i)` for hop *i*↔*i+1*) were already correct.
+   `no peer for next_hop RelayId([random…])` were **terminal Sphinx peels** (peel-pad
+   bytes in the routing slot) hitting the outbound dispatcher without an `exit_tx` sink,
+   not client Sphinx misroutes. Fixed: cover cells carry a reserved-byte marker and are
+   discarded before reassembly; unknown `next_hop` without a peer route is dropped
+   silently (or delivered via `exit_tx` when configured).
 
 #### Fixes applied
 - Build once; invoke `target/debug/aegis-node(.exe)` and `aegis-client(.exe)`
@@ -160,9 +162,8 @@ because concurrent work left the crate non-compiling (`Cell` lacks `Debug`).
 - Longer horizon (≥128 slots) for Hurst; adversarial/malicious-like emission
   patterns; constant-rate emitter output (post-shaping wire view) vs raw client
   sends.
-- Paced multi-process capture (`--tau-secs 0.05 --cover-secs 0.1`) once
-  post-send cover egress peer selection is fixed (exit relay cover logs still show
-  spurious `no peer for next_hop` for random RelayIds — benign for `--raw` sends).
+- Paced multi-process capture (`--tau-secs 0.05 --cover-secs 0.1`) — cover egress
+  peer selection and terminal-peel log spam fixed (2026-07-17).
 
 --------------------------------------------------------------------------------
 2. OPEN ITEMS -- STATUS AFTER THIS PASS (do not oversell any of these)

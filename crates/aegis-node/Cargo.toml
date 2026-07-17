@@ -15,6 +15,7 @@ path = "src/main.rs"
 aegis-relay = { path = "../aegis-relay" }
 aegis-crypto = { path = "../aegis-crypto" }
 aegis-topology = { path = "../aegis-topology" }
+aegis-trust = { path = "../aegis-trust" }
 tokio.workspace = true
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

@@ -83,12 +83,11 @@ Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing 
    `-- --ignored`) reproduces the Phase-8 benign and malicious real trace captures.
 
    Remaining real work: real TEE attestation for Phase 7; wire `binds_kem_public` into
-   live client path build; feed relay metrics into `RelayPruningPolicy` at runtime
-   (selection APIs are wired — see `select_path_reputation_weighted_pruned` /
-   `GuardSelector::new_reputation_weighted_pruned`); consortium key ceremony (M-of-N
-   code is in place); multi-process testnet orchestration; cover-burst timing
-   indistinguishability. See `docs/AEGIS_implementation_threat_model.md` for the full
-   residual-gap list.
+   live client path build; consortium key ceremony (M-of-N code is in place);
+   multi-process testnet orchestration; cover-burst timing indistinguishability.
+   Peer link failure rates feed `RelayPruningPolicy` via `PeerHealthTracker`
+   (`aegis-relay` / `aegis-node`); path selection uses `*_pruned` APIs. See
+   `docs/AEGIS_implementation_threat_model.md` for the full residual-gap list.
 
 ## Honest boundaries (do not oversell — see spec §8, §9)
 - Strong guarantees are for **internal** (client↔client) traffic. Clearnet exit is

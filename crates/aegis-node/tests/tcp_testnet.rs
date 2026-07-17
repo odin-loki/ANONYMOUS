@@ -118,6 +118,7 @@ impl TcpTestnet {
                 exit,
                 OsRng,
                 LinkBridgeConfig::default(),
+                None,
             );
 
             relays.push(TcpRelaySlot {

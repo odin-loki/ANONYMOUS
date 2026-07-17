@@ -31,10 +31,10 @@
 //! Cover padding holds **observed flow count and per-flow cell volume** at this relay,
 //! and each cover cell is a fixed-width AEAD link frame indistinguishable in length from
 //! real traffic. After decryption, cover fragments carry random payload bytes (not a valid
-//! Sphinx onion); downstream peers that reassemble and peel will reject them as integrity
-//! failures. Cover does not replicate inter-cell timing, multi-hop forwarding semantics,
-//! or valid Sphinx ciphertext. A GPA with deep timing analysis may still distinguish cover
-//! bursts from genuine bulk traffic.
+//! Sphinx onion). A reserved-byte wire marker (`COVER_FRAGMENT_RESERVED`) lets inbound
+//! link handlers discard cover before reassembly so it never reaches peel. Cover does not
+//! replicate inter-cell timing, multi-hop forwarding semantics, or valid Sphinx ciphertext.
+//! A GPA with deep timing analysis may still distinguish cover bursts from genuine bulk traffic.
 
 use aegis_crypto::cell::{Cell, Command, CELL_LEN};
 use aegis_crypto::fragment::{
@@ -48,7 +48,24 @@ use rand_core::{CryptoRngCore, RngCore};
 const OFF_COMMAND: usize = 0;
 const OFF_FRAG_IDX: usize = 1;
 const OFF_PACKET_ID: usize = 2;
+const OFF_RESERVED: usize = 10;
 const OFF_PAYLOAD: usize = FRAGMENT_HEADER_LEN;
+
+/// Reserved-byte tag on relay bulk-cover fragments (real Sphinx keeps reserved zero).
+///
+/// Inbound link handlers discard cells carrying this marker before reassembly so
+/// cover padding never enters the Sphinx peel/forward path.
+pub const COVER_FRAGMENT_RESERVED: [u8; 2] = [0xC0, 0x01];
+
+/// True when `cell` is a relay-origin bulk-cover fragment (not client Sphinx).
+#[must_use]
+pub fn is_relay_cover_fragment(cell: &Cell) -> bool {
+    let b = cell.as_bytes();
+    if Command::from_u8(b[OFF_COMMAND]) != Some(Command::SphinxFragment) {
+        return false;
+    }
+    b[OFF_RESERVED..OFF_RESERVED + COVER_FRAGMENT_RESERVED.len()] == COVER_FRAGMENT_RESERVED
+}
 
 /// Cells emitted per synthetic cover flow (one bulk Sphinx packet on the wire).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,7 +279,8 @@ fn encode_cover_fragment_cell<R: RngCore + CryptoRngCore>(
     buf[OFF_COMMAND] = Command::SphinxFragment as u8;
     buf[OFF_FRAG_IDX] = index;
     buf[OFF_PACKET_ID..OFF_PACKET_ID + 8].copy_from_slice(&packet_id);
-    // reserved [OFF_RESERVED..OFF_PAYLOAD] stays zero
+    buf[OFF_RESERVED..OFF_RESERVED + COVER_FRAGMENT_RESERVED.len()]
+        .copy_from_slice(&COVER_FRAGMENT_RESERVED);
 
     let copy_len = if usize::from(index) == SPHINX_FRAGMENT_COUNT - 1 {
         LAST_FRAGMENT_DATA_LEN
@@ -299,6 +317,10 @@ mod tests {
                     flow.cells
                         .iter()
                         .all(|c| c.as_bytes()[0] == Command::SphinxFragment as u8)
+                );
+                assert!(
+                    flow.cells.iter().all(is_relay_cover_fragment),
+                    "cover cells must carry the relay-cover reserved marker"
                 );
                 let pid = &flow.cells[0].as_bytes()[OFF_PACKET_ID..OFF_PACKET_ID + 8];
                 for (i, cell) in flow.cells.iter().enumerate() {

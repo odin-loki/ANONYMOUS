@@ -10,6 +10,7 @@ workspace = true
 [dependencies]
 aegis-crypto = { path = "../aegis-crypto" }
 aegis-negotiator = { path = "../aegis-negotiator" }
+aegis-trust = { path = "../aegis-trust" }
 tokio.workspace = true
 thiserror.workspace = true
 rand_core = { workspace = true, features = ["getrandom"] }

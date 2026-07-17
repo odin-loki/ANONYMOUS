@@ -40,6 +40,18 @@ pub struct RelayCoarseStats {
     pub cover_emitted: u64,
 }
 
+impl RelayCoarseStats {
+    /// Self-ingress failure rate: `processed_fail / (processed_ok + processed_fail)`.
+    pub fn failure_rate(&self) -> Option<f64> {
+        let total = self.processed_ok.saturating_add(self.processed_fail);
+        if total == 0 {
+            None
+        } else {
+            Some(self.processed_fail as f64 / total as f64)
+        }
+    }
+}
+
 /// Fine-grained relay counters — **internal / test only**.
 ///
 /// Do not export to untrusted observers (metrics scrapers, external APIs). Per-error-type
@@ -508,5 +520,22 @@ mod tests {
         assert_eq!(coarse.cover_emitted, 0);
         // Fine-grained fields remain available via debug_stats only.
         assert_eq!(handle.debug_stats().forwarded_count, 1);
+    }
+
+    #[test]
+    fn coarse_stats_failure_rate() {
+        let stats = RelayCoarseStats {
+            processed_ok: 7,
+            processed_fail: 3,
+            cover_emitted: 0,
+        };
+        assert!((stats.failure_rate().unwrap() - 0.3).abs() < f64::EPSILON);
+        assert!(RelayCoarseStats {
+            processed_ok: 0,
+            processed_fail: 0,
+            cover_emitted: 0,
+        }
+        .failure_rate()
+        .is_none());
     }
 }

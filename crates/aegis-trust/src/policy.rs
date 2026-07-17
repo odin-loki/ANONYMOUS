@@ -89,6 +89,19 @@ impl RelayPruningPolicy {
     }
 }
 
+/// Feed a scalar peer failure-rate sample into anomaly-driven pruning.
+///
+/// `fail_rate` is typically `failures / (successes + failures)` over a local
+/// observation window (0.0 = perfect, 1.0 = all failures). Relays should prefer
+/// [`aegis_relay::PeerHealthTracker::drain_into_policy`] for periodic batching.
+pub fn feed_peer_metric(
+    policy: &mut RelayPruningPolicy,
+    peer: [u8; 32],
+    fail_rate: f64,
+) -> AnomalyVerdict {
+    policy.observe_metric(peer, fail_rate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +169,17 @@ mod tests {
         policy.observe_metric(relay(1), 1000.0);
         assert!(!policy.is_eligible(relay(1), DEFAULT_PATH_REPUTATION_FLOOR));
         assert!(policy.is_eligible(relay(2), DEFAULT_PATH_REPUTATION_FLOOR));
+    }
+
+    #[test]
+    fn feed_peer_metric_demotes_on_failure_rate_spike() {
+        let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+        for _ in 0..100 {
+            feed_peer_metric(&mut policy, relay(3), 0.01);
+        }
+        assert!(policy.is_eligible(relay(3), DEFAULT_PATH_REPUTATION_FLOOR));
+        let verdict = feed_peer_metric(&mut policy, relay(3), 0.95);
+        assert!(verdict.is_anomalous);
+        assert!(!policy.is_eligible(relay(3), DEFAULT_PATH_REPUTATION_FLOOR));
     }
 }
