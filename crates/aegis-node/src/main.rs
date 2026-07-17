@@ -4,11 +4,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aegis_node::{exit_sink, NodeConfigFile};
+use aegis_node::{exit_sink, NodeConfigFile, ReputationConfig};
 use aegis_relay::{
     spawn_link_bridge, start_bulk_cover, PeerHealthTracker, RelayForwardTrace, RelayNode,
 };
-use aegis_trust::RelayPruningPolicy;
 use clap::Parser;
 use rand_core::OsRng;
 use tokio::sync::mpsc;
@@ -41,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(mu) = cli.mu {
         file.mu = mu;
     }
-    let runtime = file.into_runtime()?;
+    let runtime = file.into_runtime(&cli.config)?;
 
     if let Some(ref roster) = runtime.roster {
         eprintln!("loaded roster ({} relays)", roster.len());
@@ -54,21 +53,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let peer_health = Arc::new(PeerHealthTracker::new());
-    let pruning_policy = Arc::new(Mutex::new(RelayPruningPolicy::new(0.9, 0.2, 3.0)?));
+    let reputation_cfg: ReputationConfig = runtime.reputation.clone();
+    let pruning_policy = Arc::new(Mutex::new(reputation_cfg.load_pruning_policy()?));
 
     let health_drain = Arc::clone(&peer_health);
     let policy_drain = Arc::clone(&pruning_policy);
+    let rep_drain = reputation_cfg.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
+            let mut policy = policy_drain.lock().await;
             let fed = health_drain.drain_into_policy(
-                &mut *policy_drain.lock().await,
+                &mut *policy,
                 PeerHealthTracker::DEFAULT_MIN_SAMPLES,
             );
             if fed > 0 {
                 eprintln!("peer health: fed {fed} peer failure-rate sample(s) into pruning policy");
             }
+            rep_drain.save_ledger(&policy);
         }
     });
 
@@ -123,6 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::signal::ctrl_c().await?;
     eprintln!("shutting down");
+    reputation_cfg.save_ledger(&*pruning_policy.lock().await);
     if let Some(task) = cover_task {
         task.abort();
     }

@@ -126,6 +126,15 @@ link_key = "{link_key(0xC0)}"
         kem_d = hex32(0x30 + i, 0x40 + i)
         kem_z = hex32(0x50 + i, 0x60 + i)
 
+        exit_section = ""
+        if i == PATH_LEN - 1:
+            exit_log = (CONFIG_DIR / "exit_peels.log").resolve()
+            exit_path = str(exit_log).replace("\\", "/")
+            exit_section = f"""
+[exit]
+deliver_to = "file:{exit_path}"
+"""
+
         toml = f"""relay_id = "{ids[i]}"
 listen = "127.0.0.1:{ports[i]}"
 mu = 80.0
@@ -134,8 +143,7 @@ mu = 80.0
 x25519_seed = "{kem_seed}"
 mlkem_d = "{kem_d}"
 mlkem_z = "{kem_z}"
-{ingress}
-"""
+{ingress}{exit_section}"""
         for peer in peers:
             toml += f"""
 [[peers]]

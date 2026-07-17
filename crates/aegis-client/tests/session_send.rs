@@ -230,6 +230,7 @@ async fn two_paced_sends_reuse_one_tcp_handshake() {
             &HashMap::new(),
             &mut rng,
             &server_cfg,
+            None,
         )
         .await
         .unwrap();

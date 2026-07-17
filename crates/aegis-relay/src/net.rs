@@ -142,7 +142,8 @@ pub enum NetError {
 /// [`crate::RelayNode::spawn`] and writes them on a hop link (same AEAD framing as
 /// real traffic).
 ///
-/// When `peer_health` is set, outbound send/handshake outcomes are recorded per peer
+/// When `peer_health` is set, outbound send/handshake outcomes and inbound
+/// responder handshakes (once a peer-table PSK matches) are recorded per peer
 /// for periodic feeding into [`RelayPruningPolicy`](aegis_trust::RelayPruningPolicy)
 /// via [`PeerHealthTracker::drain_into_policy`].
 ///
@@ -171,6 +172,7 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
         ingress_link_key,
         inbound_tx,
         bridge_config.clone(),
+        peer_health.clone(),
     );
     if let Some(cover_rx) = cover_rx {
         spawn_cover_dispatcher(
@@ -200,6 +202,20 @@ fn record_peer_outcome(
     success: bool,
 ) {
     if let Some(tracker) = health {
+        if success {
+            tracker.record_success(*peer_id.as_bytes());
+        } else {
+            tracker.record_failure(*peer_id.as_bytes());
+        }
+    }
+}
+
+fn record_inbound_handshake_outcome(
+    health: Option<&PeerHealthTracker>,
+    matched_peer: Option<RelayId>,
+    success: bool,
+) {
+    if let (Some(tracker), Some(peer_id)) = (health, matched_peer) {
         if success {
             tracker.record_success(*peer_id.as_bytes());
         } else {
@@ -392,6 +408,10 @@ pub async fn run_initiator_handshake<R: RngCore + CryptoRngCore>(
 ///
 /// When local_kem_commitment is Some, it is bound into confirm/finish MACs (must match
 /// the initiator's peer-table / hop commitment for this relay).
+///
+/// When `peer_health` is set and authentication succeeds via a peer-table PSK, records
+/// success for that peer; records failure if finish steps fail after the PSK matched.
+/// Ingress-key and unidentified inbound outcomes are not attributed to a peer id.
 pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
     stream: &mut TcpStream,
     local_relay_id: RelayId,
@@ -400,6 +420,7 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
     peer_table: &HashMap<RelayId, PeerInfo>,
     rng: &mut R,
     bridge_config: &LinkBridgeConfig,
+    peer_health: Option<&PeerHealthTracker>,
 ) -> Result<LinkKey, NetError> {
     let read_timeout = bridge_config.read_timeout;
 
@@ -438,18 +459,29 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
     for (id, peer) in peer_table {
         let psk = peer.link_key_bytes;
         if verify_link_handshake_confirm_mac(&psk, &transcript, binding_ref, &confirm) {
-            let session = link_handshake_responder_finish(
+            let matched = *id;
+            match link_handshake_responder_finish(
                 &psk,
                 resp_sk,
                 &init,
                 &resp,
                 &confirm_msg,
                 binding_ref,
-            )?;
-            let finish = link_handshake_finish_mac(&psk, &transcript, binding_ref);
-            write_all_timeout(stream, &finish, read_timeout).await?;
-            let _ = id;
-            return Ok(session);
+            ) {
+                Ok(session) => {
+                    let finish = link_handshake_finish_mac(&psk, &transcript, binding_ref);
+                    if let Err(e) = write_all_timeout(stream, &finish, read_timeout).await {
+                        record_inbound_handshake_outcome(peer_health, Some(matched), false);
+                        return Err(e.into());
+                    }
+                    record_inbound_handshake_outcome(peer_health, Some(matched), true);
+                    return Ok(session);
+                }
+                Err(e) => {
+                    record_inbound_handshake_outcome(peer_health, Some(matched), false);
+                    return Err(e.into());
+                }
+            }
         }
     }
 
@@ -464,6 +496,7 @@ fn spawn_inbound_listener(
     ingress_link_key: Option<[u8; 32]>,
     inbound_tx: mpsc::Sender<SphinxPacket>,
     bridge_config: LinkBridgeConfig,
+    peer_health: Option<Arc<PeerHealthTracker>>,
 ) -> JoinHandle<()> {
     let connection_slots = Arc::new(Semaphore::new(bridge_config.max_inbound_connections));
     tokio::spawn(async move {
@@ -495,6 +528,7 @@ fn spawn_inbound_listener(
             let inbound_tx = inbound_tx.clone();
             let cfg = bridge_config.clone();
             let local_id = local_relay_id;
+            let health = peer_health.clone();
             tokio::spawn(async move {
                 let _permit = permit;
                 if let Err(e) = run_inbound_connection(
@@ -505,6 +539,7 @@ fn spawn_inbound_listener(
                     ingress,
                     inbound_tx,
                     &cfg,
+                    health.as_deref(),
                 )
                 .await
                 {
@@ -523,6 +558,7 @@ async fn run_inbound_connection(
     ingress_link_key: Option<[u8; 32]>,
     inbound_tx: mpsc::Sender<SphinxPacket>,
     bridge_config: &LinkBridgeConfig,
+    peer_health: Option<&PeerHealthTracker>,
 ) -> Result<(), NetError> {
     let mut rng = rand_core::OsRng;
     let session_key = run_responder_handshake(
@@ -533,6 +569,7 @@ async fn run_inbound_connection(
         &peer_table,
         &mut rng,
         bridge_config,
+        peer_health,
     )
     .await?;
 
@@ -944,6 +981,7 @@ mod tests {
                 &HashMap::new(),
                 &mut rng,
                 &cfg_server,
+                None,
             )
             .await
             .unwrap();
@@ -991,6 +1029,7 @@ mod tests {
                 &HashMap::new(),
                 &mut rng,
                 &cfg_server,
+                None,
             )
             .await
             .unwrap()
@@ -1026,6 +1065,7 @@ mod tests {
                 &HashMap::new(),
                 &mut rng,
                 &cfg_server,
+                None,
             )
             .await
         });
@@ -1065,6 +1105,7 @@ mod tests {
                 &HashMap::new(),
                 &mut rng,
                 &cfg_server,
+                None,
             )
             .await
         });
@@ -1109,6 +1150,7 @@ mod tests {
                 &HashMap::new(),
                 &mut rng,
                 &cfg_server,
+                None,
             )
             .await
             .unwrap();
@@ -1172,6 +1214,7 @@ mod tests {
                 &HashMap::new(),
                 &mut rng,
                 &cfg,
+                None,
             )
             .await
         });
@@ -1240,6 +1283,7 @@ mod tests {
                 Some(psk),
                 inbound_tx,
                 &server_cfg,
+                None,
             )
             .await
         });
@@ -1296,6 +1340,7 @@ mod tests {
                 &HashMap::new(),
                 &mut rng,
                 &cfg_server,
+                None,
             )
             .await
             .unwrap()
@@ -1337,6 +1382,7 @@ mod tests {
                 &HashMap::new(),
                 &mut rng,
                 &cfg_server,
+                None,
             )
             .await
         });
@@ -1382,6 +1428,7 @@ mod tests {
                 &HashMap::new(),
                 &mut rng,
                 &cfg_server,
+                None,
             )
             .await
             .unwrap()
@@ -1394,6 +1441,92 @@ mod tests {
             .unwrap();
         let key_r = server.await.unwrap();
         assert_eq!(key_i, key_r);
+    }
+
+    #[tokio::test]
+    async fn inbound_peer_table_handshake_records_peer_health() {
+        let psk = test_psk(0x55);
+        let peer_id = test_relay_id(0x55);
+        let local_id = test_relay_id(0xAA);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = LinkBridgeConfig::default();
+        let cfg_server = cfg.clone();
+        let peer_table = HashMap::from([(peer_id, PeerInfo::new(addr, psk))]);
+        let health = Arc::new(PeerHealthTracker::new());
+        let health_server = Arc::clone(&health);
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            run_responder_handshake(
+                &mut stream,
+                local_id,
+                None,
+                None,
+                &peer_table,
+                &mut rng,
+                &cfg_server,
+                Some(health_server.as_ref()),
+            )
+            .await
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let mut rng = OsRng;
+        run_initiator_handshake(&mut client, &psk, local_id, None, &mut rng, &cfg)
+            .await
+            .unwrap();
+        server.await.unwrap().unwrap();
+
+        assert_eq!(
+            health.failure_rate(*peer_id.as_bytes()),
+            Some(0.0),
+            "inbound peer-table handshake should record success for matched peer"
+        );
+    }
+
+    #[tokio::test]
+    async fn unidentified_inbound_handshake_does_not_record_peer_health() {
+        let psk = test_psk(0x66);
+        let peer_id = test_relay_id(0x66);
+        let local_id = test_relay_id(0xBB);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = LinkBridgeConfig::default();
+        let cfg_server = cfg.clone();
+        let peer_table = HashMap::from([(peer_id, PeerInfo::new(addr, test_psk(0x99)))]);
+
+        let health = Arc::new(PeerHealthTracker::new());
+        let health_server = Arc::clone(&health);
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            run_responder_handshake(
+                &mut stream,
+                local_id,
+                None,
+                None,
+                &peer_table,
+                &mut rng,
+                &cfg_server,
+                Some(health_server.as_ref()),
+            )
+            .await
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let mut rng = OsRng;
+        let _ = run_initiator_handshake(&mut client, &psk, local_id, None, &mut rng, &cfg).await;
+        assert!(matches!(
+            server.await.unwrap(),
+            Err(NetError::UnidentifiedInbound)
+        ));
+        assert!(
+            health.failure_rate(*peer_id.as_bytes()).is_none(),
+            "unidentified inbound must not attribute failure to roster peers"
+        );
     }
 
     #[tokio::test]

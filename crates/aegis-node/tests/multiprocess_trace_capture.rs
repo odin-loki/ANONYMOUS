@@ -117,8 +117,16 @@ fn write_configs(ports: &[u16]) -> PathBuf {
             String::new()
         };
 
+        let exit_section = if i == PATH_LEN - 1 {
+            let exit_log = dir.join("exit_peels.log");
+            let exit_path = exit_log.to_string_lossy().replace('\\', "/");
+            format!("\n[exit]\ndeliver_to = \"file:{exit_path}\"\n")
+        } else {
+            String::new()
+        };
+
         let toml = format!(
-            "relay_id = \"{}\"\nlisten = \"127.0.0.1:{}\"\nmu = 80.0\n\n[kem]\nx25519_seed = \"{}\"\nmlkem_d = \"{}\"\nmlkem_z = \"{}\"\n{ingress}{peers}",
+            "relay_id = \"{}\"\nlisten = \"127.0.0.1:{}\"\nmu = 80.0\n\n[kem]\nx25519_seed = \"{}\"\nmlkem_d = \"{}\"\nmlkem_z = \"{}\"\n{ingress}{exit_section}{peers}",
             ids[i],
             ports[i],
             hex32(0x10 + i as u8, 0x20 + i as u8),

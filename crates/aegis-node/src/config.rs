@@ -1,4 +1,13 @@
 //! TOML node configuration: identity, KEM secret, listen address, peers.
+//!
+//! ## KEM seed storage (threat model: `docs/AEGIS_implementation_threat_model.md` §7)
+//!
+//! Production default: first-run generation writes hex seeds to a **separate file**
+//! (default `kem.seeds` beside the node config) with mode `0600` on Unix; the TOML
+//! holds only `[kem] file = "..."`. Inline seeds in the main config require explicit
+//! `[kem] allow_plaintext_kem = true` (lab/test). There is no disk encryption or
+//! OS keychain integration yet — file permissions and separation reduce casual
+//! disclosure only.
 
 use std::collections::HashMap;
 use std::fs;
@@ -12,6 +21,7 @@ use aegis_relay::{
     DEFAULT_COVER_TARGET_FLOW_COUNT,
 };
 use aegis_topology::{RelayRoster, RosterError, ThresholdConsortium};
+use aegis_trust::{RelayPruningPolicy, ReputationError, ReputationLedger};
 use rand_core::{CryptoRngCore, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -26,11 +36,16 @@ pub enum ConfigError {
     Serialize(#[from] toml::ser::Error),
     #[error("hex: {0}")]
     Hex(&'static str),
-    #[error("missing kem seeds — generate with `aegis-node --config <path>` after first run persists them")]
+    #[error("missing kem seeds — run `aegis-node --config <path>` once to generate them, or set [kem] file / inline seeds")]
     MissingKem,
+    #[error("incomplete [kem] inline seeds — need x25519_seed, mlkem_d, and mlkem_z together")]
+    IncompleteKem,
     #[error("roster: {0}")]
     Roster(#[from] RosterError),
 }
+
+/// Default KEM seed filename when `[kem] file` is omitted (beside the node config).
+pub const DEFAULT_KEM_SEED_FILENAME: &str = "kem.seeds";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeConfigFile {
@@ -39,7 +54,7 @@ pub struct NodeConfigFile {
     #[serde(default = "default_mu")]
     pub mu: f64,
     #[serde(default)]
-    pub kem: Option<KemSeeds>,
+    pub kem: Option<KemFileConfig>,
     /// Optional local roster KEM commitment (64 hex chars) bound into inbound handshake MACs.
     #[serde(default)]
     pub kem_commitment: Option<String>,
@@ -61,6 +76,63 @@ pub struct NodeConfigFile {
     /// Bulk cover-flow policy (spec §5.2 L2). Defaults to production fail-closed.
     #[serde(default)]
     pub cover: CoverFileConfig,
+    /// Optional local reputation ledger persistence (spec §4.8).
+    #[serde(default)]
+    pub reputation: ReputationConfig,
+}
+
+/// TOML `[reputation]` — EWMA ledger persistence for this relay process.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReputationConfig {
+    /// JSON ledger file; loaded on startup when present, saved on drain/shutdown.
+    #[serde(default)]
+    pub ledger_path: Option<String>,
+}
+
+const DEFAULT_REPUTATION_DECAY: f64 = 0.9;
+const DEFAULT_ANOMALY_ALPHA: f64 = 0.2;
+const DEFAULT_ANOMALY_Z: f64 = 3.0;
+
+impl ReputationConfig {
+    /// Build the relay pruning policy, optionally hydrating the ledger from disk.
+    pub fn load_pruning_policy(&self) -> Result<RelayPruningPolicy, ReputationError> {
+        if let Some(ref path_str) = self.ledger_path {
+            let path = PathBuf::from(path_str);
+            if path.exists() {
+                match ReputationLedger::load_from_file(&path, DEFAULT_REPUTATION_DECAY) {
+                    Ok(ledger) => {
+                        eprintln!("loaded reputation ledger from {}", path.display());
+                        return Ok(RelayPruningPolicy::with_ledger(
+                            ledger,
+                            DEFAULT_ANOMALY_ALPHA,
+                            DEFAULT_ANOMALY_Z,
+                        ));
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "warning: reputation ledger load failed ({e}); starting fresh"
+                        );
+                    }
+                }
+            }
+        }
+        RelayPruningPolicy::new(
+            DEFAULT_REPUTATION_DECAY,
+            DEFAULT_ANOMALY_ALPHA,
+            DEFAULT_ANOMALY_Z,
+        )
+    }
+
+    /// Persist the shared ledger when `ledger_path` is configured.
+    pub fn save_ledger(&self, policy: &RelayPruningPolicy) {
+        let Some(ref path_str) = self.ledger_path else {
+            return;
+        };
+        let path = PathBuf::from(path_str);
+        if let Err(e) = policy.ledger().save_to_file(&path) {
+            eprintln!("warning: reputation ledger save failed ({e})");
+        }
+    }
 }
 
 /// TOML `[cover]` — bulk cover round auto-start / fail-closed policy.
@@ -180,11 +252,139 @@ fn default_mu() -> f64 {
     aegis_relay::DEFAULT_MU
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// On-disk KEM seed material (external file or inline in node TOML).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KemSeeds {
     pub x25519_seed: String,
     pub mlkem_d: String,
     pub mlkem_z: String,
+}
+
+/// `[kem]` — seed location policy and optional inline material.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KemFileConfig {
+    /// External seed file path (relative to the config directory, or absolute).
+    /// Default on first run: [`DEFAULT_KEM_SEED_FILENAME`] beside the node config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Lab/test only: persist generated seeds inline in the node TOML on first run.
+    /// Production default is `false` (separate file + restrictive permissions).
+    #[serde(default)]
+    pub allow_plaintext_kem: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x25519_seed: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mlkem_d: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mlkem_z: Option<String>,
+}
+
+impl KemFileConfig {
+    fn has_any_inline(&self) -> bool {
+        self.x25519_seed.is_some() || self.mlkem_d.is_some() || self.mlkem_z.is_some()
+    }
+
+    fn has_complete_inline(&self) -> bool {
+        self.x25519_seed.is_some() && self.mlkem_d.is_some() && self.mlkem_z.is_some()
+    }
+
+    fn inline_seeds(&self) -> Option<KemSeeds> {
+        if self.has_complete_inline() {
+            Some(KemSeeds {
+                x25519_seed: self.x25519_seed.clone().unwrap(),
+                mlkem_d: self.mlkem_d.clone().unwrap(),
+                mlkem_z: self.mlkem_z.clone().unwrap(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+/// Resolve the path to the external KEM seed file for a node config.
+pub fn kem_seed_file_path(config_path: &Path, kem: &KemFileConfig) -> PathBuf {
+    kem_seed_file_path_from_option(config_path, kem.file.as_deref())
+}
+
+fn kem_seed_file_path_from_option(config_path: &Path, file: Option<&str>) -> PathBuf {
+    if let Some(f) = file {
+        let p = PathBuf::from(f);
+        if p.is_absolute() {
+            return p;
+        }
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(p)
+    } else {
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(DEFAULT_KEM_SEED_FILENAME)
+    }
+}
+
+/// Load KEM seeds from inline `[kem]` fields or the configured external file.
+pub fn resolve_kem_seeds(config_path: &Path, kem: &KemFileConfig) -> Result<KemSeeds, ConfigError> {
+    if kem.has_any_inline() {
+        if let Some(seeds) = kem.inline_seeds() {
+            return Ok(seeds);
+        }
+        return Err(ConfigError::IncompleteKem);
+    }
+    let seed_path = kem_seed_file_path(config_path, kem);
+    if !seed_path.is_file() {
+        return Err(ConfigError::MissingKem);
+    }
+    let text = fs::read_to_string(&seed_path)?;
+    Ok(toml::from_str(&text)?)
+}
+
+fn generate_kem_seeds(rng: &mut (impl RngCore + CryptoRngCore)) -> KemSeeds {
+    let mut x25519_seed = [0u8; 32];
+    let mut mlkem_d = [0u8; 32];
+    let mut mlkem_z = [0u8; 32];
+    rng.fill_bytes(&mut x25519_seed);
+    rng.fill_bytes(&mut mlkem_d);
+    rng.fill_bytes(&mut mlkem_z);
+    KemSeeds {
+        x25519_seed: hex_encode(&x25519_seed),
+        mlkem_d: hex_encode(&mlkem_d),
+        mlkem_z: hex_encode(&mlkem_z),
+    }
+}
+
+/// Write KEM seeds to `path` with mode `0600` on Unix (best-effort on Windows).
+pub fn persist_kem_seeds_file(path: &Path, seeds: &KemSeeds) -> Result<(), ConfigError> {
+    let text = toml::to_string(seeds)?;
+    write_restricted_file(path, text.as_bytes())
+}
+
+fn write_restricted_file(path: &Path, contents: &[u8]) -> Result<(), ConfigError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        return Ok(());
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents)?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -265,6 +465,7 @@ pub struct NodeRuntimeConfig {
     pub trace: TraceConfig,
     /// Verified (or explicitly lab-unverified) roster when `[roster]` is configured.
     pub roster: Option<RelayRoster>,
+    pub reputation: ReputationConfig,
 }
 
 impl NodeConfigFile {
@@ -274,38 +475,62 @@ impl NodeConfigFile {
     }
 
     /// Load or create KEM seeds on disk when absent.
+    ///
+    /// Default (production): writes seeds to a separate file beside the config and
+    /// stores only `[kem] file = "..."` in the TOML. Set `[kem] allow_plaintext_kem = true`
+    /// to persist inline hex seeds in the main config (lab/test).
     pub fn load_or_init_kem(
         path: &Path,
         file: &mut Self,
         rng: &mut (impl RngCore + CryptoRngCore),
     ) -> Result<(), ConfigError> {
-        if file.kem.is_some() {
+        if file.kem.is_none() {
+            file.kem = Some(KemFileConfig::default());
+        }
+        let kem_cfg = file.kem.as_mut().expect("kem section just initialized");
+        if resolve_kem_seeds(path, kem_cfg).is_ok() {
             return Ok(());
         }
-        let mut x25519_seed = [0u8; 32];
-        let mut mlkem_d = [0u8; 32];
-        let mut mlkem_z = [0u8; 32];
-        rng.fill_bytes(&mut x25519_seed);
-        rng.fill_bytes(&mut mlkem_d);
-        rng.fill_bytes(&mut mlkem_z);
-        file.kem = Some(KemSeeds {
-            x25519_seed: hex_encode(&x25519_seed),
-            mlkem_d: hex_encode(&mlkem_d),
-            mlkem_z: hex_encode(&mlkem_z),
-        });
-        let text = toml::to_string_pretty(file)?;
-        fs::write(path, text)?;
-        eprintln!("generated and persisted KEM seeds to {}", path.display());
+
+        let seeds = generate_kem_seeds(rng);
+        if kem_cfg.allow_plaintext_kem {
+            kem_cfg.x25519_seed = Some(seeds.x25519_seed.clone());
+            kem_cfg.mlkem_d = Some(seeds.mlkem_d.clone());
+            kem_cfg.mlkem_z = Some(seeds.mlkem_z.clone());
+            let text = toml::to_string_pretty(file)?;
+            fs::write(path, text)?;
+            eprintln!(
+                "generated and persisted KEM seeds inline in {} (allow_plaintext_kem=true)",
+                path.display()
+            );
+        } else {
+            let seed_path = kem_seed_file_path(path, kem_cfg);
+            persist_kem_seeds_file(&seed_path, &seeds)?;
+            if kem_cfg.file.is_none() {
+                kem_cfg.file = Some(DEFAULT_KEM_SEED_FILENAME.to_string());
+            }
+            kem_cfg.x25519_seed = None;
+            kem_cfg.mlkem_d = None;
+            kem_cfg.mlkem_z = None;
+            let text = toml::to_string_pretty(file)?;
+            fs::write(path, text)?;
+            eprintln!(
+                "generated and persisted KEM seeds to {} (referenced from {})",
+                seed_path.display(),
+                path.display()
+            );
+        }
         Ok(())
     }
 
-    pub fn into_runtime(self) -> Result<NodeRuntimeConfig, ConfigError> {
+    pub fn into_runtime(self, config_path: &Path) -> Result<NodeRuntimeConfig, ConfigError> {
         let relay_id = RelayId(parse_hex32(&self.relay_id)?);
         let listen: SocketAddr = self
             .listen
             .parse()
             .map_err(|_| ConfigError::Hex("listen address"))?;
-        let kem = self.kem.ok_or(ConfigError::MissingKem)?;
+        let kem_cfg = self.kem.as_ref().ok_or(ConfigError::MissingKem)?;
+        let kem = resolve_kem_seeds(config_path, kem_cfg)?;
         let kem_secret = {
             let x = parse_hex32(&kem.x25519_seed)?;
             let d = parse_hex32(&kem.mlkem_d)?;
@@ -356,6 +581,7 @@ impl NodeConfigFile {
             exit: self.exit,
             trace: self.trace,
             roster,
+            reputation: self.reputation,
         })
     }
 }
@@ -430,6 +656,48 @@ mod tests {
     }
 
     #[test]
+    fn reputation_config_parses_ledger_path() {
+        let toml = r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[reputation]
+ledger_path = "data/reputation.json"
+"#;
+        let file: NodeConfigFile = toml::from_str(toml).unwrap();
+        assert_eq!(
+            file.reputation.ledger_path.as_deref(),
+            Some("data/reputation.json")
+        );
+    }
+
+    #[test]
+    fn reputation_config_load_and_save_roundtrip() {
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-node-rep-ledger-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("ledger.json");
+
+        let cfg = ReputationConfig {
+            ledger_path: Some(path.to_string_lossy().into()),
+        };
+        let mut policy = cfg.load_pruning_policy().unwrap();
+        policy.ledger_mut().admit_new_relay([7u8; 32]);
+        for _ in 0..20 {
+            policy.ledger_mut().record_success([7u8; 32]);
+        }
+        cfg.save_ledger(&policy);
+
+        let reloaded = cfg.load_pruning_policy().unwrap();
+        assert!(reloaded.ledger().score([7u8; 32]).0 > 0.3);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
     fn roster_config_requires_keys_or_lab_flag() {
         let dir = std::env::temp_dir().join(format!(
             "aegis-node-roster-{}",
@@ -496,6 +764,190 @@ mod tests {
         assert_eq!(loaded.len(), 1);
 
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    fn test_config_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("aegis-node-kem-{tag}-{}", std::process::id()))
+    }
+
+    fn minimal_node_toml(kem_section: &str) -> String {
+        format!(
+            r#"relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+{kem_section}"#
+        )
+    }
+
+    fn fixed_seeds() -> KemSeeds {
+        KemSeeds {
+            x25519_seed: hex_encode(&[0x11; 32]),
+            mlkem_d: hex_encode(&[0x22; 32]),
+            mlkem_z: hex_encode(&[0x33; 32]),
+        }
+    }
+
+    #[test]
+    fn kem_first_run_writes_external_file_by_default() {
+        let dir = test_config_dir("external-default");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("node.toml");
+        std::fs::write(&config_path, minimal_node_toml("")).unwrap();
+
+        let mut file = NodeConfigFile::load(&config_path).unwrap();
+        NodeConfigFile::load_or_init_kem(&config_path, &mut file, &mut OsRng).unwrap();
+
+        let seed_path = dir.join(DEFAULT_KEM_SEED_FILENAME);
+        assert!(seed_path.is_file(), "expected external kem.seeds");
+        let reloaded = NodeConfigFile::load(&config_path).unwrap();
+        let kem = reloaded.kem.as_ref().unwrap();
+        assert_eq!(kem.file.as_deref(), Some(DEFAULT_KEM_SEED_FILENAME));
+        assert!(!kem.allow_plaintext_kem);
+        assert!(kem.x25519_seed.is_none());
+        assert!(kem.mlkem_d.is_none());
+        assert!(kem.mlkem_z.is_none());
+        assert!(resolve_kem_seeds(&config_path, kem).is_ok());
+        reloaded.into_runtime(&config_path).unwrap();
+
+        let _ = std::fs::remove_file(&seed_path);
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn kem_inline_when_allow_plaintext_kem() {
+        let dir = test_config_dir("inline-opt-in");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("node.toml");
+        std::fs::write(
+            &config_path,
+            minimal_node_toml("[kem]\nallow_plaintext_kem = true\n"),
+        )
+        .unwrap();
+
+        let mut file = NodeConfigFile::load(&config_path).unwrap();
+        NodeConfigFile::load_or_init_kem(&config_path, &mut file, &mut OsRng).unwrap();
+
+        let reloaded = NodeConfigFile::load(&config_path).unwrap();
+        let kem = reloaded.kem.as_ref().unwrap();
+        assert!(kem.allow_plaintext_kem);
+        assert!(kem.has_complete_inline());
+        assert!(!dir.join(DEFAULT_KEM_SEED_FILENAME).exists());
+        reloaded.into_runtime(&config_path).unwrap();
+
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn kem_load_from_external_file_with_custom_path() {
+        let dir = test_config_dir("custom-file");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("node.toml");
+        let seed_path = dir.join("secrets").join("relay.kem");
+        persist_kem_seeds_file(&seed_path, &fixed_seeds()).unwrap();
+
+        std::fs::write(
+            &config_path,
+            minimal_node_toml(r#"[kem]
+file = "secrets/relay.kem"
+"#),
+        )
+        .unwrap();
+
+        let file = NodeConfigFile::load(&config_path).unwrap();
+        let kem = file.kem.as_ref().unwrap();
+        let loaded = resolve_kem_seeds(&config_path, kem).unwrap();
+        assert_eq!(loaded, fixed_seeds());
+        file.into_runtime(&config_path).unwrap();
+
+        let _ = std::fs::remove_file(&seed_path);
+        let _ = std::fs::remove_dir(dir.join("secrets"));
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn kem_legacy_inline_still_loads() {
+        let dir = test_config_dir("legacy-inline");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("node.toml");
+        let seeds = fixed_seeds();
+        std::fs::write(
+            &config_path,
+            minimal_node_toml(&format!(
+                r#"[kem]
+x25519_seed = "{}"
+mlkem_d = "{}"
+mlkem_z = "{}"
+"#,
+                seeds.x25519_seed, seeds.mlkem_d, seeds.mlkem_z
+            )),
+        )
+        .unwrap();
+
+        let file = NodeConfigFile::load(&config_path).unwrap();
+        let kem = file.kem.as_ref().unwrap();
+        assert_eq!(resolve_kem_seeds(&config_path, kem).unwrap(), seeds);
+        file.into_runtime(&config_path).unwrap();
+
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn kem_incomplete_inline_is_rejected() {
+        let kem = KemFileConfig {
+            x25519_seed: Some(hex_encode(&[1; 32])),
+            mlkem_d: None,
+            mlkem_z: None,
+            ..KemFileConfig::default()
+        };
+        let err = resolve_kem_seeds(Path::new("/tmp/unused.toml"), &kem).unwrap_err();
+        assert!(matches!(err, ConfigError::IncompleteKem));
+    }
+
+    #[test]
+    fn kem_load_or_init_is_idempotent() {
+        let dir = test_config_dir("idempotent");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("node.toml");
+        std::fs::write(&config_path, minimal_node_toml("")).unwrap();
+
+        let mut file = NodeConfigFile::load(&config_path).unwrap();
+        NodeConfigFile::load_or_init_kem(&config_path, &mut file, &mut OsRng).unwrap();
+        let first = resolve_kem_seeds(
+            &config_path,
+            file.kem.as_ref().unwrap(),
+        )
+        .unwrap();
+
+        NodeConfigFile::load_or_init_kem(&config_path, &mut file, &mut OsRng).unwrap();
+        let second = resolve_kem_seeds(
+            &config_path,
+            file.kem.as_ref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first, second);
+
+        let _ = std::fs::remove_file(dir.join(DEFAULT_KEM_SEED_FILENAME));
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kem_external_file_has_restrictive_mode_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = test_config_dir("unix-mode");
+        let _ = std::fs::create_dir_all(&dir);
+        let seed_path = dir.join("kem.seeds");
+        persist_kem_seeds_file(&seed_path, &fixed_seeds()).unwrap();
+        let mode = std::fs::metadata(&seed_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let _ = std::fs::remove_file(&seed_path);
         let _ = std::fs::remove_dir(&dir);
     }
 }

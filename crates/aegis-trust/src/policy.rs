@@ -33,12 +33,21 @@ impl RelayPruningPolicy {
     /// `decay` is the ledger EWMA decay; `alpha` / `z_threshold` configure each
     /// per-relay [`AnomalyDetector`].
     pub fn new(decay: f64, alpha: f64, z_threshold: f64) -> Result<Self, ReputationError> {
-        Ok(Self {
-            ledger: ReputationLedger::new(decay)?,
+        Ok(Self::with_ledger(
+            ReputationLedger::new(decay)?,
+            alpha,
+            z_threshold,
+        ))
+    }
+
+    /// Attach an existing ledger (e.g. loaded from disk on node startup).
+    pub fn with_ledger(ledger: ReputationLedger, alpha: f64, z_threshold: f64) -> Self {
+        Self {
+            ledger,
             detectors: HashMap::new(),
             alpha,
             z_threshold,
-        })
+        }
     }
 
     /// Shared ledger (read-only) for topology reputation-weighted selection.
@@ -100,6 +109,29 @@ pub fn feed_peer_metric(
     fail_rate: f64,
 ) -> AnomalyVerdict {
     policy.observe_metric(peer, fail_rate)
+}
+
+/// Feed a peer health window into anomaly pruning and the shared EWMA ledger.
+///
+/// Applies one aggregate ledger update from the window's success/failure counts
+/// (peers with enough samples only — callers should enforce `min_samples`).
+pub fn feed_peer_outcomes(
+    policy: &mut RelayPruningPolicy,
+    peer: [u8; 32],
+    successes: u64,
+    failures: u64,
+) -> AnomalyVerdict {
+    let total = successes.saturating_add(failures);
+    let fail_rate = if total == 0 {
+        0.0
+    } else {
+        failures as f64 / total as f64
+    };
+    let verdict = policy.observe_metric(peer, fail_rate);
+    policy
+        .ledger_mut()
+        .record_aggregate(peer, successes, failures);
+    verdict
 }
 
 #[cfg(test)]
@@ -181,5 +213,17 @@ mod tests {
         let verdict = feed_peer_metric(&mut policy, relay(3), 0.95);
         assert!(verdict.is_anomalous);
         assert!(!policy.is_eligible(relay(3), DEFAULT_PATH_REPUTATION_FLOOR));
+    }
+
+    #[test]
+    fn feed_peer_outcomes_updates_ledger_without_anomaly() {
+        let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+        policy.ledger_mut().admit_new_relay(relay(4));
+        let before = policy.ledger().score(relay(4)).0;
+        for _ in 0..50 {
+            feed_peer_outcomes(&mut policy, relay(4), 99, 1);
+        }
+        assert!(policy.ledger().score(relay(4)).0 > before);
+        assert!(policy.is_eligible(relay(4), DEFAULT_PATH_REPUTATION_FLOOR));
     }
 }

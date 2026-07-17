@@ -1,15 +1,16 @@
-//! Per-peer outbound link health sampling for [`aegis_trust::RelayPruningPolicy`].
+//! Per-peer link health sampling for [`aegis_trust::RelayPruningPolicy`].
 //!
 //! In a permissioned mixnet without cross-relay health gossip, each relay
-//! observes send/handshake outcomes on its hop links and feeds scalar failure
-//! rates into anomaly-driven pruning via [`Self::drain_into_policy`].
+//! observes inbound/outbound handshake and send outcomes on its hop links and
+//! feeds scalar failure rates into anomaly-driven pruning via
+//! [`Self::drain_into_policy`].
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use aegis_trust::{feed_peer_metric, RelayPruningPolicy};
+use aegis_trust::{feed_peer_outcomes, RelayPruningPolicy};
 
-/// Sliding window of outbound send/handshake outcomes keyed by peer relay id.
+/// Sliding window of inbound/outbound handshake and send outcomes keyed by peer relay id.
 ///
 /// Thread-safe: recording uses a short-lived mutex; safe to share as `Arc` across
 /// link-bridge tasks and a periodic drain loop in `aegis-node`.
@@ -68,12 +69,13 @@ impl PeerHealthTracker {
         let mut guard = self.inner.lock().expect("peer health lock");
         let mut fed = 0usize;
         for (peer, (ok, fail)) in guard.iter_mut() {
-            let total = ok.saturating_add(*fail);
+            let successes = *ok;
+            let failures = *fail;
+            let total = successes.saturating_add(failures);
             if total < min_samples {
                 continue;
             }
-            let rate = *fail as f64 / total as f64;
-            feed_peer_metric(policy, *peer, rate);
+            feed_peer_outcomes(policy, *peer, successes, failures);
             *ok = 0;
             *fail = 0;
             fed += 1;
@@ -123,6 +125,27 @@ mod tests {
             0
         );
         assert!(tracker.failure_rate(peer(2)).is_some());
+    }
+
+    #[test]
+    fn drain_updates_ledger_on_stable_window() {
+        let tracker = PeerHealthTracker::new();
+        let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+        policy.ledger_mut().admit_new_relay(peer(5));
+        let before = policy.ledger().score(peer(5)).0;
+
+        for _ in 0..20 {
+            for _ in 0..99 {
+                tracker.record_success(peer(5));
+            }
+            tracker.record_failure(peer(5));
+            tracker.drain_into_policy(&mut policy, 10);
+        }
+
+        assert!(
+            policy.ledger().score(peer(5)).0 > before,
+            "stable low failure windows should raise EWMA score"
+        );
     }
 
     #[test]

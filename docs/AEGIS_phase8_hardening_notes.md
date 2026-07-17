@@ -142,8 +142,9 @@ Tests: `tcp_testnet_exit_sink_file_receives_payload` in
 `crates/aegis-node/tests/tcp_testnet.rs`.
 
 **Residual:** `aegis-node` passes `exit_tx: None` when `[exit]` is unset (correct for
-mix relays). Multi-process capture configs do not yet enable exit sink on the last
-hop — peels are still dropped silently there unless TOML is extended.
+mix relays). Multi-process capture enables a file sink on the last hop only
+(`sim/data/testnet_configs/exit_peels.log` via `[exit].deliver_to` in
+`capture_multiprocess_trace.py` / `multiprocess_trace_capture.rs`).
 
 ### Post-forward timestamp trace (relay vantage, off by default)
 Optional instrumentation records **post-shaping** wire events: immediately after a
