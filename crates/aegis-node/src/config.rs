@@ -639,6 +639,9 @@ pub struct HealthGossipConfig {
     /// for legacy immediate apply. Lightweight majority — not BFT.
     #[serde(default = "default_gossip_majority_k")]
     pub majority_k: usize,
+    /// Optional path for the BFT-lite quorum append log (see `docs/ops/health_gossip.md`).
+    #[serde(default)]
+    pub quorum_log_path: Option<String>,
 }
 
 fn default_gossip_interval_secs() -> u64 {
@@ -657,6 +660,7 @@ impl Default for HealthGossipConfig {
             signing_key_file: None,
             interval_secs: default_gossip_interval_secs(),
             majority_k: default_gossip_majority_k(),
+            quorum_log_path: None,
         }
     }
 }

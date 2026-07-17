@@ -202,7 +202,7 @@ impl Default for PeerHealthTracker {
 }
 
 /// Median failure rate → synthetic (successes, failures) using mean sample total.
-fn median_outcome_counts(obs: &[(u64, u64)]) -> Option<(u64, u64)> {
+pub(crate) fn median_outcome_counts(obs: &[(u64, u64)]) -> Option<(u64, u64)> {
     let mut rates = Vec::new();
     let mut totals = Vec::new();
     for &(ok, fail) in obs {

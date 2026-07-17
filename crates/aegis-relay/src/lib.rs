@@ -46,6 +46,7 @@ pub mod config;
 pub mod cover_flow;
 pub mod delay;
 pub mod health_gossip;
+pub mod health_quorum_log;
 pub mod net;
 pub mod node;
 pub mod peer_health;
@@ -62,9 +63,13 @@ pub use cover_flow::{
 };
 pub use delay::sample_mixing_delay;
 pub use health_gossip::{
-    accept_advert, unix_timestamp_secs, GossipAcceptOutcome, HealthGossipError, PeerHealthAdvert,
-    ADVERT_BODY_LEN, ADVERT_SIG_LEN, ADVERT_WIRE_LEN, DEFAULT_MAX_ADVERT_AGE_SECS,
-    GOSSIP_MAJORITY_K,
+    accept_advert, accept_advert_quorum, unix_timestamp_secs, GossipAcceptOutcome,
+    HealthGossipError, PeerHealthAdvert, ADVERT_BODY_LEN, ADVERT_SIG_LEN, ADVERT_WIRE_LEN,
+    DEFAULT_MAX_ADVERT_AGE_SECS, GOSSIP_MAJORITY_K,
+};
+pub use health_quorum_log::{
+    advert_epoch, HealthQuorumLog, HealthQuorumLogEntry, QuorumAppendOutcome, QuorumLogError,
+    QUORUM_LOG_RECORD_LEN,
 };
 pub use net::{
     send_link_cell, send_sphinx_packet, write_packet, GossipOutbound, IngressRateLimitConfig,

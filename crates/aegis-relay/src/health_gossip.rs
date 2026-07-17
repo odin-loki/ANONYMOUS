@@ -19,6 +19,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use thiserror::Error;
 
 use crate::peer_health::{GossipMergeOutcome, PeerHealthTracker};
+use crate::health_quorum_log::{advert_epoch, HealthQuorumLog, QuorumAppendOutcome, QuorumLogError};
 use crate::relay_id::RelayId;
 
 /// Canonical signed body length (no command byte, no signature).
@@ -53,6 +54,8 @@ pub enum HealthGossipError {
     StaleTimestamp,
     #[error("missing gossip verifying key for reporter")]
     MissingVerifyingKey,
+    #[error("equivocation: conflicting advert for same epoch and reporter")]
+    Equivocation,
 }
 
 /// Signed report: reporter observed `successes`/`failures` toward `subject`.
@@ -205,6 +208,70 @@ pub fn accept_advert(
         advert.successes,
         advert.failures,
     ))
+}
+
+/// Verify and append into a BFT-lite quorum log; median merge when authority quorum met.
+///
+/// Uses `epoch_secs` to bucket `advert.timestamp_secs` into gossip epochs. When
+/// `quorum_log` is `None`, falls back to [`accept_advert`].
+pub fn accept_advert_quorum(
+    advert: &PeerHealthAdvert,
+    link_peer: RelayId,
+    peer_table: &HashMap<RelayId, crate::net::PeerInfo>,
+    now_secs: u64,
+    max_age_secs: u64,
+    epoch_secs: u64,
+    tracker: &PeerHealthTracker,
+    quorum_log: Option<&mut HealthQuorumLog>,
+) -> Result<GossipMergeOutcome, HealthGossipError> {
+    if *link_peer.as_bytes() != advert.reporter {
+        return Err(HealthGossipError::ReporterMismatch);
+    }
+    let peer = peer_table
+        .get(&link_peer)
+        .ok_or(HealthGossipError::UnknownReporter)?;
+    let vk_bytes = peer
+        .gossip_verifying_key
+        .ok_or(HealthGossipError::MissingVerifyingKey)?;
+    let vk =
+        VerifyingKey::from_bytes(&vk_bytes).map_err(|_| HealthGossipError::MissingVerifyingKey)?;
+
+    let skew_ok = if now_secs >= advert.timestamp_secs {
+        now_secs - advert.timestamp_secs <= max_age_secs
+    } else {
+        advert.timestamp_secs - now_secs <= 120
+    };
+    if !skew_ok {
+        return Err(HealthGossipError::StaleTimestamp);
+    }
+
+    let Some(log) = quorum_log else {
+        advert.verify(&vk)?;
+        return Ok(tracker.ingest_gossip_observation(
+            advert.reporter,
+            advert.subject,
+            advert.successes,
+            advert.failures,
+        ));
+    };
+
+    let epoch = advert_epoch(advert.timestamp_secs, epoch_secs);
+    let outcome = log
+        .append_verified(epoch, advert, &vk, tracker)
+        .map_err(|e| match e {
+            QuorumLogError::BadSignature => HealthGossipError::BadSignature,
+            QuorumLogError::Equivocation => HealthGossipError::Equivocation,
+            QuorumLogError::NotAuthority => HealthGossipError::UnknownReporter,
+            QuorumLogError::Malformed | QuorumLogError::Io(_) => HealthGossipError::Malformed,
+        })?;
+    Ok(match outcome {
+        QuorumAppendOutcome::Buffered { have, need } => GossipMergeOutcome::Buffered { have, need },
+        QuorumAppendOutcome::Applied { reporters } => GossipMergeOutcome::Applied { reporters },
+        QuorumAppendOutcome::Duplicate => GossipMergeOutcome::Buffered {
+            have: log.majority_k(),
+            need: log.majority_k(),
+        },
+    })
 }
 
 #[cfg(test)]

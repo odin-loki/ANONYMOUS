@@ -84,8 +84,10 @@ use thiserror::Error;
 
 use crate::cover_flow::is_relay_cover_fragment;
 use crate::health_gossip::{
-    accept_advert, unix_timestamp_secs, PeerHealthAdvert, DEFAULT_MAX_ADVERT_AGE_SECS,
+    accept_advert, accept_advert_quorum, unix_timestamp_secs, PeerHealthAdvert,
+    DEFAULT_MAX_ADVERT_AGE_SECS,
 };
+use crate::health_quorum_log::HealthQuorumLog;
 use crate::node::{try_send_drop_newest, ForwardedPacket};
 use crate::peer_health::PeerHealthTracker;
 use crate::relay_id::RelayId;
@@ -638,6 +640,10 @@ pub struct LinkBridgeConfig {
     /// check frame shape. Residual: multi-hop Sphinx semantics still differ from
     /// real bulk (cover is discarded at the next hop).
     pub cover_cell_tau: Duration,
+    /// Optional BFT-lite quorum append log for inbound health gossip.
+    pub health_quorum_log: Option<Arc<std::sync::Mutex<HealthQuorumLog>>>,
+    /// Gossip epoch bucket size (seconds) for quorum log scoping.
+    pub gossip_epoch_secs: u64,
 }
 
 impl Default for LinkBridgeConfig {
@@ -653,6 +659,8 @@ impl Default for LinkBridgeConfig {
             ingress_rate_limit_stats: None,
             queue_drop_stats: None,
             cover_cell_tau: DEFAULT_COVER_CELL_TAU,
+            health_quorum_log: None,
+            gossip_epoch_secs: 60,
         }
     }
 }
@@ -1572,14 +1580,30 @@ async fn run_inbound_connection(
             Some(Command::PeerHealthAdvert) => {
                 if let (Some(tracker), Some(link_peer)) = (peer_health, matched_peer) {
                     if let Ok(advert) = PeerHealthAdvert::from_cell(&cell) {
-                        let _ = accept_advert(
-                            &advert,
-                            link_peer,
-                            &peer_table,
-                            unix_timestamp_secs(),
-                            DEFAULT_MAX_ADVERT_AGE_SECS,
-                            tracker,
-                        );
+                        let now = unix_timestamp_secs();
+                        if let Some(log) = &bridge_config.health_quorum_log {
+                            if let Ok(mut guard) = log.lock() {
+                                let _ = accept_advert_quorum(
+                                    &advert,
+                                    link_peer,
+                                    &peer_table,
+                                    now,
+                                    DEFAULT_MAX_ADVERT_AGE_SECS,
+                                    bridge_config.gossip_epoch_secs,
+                                    tracker,
+                                    Some(&mut *guard),
+                                );
+                            }
+                        } else {
+                            let _ = accept_advert(
+                                &advert,
+                                link_peer,
+                                &peer_table,
+                                now,
+                                DEFAULT_MAX_ADVERT_AGE_SECS,
+                                tracker,
+                            );
+                        }
                     }
                 }
                 continue;

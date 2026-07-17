@@ -6,11 +6,13 @@ use std::time::Duration;
 
 use aegis_node::{exit_sink, NodeConfigFile, ReputationConfig};
 use aegis_relay::{
-    spawn_link_bridge, start_bulk_cover, unix_timestamp_secs, GossipOutbound, PeerHealthAdvert,
-    PeerHealthTracker, RelayForwardTrace, RelayId, RelayNode, RELAY_CHANNEL_CAPACITY,
+    spawn_link_bridge, start_bulk_cover, unix_timestamp_secs, GossipOutbound, HealthQuorumLog,
+    PeerHealthAdvert, PeerHealthTracker, RelayForwardTrace, RelayId, RelayNode,
+    RELAY_CHANNEL_CAPACITY,
 };
 use clap::Parser;
 use rand_core::OsRng;
+use std::collections::HashSet;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
@@ -156,6 +158,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
 
+    let mut link_bridge_config = runtime.link_bridge_config;
+    if runtime.health_gossip.enabled {
+        let authority_set: HashSet<[u8; 32]> = runtime
+            .peer_table
+            .iter()
+            .filter(|(_, info)| info.gossip_verifying_key.is_some())
+            .map(|(id, _)| *id.as_bytes())
+            .collect();
+        let majority_k = runtime.health_gossip.majority_k.max(1);
+        let log = if let Some(ref path) = runtime.health_gossip.quorum_log_path {
+            HealthQuorumLog::load_or_create(path, majority_k, authority_set).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
+            })?
+        } else {
+            HealthQuorumLog::new(majority_k, authority_set)
+        };
+        link_bridge_config.health_quorum_log =
+            Some(Arc::new(std::sync::Mutex::new(log)));
+        link_bridge_config.gossip_epoch_secs = runtime.health_gossip.interval_secs.max(1);
+    }
+
     let (_listener_task, _dispatcher_task) = spawn_link_bridge(
         runtime.listen,
         relay_id,
@@ -169,7 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         exit_tx,
         forward_trace,
         OsRng,
-        runtime.link_bridge_config,
+        link_bridge_config,
         Some(peer_health),
     );
 

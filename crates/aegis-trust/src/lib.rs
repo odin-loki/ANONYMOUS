@@ -49,8 +49,10 @@ pub use reputation::{
 };
 pub use tee::{
     core_gates_hold_under, core_gates_hold_under_attested, phase7_gate_report_data,
-    AttestationError, AttestationProvider, AttestationQuote, SoftwareAttestationProvider,
-    TeeAssumption, PHASE7_GATE_REPORT_DOMAIN, SOFTWARE_PROVIDER_ID,
+    select_attestation_provider, AttestationError, AttestationMode, AttestationProvider,
+    AttestationQuote, HardwareQuoteFields, HardwareTeeProvider, SoftwareAttestationProvider,
+    TeeAssumption, TeeError, HARDWARE_PROVIDER_ID, PHASE7_GATE_REPORT_DOMAIN,
+    SOFTWARE_PROVIDER_ID,
 };
 pub use zk::{
     derive_reputation_nullifier, present_anonymous, scale_reputation, verify_anonymous,

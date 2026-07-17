@@ -1,0 +1,18 @@
+[package]
+name = "aegis-crypto-dudect-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C ABI probes for external dudect harnesses (Linux lab only; not in default workspace test path)"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[lints.rust]
+unsafe_code = "allow"
+
+[dependencies]
+aegis-crypto = { path = "../aegis-crypto", default-features = false }
+rand_chacha = "0.3"
+rand_core = { workspace = true }

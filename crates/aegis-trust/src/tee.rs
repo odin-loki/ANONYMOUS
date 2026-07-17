@@ -10,7 +10,10 @@
 //! [`AttestationProvider`] is the plug-in boundary for hardware quotes (Intel
 //! DCAP/SGX, AMD SEV-SNP, etc.). [`SoftwareAttestationProvider`] signs
 //! `report_data` with Ed25519 for lab/tests only — it proves possession of a
-//! configured root key, **not** enclave integrity. See `docs/ops/tee_attestation.md`.
+//! configured root key, **not** enclave integrity. [`HardwareTeeProvider`] is
+//! the fail-closed hardware stub (returns [`TeeError::HardwareUnavailable`] on
+//! hosts without a TEE SDK). Use [`select_attestation_provider`] to pick a mode.
+//! See `docs/ops/tee_attestation.md`.
 //!
 //! ## Gate APIs
 //!
@@ -33,6 +36,9 @@ const SOFTWARE_QUOTE_DOMAIN: &[u8] = b"AEGIS-TEE-SOFTWARE-QUOTE-v1";
 /// Provider id embedded in [`AttestationQuote`] for wire/debug identification.
 pub const SOFTWARE_PROVIDER_ID: &str = "software-v1";
 
+/// Provider id for hardware-backed quotes (Intel DCAP / AMD SEV-SNP).
+pub const HARDWARE_PROVIDER_ID: &str = "hardware-tee-v1";
+
 /// Canonical `report_data` for the Phase-7 gate checkpoint (lab / software path).
 pub const PHASE7_GATE_REPORT_DOMAIN: &[u8] = b"AEGIS-PHASE7-GATE-v1";
 
@@ -45,22 +51,62 @@ pub enum TeeAssumption {
     BrokenEnclave,
 }
 
+/// Required fields for a hardware attestation quote (Intel SGX / AMD SEV-SNP).
+///
+/// Implementors must bind caller `report_data` into the platform report and
+/// include measurement identity in the quote collateral. This struct documents
+/// the contract; [`HardwareTeeProvider`] does not populate it until a real SDK
+/// is wired.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HardwareQuoteFields {
+    /// Intel SGX: `MRENCLAVE` (32 B SHA-256 of enclave build).
+    /// AMD SEV-SNP: guest firmware `measurement` / launch digest.
+    pub enclave_measurement: [u8; 32],
+    /// Intel SGX: `MRSIGNER` (32 B SHA-256 of enclave signer).
+    /// AMD SEV-SNP: `author_key` / signer digest per guest policy.
+    pub signer_measurement: [u8; 32],
+    /// Must equal the caller's `report_data` binding (SGX `REPORTDATA` first
+    /// 64 B; SEV guest report `report_data` per firmware spec).
+    pub report_data: Vec<u8>,
+    /// Platform TCB / security version (SGX `MISCSELECT`+CPUSVN+PCESVN; SEV `guest_svn`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcb_version: Option<Vec<u8>>,
+}
+
 /// A signed attestation quote binding opaque `report_data` to an issuer.
 ///
-/// Hardware providers will populate additional fields later (e.g. MRENCLAVE,
-/// TCB version). The software provider stores an Ed25519 signature over
-/// `report_data`.
+/// Hardware providers populate [`HardwareQuoteFields`] semantics in `signature`
+/// / collateral (DCAP quote blob, SEV cert chain). The software provider stores
+/// an Ed25519 signature over `report_data`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttestationQuote {
-    /// Provider identifier (`software-v1`, future `sgx-dcap-v1`, etc.).
+    /// Provider identifier (`software-v1`, `hardware-tee-v1`, etc.).
     pub provider: String,
     /// Opaque report payload the issuer attested to (caller-defined semantics).
     pub report_data: Vec<u8>,
-    /// Provider-specific signature bytes.
+    /// Provider-specific signature bytes (Ed25519 for software; DCAP/SEV quote for hardware).
     pub signature: Vec<u8>,
     /// Ed25519 verifying key (software provider only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer_pubkey: Option<[u8; 32]>,
+    /// Parsed hardware fields when `provider` is hardware-backed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_fields: Option<HardwareQuoteFields>,
+}
+
+/// Attestation backend selection for ops / lab wiring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttestationMode {
+    /// Ed25519 software quotes — default for CI and local dev.
+    Software,
+    /// Hardware TEE quotes — fails closed when no platform SDK is present.
+    Hardware,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum TeeError {
+    #[error("hardware TEE unavailable on this host (no SGX/SEV-SNP SDK or device)")]
+    HardwareUnavailable,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -129,6 +175,7 @@ impl AttestationProvider for SoftwareAttestationProvider {
             report_data: report_data.to_vec(),
             signature: self.sign_report_data(report_data),
             signer_pubkey: Some(*self.verifying_key().as_bytes()),
+            hardware_fields: None,
         }
     }
 
@@ -172,6 +219,64 @@ fn verify_software_quote(
     signer
         .verify(&msg, &signature)
         .map_err(|_| AttestationError::InvalidSignature)
+}
+
+/// Hardware TEE attestation stub — fail-closed until a platform SDK is linked.
+///
+/// A production implementation must:
+/// 1. Bind `report_data` into the hardware report (`REPORTDATA` / SEV guest report).
+/// 2. Fetch a vendor quote (Intel DCAP QL / AMD PSP) containing
+///    [`HardwareQuoteFields::enclave_measurement`] and
+///    [`HardwareQuoteFields::signer_measurement`].
+/// 3. Verify collateral (PCK certs, TCB, revocation) on the verifier side.
+///
+/// This host has no Intel SGX or AMD SEV-SNP SDK dependency; all entry points
+/// return [`TeeError::HardwareUnavailable`].
+pub struct HardwareTeeProvider;
+
+impl HardwareTeeProvider {
+    /// Probe for hardware TEE availability. Always fails on this build.
+    pub fn try_new() -> Result<Self, TeeError> {
+        Self::probe_hardware()
+    }
+
+    fn probe_hardware() -> Result<Self, TeeError> {
+        // Real builds would detect /dev/sgx_enclave, SEV firmware, etc.
+        Err(TeeError::HardwareUnavailable)
+    }
+
+    /// Issue a hardware quote binding `report_data`. Unavailable on this host.
+    pub fn issue_quote(&self, _report_data: &[u8]) -> Result<AttestationQuote, TeeError> {
+        Err(TeeError::HardwareUnavailable)
+    }
+
+    /// Verify a hardware quote against `expected_report_data`. Unavailable on this host.
+    pub fn verify_quote(
+        &self,
+        _quote: &AttestationQuote,
+        _expected_report_data: &[u8],
+    ) -> Result<(), TeeError> {
+        Err(TeeError::HardwareUnavailable)
+    }
+}
+
+/// Select an attestation backend by mode.
+///
+/// - [`AttestationMode::Software`] — returns a [`SoftwareAttestationProvider`]
+///   seeded from `software_seed` (lab default).
+/// - [`AttestationMode::Hardware`] — fails closed with [`TeeError::HardwareUnavailable`]
+///   when no platform TEE SDK is present (always on this workspace build).
+pub fn select_attestation_provider(
+    mode: AttestationMode,
+    software_seed: [u8; 32],
+) -> Result<SoftwareAttestationProvider, TeeError> {
+    match mode {
+        AttestationMode::Software => Ok(SoftwareAttestationProvider::from_seed(software_seed)),
+        AttestationMode::Hardware => {
+            HardwareTeeProvider::try_new()?;
+            unreachable!("hardware probe succeeded but no provider wired")
+        }
+    }
 }
 
 /// Standard `report_data` bytes for the Phase-7 gate (software/lab path).
@@ -292,6 +397,33 @@ mod tests {
             &provider,
             &quote,
             &report_data,
+        ));
+    }
+
+    #[test]
+    fn hardware_provider_fails_closed_on_this_host() {
+        assert!(matches!(
+            HardwareTeeProvider::try_new(),
+            Err(TeeError::HardwareUnavailable)
+        ));
+    }
+
+    #[test]
+    fn select_attestation_provider_software_path() {
+        let provider =
+            select_attestation_provider(AttestationMode::Software, [0x42; 32]).expect("software");
+        let report_data = b"select-test";
+        let quote = provider.issue_quote(report_data);
+        provider
+            .verify_quote(&quote, report_data)
+            .expect("software verify");
+    }
+
+    #[test]
+    fn select_attestation_provider_hardware_fails_closed() {
+        assert!(matches!(
+            select_attestation_provider(AttestationMode::Hardware, [0; 32]),
+            Err(TeeError::HardwareUnavailable)
         ));
     }
 }
