@@ -9,17 +9,20 @@ Legend: **Done** = in-tree code + tests/docs as scoped · **Partial** = useful m
 | # | Residual | Status | In-tree | Leftover / External |
 |---|----------|--------|---------|---------------------|
 | 1 | Real TEE attestation | **Partial** | `AttestationProvider` + software quotes; `docs/ops/tee_attestation.md` | **External:** hardware TEE SDK (SGX/SEV) |
-| 2 | Consortium key ceremony | **Partial** | `docs/ops/consortium_key_ceremony.md` + `aegis-ceremony` | **External:** HSM / Shamir MPC |
-| 3 | Noise / roster-key link auth | **Partial** | Optional Noise_IK-compatible (`noise-link`) | BLAKE2s/`snow` byte-compat; default still LegacyPsk |
+| 2 | Consortium key ceremony | **Partial** | `aegis-ceremony` + GF(256) Shamir seed shares | **External:** HSM / interactive MPC |
+| 3 | Noise / roster-key link auth | **Partial** | `handshake=auto` → Noise when static keys present | BLAKE2s/`snow` byte-compat |
 | 4 | Unix / keychain KEM store | **Partial** | Unix `kem-keyring` + Windows DPAPI | Same-user backends; `0600` fallback |
 | 5 | Cover-burst timing | **Partial** | τ-paced cover egress | Not info-theoretic indistinguishability |
-| 6 | Cross-relay health gossip | **Partial** | Signed `PeerHealthAdvert` | **External:** multi-org BFT reputation consensus |
-| 7 | ZK anonymous reputation | **Partial** | Presentation + `NullifierRegistry` (local) | **External:** full AC issuer / consensus nullifiers |
-| 8 | Adversarial multi-conn flood | **Done** | Default global ingress budget 8/τ | Tunable caps only |
-| 9 | Sybil / g=3 guard plateau | **Done** | `GUARD_SET_SIZE=3` + production helpers | Unfiltered APIs remain (science) |
-| 10 | dudect / CT evidence | **Partial** | In-tree smoke + ops doc | **External:** full WSL dudect lab proofs |
-| 11 | Per-peer fair queues | **Partial/Mitigated** | Per-peer inbound + weighted credit RR (health success rate) | Outbound still shared; not continuous GPS |
+| 6 | Cross-relay health gossip | **Partial** | `PeerHealthAdvert` + majority_k median merge | **External:** multi-org BFT |
+| 7 | ZK anonymous reputation | **Partial** | Presentation + file `NullifierRegistry` | **External:** full AC issuer |
+| 8 | Adversarial multi-conn flood | **Done** | Global ingress budget 8/τ | Tunable caps only |
+| 9 | Sybil / g=3 guard plateau | **Done** | g=3 helpers; unfiltered APIs `test-utils` only | Science tests keep unfiltered |
+| 10 | dudect / CT evidence | **Partial** | In-tree smoke + ops doc | **External:** full WSL dudect lab |
+| 11 | Per-peer fair queues | **Partial/Mitigated** | Health-weighted inbound WFQ | Outbound still shared |
+| 12 | Emitter backlog | **Done** | Cap 256; fail send on full | — |
 
 ## Wave closure
 
-Research/ops leftovers wave is **closed** except B-class **External** items above (hardware TEE SDK, multi-org BFT, full dudect lab, full AC issuer). See README **Profiling complete** and the plan completion log.
+**In-repo profiling is DONE.** Remaining items are B-class **External** only
+(hardware TEE SDK, HSM/MPC, multi-org BFT, full AC issuer, full dudect lab,
+BLAKE2s-Noise byte-compat). See README and the plan completion log.
