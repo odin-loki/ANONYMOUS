@@ -49,7 +49,8 @@ fn validate_paced_config(config: &PacedSessionConfig) -> Result<(), crate::send:
 /// Established first-hop session with a running constant-rate emitter task.
 pub struct PacedSession {
     tau: Duration,
-    enqueue_tx: mpsc::UnboundedSender<OutboundCell>,
+    max_backlog: usize,
+    enqueue_tx: mpsc::Sender<OutboundCell>,
     shutdown_tx: watch::Sender<bool>,
     cover_done_tx: watch::Sender<bool>,
     cover_done_rx: watch::Receiver<bool>,
@@ -78,8 +79,9 @@ impl PacedSession {
     ) -> Result<Self, SendError> {
         validate_paced_config(&config)?;
         let tau = config.emitter_config.tau;
+        let max_backlog = config.emitter_config.max_backlog;
         let cover_after_send = config.cover_after_send;
-        let (enqueue_tx, enqueue_rx) = mpsc::unbounded_channel();
+        let (enqueue_tx, enqueue_rx) = mpsc::channel(max_backlog);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (cover_done_tx, cover_done_rx) = watch::channel(false);
         let (pending_tx, pending_rx) = watch::channel(0usize);
@@ -102,6 +104,7 @@ impl PacedSession {
 
         Ok(Self {
             tau,
+            max_backlog,
             enqueue_tx,
             shutdown_tx,
             cover_done_tx,
@@ -161,9 +164,14 @@ impl PacedSession {
     ) -> Result<(), SendError> {
         let _ = self.cover_done_tx.send(false);
         for cell in cells {
-            self.enqueue_tx
-                .send(cell)
-                .map_err(|_| SendError::SessionClosed)?;
+            self.enqueue_tx.try_send(cell).map_err(|e| match e {
+                mpsc::error::TrySendError::Full(_) => SendError::EmitterBacklogFull(
+                    crate::emitter::BacklogFullError {
+                        max_backlog: self.max_backlog,
+                    },
+                ),
+                mpsc::error::TrySendError::Closed(_) => SendError::SessionClosed,
+            })?;
         }
         Ok(())
     }

@@ -85,6 +85,8 @@ pub enum SendError {
     SessionClosed,
     #[error("{0}")]
     RhoLimit(#[from] crate::emitter::RhoLimitError),
+    #[error("{0}")]
+    EmitterBacklogFull(#[from] crate::emitter::BacklogFullError),
     #[error("KEM public key does not match roster commitment for hop {hop_id:02x}{hop_id_tail:02x}…")]
     KemBindingMismatch {
         hop_id: u8,

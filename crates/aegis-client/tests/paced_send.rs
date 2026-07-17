@@ -58,7 +58,7 @@ async fn paced_emitter_ticks_are_tau_spaced() {
         OsRng,
     );
     for _ in 0..tick_count {
-        emitter.enqueue_cell(OutboundCell(Cell::zeroed()));
+        emitter.enqueue_cell(OutboundCell(Cell::zeroed())).unwrap();
     }
 
     let mut transport = TimedRecordingTransport::new();
@@ -94,8 +94,8 @@ async fn paced_emitter_ticks_are_tau_spaced() {
 #[test]
 fn dummy_cover_emitted_when_cell_queue_drains_early() {
     let mut emitter = ConstantRateEmitter::new(EmitterConfig::default(), OsRng);
-    emitter.enqueue_cell(OutboundCell(Cell::zeroed()));
-    emitter.enqueue_cell(OutboundCell(Cell::zeroed()));
+    emitter.enqueue_cell(OutboundCell(Cell::zeroed())).unwrap();
+    emitter.enqueue_cell(OutboundCell(Cell::zeroed())).unwrap();
 
     let mut transport = TimedRecordingTransport::new();
     for _ in 0..5 {

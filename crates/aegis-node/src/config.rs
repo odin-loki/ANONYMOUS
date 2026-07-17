@@ -29,8 +29,8 @@ use aegis_relay::{
 };
 use aegis_topology::{RelayRoster, RosterError, ThresholdConsortium};
 use aegis_trust::{
-    signing_key_from_hex_seed, verifying_key_from_hex, RelayPruningPolicy, ReputationError,
-    ReputationLedger,
+    signing_key_from_hex_seed, verifying_key_from_hex, NullifierError, NullifierRegistry,
+    RelayPruningPolicy, ReputationError, ReputationLedger,
 };
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand_core::{CryptoRngCore, RngCore};
@@ -55,6 +55,8 @@ pub enum ConfigError {
     Roster(#[from] RosterError),
     #[error("reputation: {0}")]
     Reputation(#[from] ReputationError),
+    #[error("nullifier registry: {0}")]
+    Nullifier(#[from] NullifierError),
     #[error("kem seed protect: {0}")]
     KemProtect(String),
 }
@@ -119,6 +121,11 @@ pub struct ReputationConfig {
     /// JSON ledger file; loaded on startup when present, saved on drain/shutdown.
     #[serde(default)]
     pub ledger_path: Option<String>,
+    /// Optional JSON nullifier registry for local anonymous-presentation replay
+    /// prevention (`aegis_trust::NullifierRegistry`). Local/file-backed only —
+    /// not a multi-node AC issuer. See `docs/ops/anonymous_reputation.md`.
+    #[serde(default)]
+    pub nullifier_registry_path: Option<String>,
     /// Optional hex Ed25519 seed (32 bytes) for signing ledger snapshots on save.
     #[serde(default)]
     pub operator_signing_seed: Option<String>,
@@ -218,6 +225,34 @@ impl ReputationConfig {
         };
         if let Err(e) = result {
             eprintln!("warning: reputation ledger save failed ({e})");
+        }
+    }
+
+    /// Load the optional nullifier registry (empty if path unset or missing).
+    pub fn load_nullifier_registry(&self) -> Result<NullifierRegistry, NullifierError> {
+        let Some(ref path_str) = self.nullifier_registry_path else {
+            return Ok(NullifierRegistry::new());
+        };
+        let path = PathBuf::from(path_str);
+        let reg = NullifierRegistry::open_or_empty(&path)?;
+        if path.exists() {
+            eprintln!(
+                "loaded nullifier registry from {} ({} spent)",
+                path.display(),
+                reg.len()
+            );
+        }
+        Ok(reg)
+    }
+
+    /// Persist the nullifier registry when `nullifier_registry_path` is set.
+    pub fn save_nullifier_registry(&self, registry: &NullifierRegistry) {
+        let Some(ref path_str) = self.nullifier_registry_path else {
+            return;
+        };
+        let path = PathBuf::from(path_str);
+        if let Err(e) = registry.save_to_file(&path) {
+            eprintln!("warning: nullifier registry save failed ({e})");
         }
     }
 }
@@ -323,10 +358,14 @@ pub struct LinkNetConfig {
     /// Set to `0.0` to disable the shared budget.
     #[serde(default = "default_global_max_cells_per_sec")]
     pub global_max_cells_per_sec: Option<f64>,
-    /// `"legacy_psk"` (default) or `"noise"` for Noise_IK-compatible mutual auth.
+    /// `"auto"` (default), `"legacy_psk"`, or `"noise"`.
+    ///
+    /// `auto` selects Noise when local (+ peer) static keys are present; otherwise
+    /// LegacyPsk. Explicit `"legacy_psk"` never uses Noise.
     #[serde(default = "default_link_handshake")]
     pub handshake: String,
-    /// Local Noise static secret (64 hex). Required when `handshake = "noise"`.
+    /// Local Noise static secret (64 hex). Required when `handshake = "noise"`;
+    /// enables Noise under `handshake = "auto"` when peer statics are also set.
     #[serde(default)]
     pub noise_static_secret: Option<String>,
     /// Expected ingress initiator Noise static public (64 hex), optional.
@@ -335,7 +374,14 @@ pub struct LinkNetConfig {
 }
 
 fn default_link_handshake() -> String {
-    "legacy_psk".to_string()
+    #[cfg(feature = "noise-link")]
+    {
+        "auto".to_string()
+    }
+    #[cfg(not(feature = "noise-link"))]
+    {
+        "legacy_psk".to_string()
+    }
 }
 
 impl Default for LinkNetConfig {
@@ -573,8 +619,9 @@ pub struct PeerConfig {
 ///
 /// When `enabled` and a signing seed is configured, the node periodically signs
 /// local peer-health windows and sends them as link-control cells. Receivers
-/// verify under each peer's `gossip_verifying_key` and merge with half weight.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// verify under each peer's `gossip_verifying_key`, buffer until `majority_k`
+/// distinct reporters, then merge the median failure rate at half weight.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HealthGossipConfig {
     /// Emit and accept health-gossip cells (default false).
     #[serde(default)]
@@ -588,10 +635,30 @@ pub struct HealthGossipConfig {
     /// Seconds between gossip emission rounds (default 60).
     #[serde(default = "default_gossip_interval_secs")]
     pub interval_secs: u64,
+    /// Distinct neighbor adverts required before merging (default 2). Set `1`
+    /// for legacy immediate apply. Lightweight majority — not BFT.
+    #[serde(default = "default_gossip_majority_k")]
+    pub majority_k: usize,
 }
 
 fn default_gossip_interval_secs() -> u64 {
     60
+}
+
+fn default_gossip_majority_k() -> usize {
+    aegis_relay::DEFAULT_GOSSIP_MAJORITY_K
+}
+
+impl Default for HealthGossipConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            signing_seed: None,
+            signing_key_file: None,
+            interval_secs: default_gossip_interval_secs(),
+            majority_k: default_gossip_majority_k(),
+        }
+    }
 }
 
 impl HealthGossipConfig {
@@ -811,7 +878,7 @@ impl NodeConfigFile {
             .map(parse_hex32)
             .transpose()?;
         #[cfg(feature = "noise-link")]
-        if handshake == LinkHandshakeMode::Noise && noise_static_secret.is_none() {
+        if matches!(handshake, LinkHandshakeMode::Noise) && noise_static_secret.is_none() {
             return Err(ConfigError::Hex(
                 "link.noise_static_secret required when handshake = \"noise\"",
             ));
@@ -866,13 +933,15 @@ fn parse_link_handshake_mode(s: &str) -> Result<LinkHandshakeMode, ConfigError> 
     match s.trim().to_ascii_lowercase().as_str() {
         "legacy_psk" | "legacy" | "psk" => Ok(LinkHandshakeMode::LegacyPsk),
         #[cfg(feature = "noise-link")]
+        "auto" => Ok(LinkHandshakeMode::Auto),
+        #[cfg(feature = "noise-link")]
         "noise" | "noise_ik" => Ok(LinkHandshakeMode::Noise),
         #[cfg(not(feature = "noise-link"))]
-        "noise" | "noise_ik" => Err(ConfigError::Hex(
-            "handshake = \"noise\" requires the noise-link feature",
+        "auto" | "noise" | "noise_ik" => Err(ConfigError::Hex(
+            "handshake = \"auto\"/\"noise\" requires the noise-link feature",
         )),
         _ => Err(ConfigError::Hex(
-            "link.handshake must be \"legacy_psk\" or \"noise\"",
+            "link.handshake must be \"auto\", \"legacy_psk\", or \"noise\"",
         )),
     }
 }
@@ -928,6 +997,67 @@ mod tests {
     }
 
     #[test]
+    fn link_handshake_defaults_to_auto_and_parses_modes() {
+        assert_eq!(default_link_handshake(), "auto");
+        assert_eq!(
+            parse_link_handshake_mode("auto").unwrap(),
+            LinkHandshakeMode::Auto
+        );
+        assert_eq!(
+            parse_link_handshake_mode("legacy_psk").unwrap(),
+            LinkHandshakeMode::LegacyPsk
+        );
+        assert_eq!(
+            parse_link_handshake_mode("noise").unwrap(),
+            LinkHandshakeMode::Noise
+        );
+        let file: NodeConfigFile = toml::from_str(
+            r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+"#,
+        )
+        .unwrap();
+        assert_eq!(file.link.handshake, "auto");
+    }
+
+    #[test]
+    fn link_handshake_noise_requires_static_secret() {
+        let dir = test_config_dir("noise-requires-secret");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("node.toml");
+        let seeds = fixed_seeds();
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[kem]
+allow_plaintext_kem = true
+x25519_seed = "{}"
+mlkem_d = "{}"
+mlkem_z = "{}"
+
+[link]
+handshake = "noise"
+"#,
+                seeds.x25519_seed, seeds.mlkem_d, seeds.mlkem_z
+            ),
+        )
+        .unwrap();
+        let file = NodeConfigFile::load(&config_path).unwrap();
+        match file.into_runtime(&config_path) {
+            Err(ConfigError::Hex(msg)) if msg.contains("noise_static_secret") => {}
+            Ok(_) => panic!("expected noise_static_secret ConfigError::Hex, got Ok"),
+            Err(e) => panic!("expected noise_static_secret ConfigError::Hex, got {e}"),
+        }
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
     fn reputation_config_parses_ledger_path() {
         let toml = r#"
 relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
@@ -935,14 +1065,53 @@ listen = "127.0.0.1:9000"
 
 [reputation]
 ledger_path = "data/reputation.json"
+nullifier_registry_path = "data/nullifiers.json"
 "#;
         let file: NodeConfigFile = toml::from_str(toml).unwrap();
         assert_eq!(
             file.reputation.ledger_path.as_deref(),
             Some("data/reputation.json")
         );
+        assert_eq!(
+            file.reputation.nullifier_registry_path.as_deref(),
+            Some("data/nullifiers.json")
+        );
         assert!(file.reputation.operator_signing_seed.is_none());
         assert!(file.reputation.operator_verifying_key.is_none());
+    }
+
+    #[test]
+    fn reputation_nullifier_registry_load_save_roundtrip() {
+        use aegis_trust::derive_reputation_nullifier;
+
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-node-nullifier-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("nullifiers.json");
+
+        let cfg = ReputationConfig {
+            nullifier_registry_path: Some(path.to_string_lossy().into()),
+            ..Default::default()
+        };
+        let mut reg = cfg.load_nullifier_registry().unwrap();
+        let n = derive_reputation_nullifier(&[5u8; 32], 3, &[6u8; 32]);
+        reg.try_register(3, n).unwrap();
+        cfg.save_nullifier_registry(&reg);
+
+        let reloaded = cfg.load_nullifier_registry().unwrap();
+        assert!(reloaded.is_spent(3, &n));
+        assert!(matches!(
+            {
+                let mut r = reloaded;
+                r.try_register(3, n)
+            },
+            Err(_)
+        ));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]
@@ -958,6 +1127,7 @@ listen = "127.0.0.1:9000"
 enabled = true
 signing_seed = "{seed}"
 interval_secs = 45
+majority_k = 3
 
 [[peers]]
 id = "0200000000000000000000000000000000000000000000000000000000000000"
@@ -969,6 +1139,7 @@ gossip_verifying_key = "{vk}"
         let file: NodeConfigFile = toml::from_str(&toml).unwrap();
         assert!(file.health_gossip.enabled);
         assert_eq!(file.health_gossip.interval_secs, 45);
+        assert_eq!(file.health_gossip.majority_k, 3);
         assert!(file.health_gossip.resolve_signing_key().unwrap().is_some());
         assert_eq!(
             file.peers[0].gossip_verifying_key.as_deref(),

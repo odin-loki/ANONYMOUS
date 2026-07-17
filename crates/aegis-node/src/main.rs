@@ -53,12 +53,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime.listen
     );
 
-    let peer_health = Arc::new(PeerHealthTracker::new());
+    let peer_health = Arc::new(PeerHealthTracker::with_gossip_majority_k(
+        runtime.health_gossip.majority_k.max(1),
+    ));
     let reputation_cfg: ReputationConfig = runtime.reputation.clone();
     let pruning_policy = Arc::new(Mutex::new(reputation_cfg.load_pruning_policy()?));
+    // Optional local nullifier registry (anonymous presentation replay prevention).
+    // Not an AC issuer — see docs/ops/anonymous_reputation.md.
+    let nullifier_registry = Arc::new(Mutex::new(reputation_cfg.load_nullifier_registry()?));
 
     let health_drain = Arc::clone(&peer_health);
     let policy_drain = Arc::clone(&pruning_policy);
+    let nullifier_drain = Arc::clone(&nullifier_registry);
     let rep_drain = reputation_cfg.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -73,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("peer health: fed {fed} peer failure-rate sample(s) into pruning policy");
             }
             rep_drain.save_ledger(&policy);
+            rep_drain.save_nullifier_registry(&*nullifier_drain.lock().await);
         }
     });
 
@@ -174,6 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::signal::ctrl_c().await?;
     eprintln!("shutting down");
     reputation_cfg.save_ledger(&*pruning_policy.lock().await);
+    reputation_cfg.save_nullifier_registry(&*nullifier_registry.lock().await);
     if let Some(task) = cover_task {
         task.abort();
     }

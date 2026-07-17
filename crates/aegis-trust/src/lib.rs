@@ -17,6 +17,8 @@
 //!   bookkeeping a future ZK circuit would sit in front of).
 //! - [`zk`] — Bulletproofs range proof for threshold membership, anonymous
 //!   presentation (no RelayId in proof bytes), + plaintext stand-in.
+//! - [`nullifier`] — local/file-backed spent-nullifier registry (replay prevention
+//!   per epoch; not a multi-node AC issuer).
 //! - [`tee`] — TEE-broken-enclave assumption bookkeeping, attestation provider
 //!   interface, and the Phase-7 gate check.
 //! - [`anomaly`] — a generic EWMA/z-score anomaly detector as a stand-in for the
@@ -25,12 +27,14 @@
 //! - [`policy`] — wires anomaly verdicts into reputation demotion for path pruning.
 
 pub mod anomaly;
+pub mod nullifier;
 pub mod policy;
 pub mod reputation;
 pub mod tee;
 pub mod zk;
 
 pub use anomaly::{AnomalyDetector, AnomalyVerdict};
+pub use nullifier::{NullifierError, NullifierRegistry};
 pub use policy::{feed_peer_metric, feed_peer_outcomes, RelayPruningPolicy, DEFAULT_PATH_REPUTATION_FLOOR};
 pub use reputation::{
     signing_key_from_hex_seed, signing_key_from_seed, verifying_key_from_hex, ReputationError,
@@ -43,6 +47,7 @@ pub use tee::{
 };
 pub use zk::{
     derive_reputation_nullifier, present_anonymous, scale_reputation, verify_anonymous,
-    AnonymousReputationPresentation, BulletproofsProof, BulletproofsReputationProof,
-    PlaintextReputationProof, ReputationNullifier, ZkReputationProof, RANGE_BITS, SCORE_SCALE,
+    verify_anonymous_and_spend, AnonymousReputationPresentation, BulletproofsProof,
+    BulletproofsReputationProof, PlaintextReputationProof, ReputationNullifier,
+    ZkReputationProof, RANGE_BITS, SCORE_SCALE,
 };

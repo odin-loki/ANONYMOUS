@@ -17,13 +17,20 @@ pub mod layers;
 pub mod path;
 pub mod pruning;
 pub mod roster;
+pub mod shamir;
 pub mod types;
 
 pub use beacon::{
     committee_for_round, round_at, Beacon, BeaconError, BeaconParticipant, HashChainBeacon,
     ThresholdBeacon, ThresholdBeaconCommittee,
 };
-pub use ceremony::{run_ceremony, CeremonyConfig, CeremonyOutput};
+pub use ceremony::{
+    reconstruct_authority_seed, reconstruct_seed_from_files, run_ceremony,
+    write_reconstructed_seed, CeremonyConfig, CeremonyOutput,
+};
+pub use shamir::{
+    decode_share_hex, encode_share_hex, reconstruct_seed, split_seed, SeedShare, ShamirError,
+};
 pub use error::{RosterError, TopologyError};
 pub use guards::{
     guard_exposure_plateau, GuardConfig, GuardPinMode, GuardSelector, GUARD_SET_SIZE,
@@ -33,9 +40,12 @@ pub use path::{
     build_bound_path_diverse_pruned, build_bound_path_pruned, build_bound_path_pruned_with_guards,
     path_compromise_probability, path_satisfies_jurisdiction, path_satisfies_reputation,
     relay_records_for_path, select_diverse_path, select_diverse_reputation_path,
-    select_diverse_reputation_path_pruned, select_path, select_path_indexed,
-    select_path_reputation_weighted, select_path_reputation_weighted_pruned, JurisdictionPolicy,
+    select_diverse_reputation_path_pruned, select_path_reputation_weighted,
+    select_path_reputation_weighted_pruned, JurisdictionPolicy,
 };
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(deprecated)]
+pub use path::{select_path, select_path_for_tests, select_path_indexed, select_path_indexed_for_tests};
 pub use pruning::{
     path_satisfies_pruning_policy, relay_admission_satisfies_pruning_policy,
     relay_satisfies_pruning_policy,
@@ -50,6 +60,7 @@ pub use types::{
 };
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use std::collections::{HashMap, HashSet};
 

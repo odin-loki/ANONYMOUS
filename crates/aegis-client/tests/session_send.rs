@@ -47,7 +47,7 @@ fn fragment_cell(slot: u8) -> OutboundCell {
 async fn session_emits_dummy_cover_after_queue_drains() {
     let tau = Duration::from_millis(25);
     let cover = Duration::from_millis(75);
-    let (enqueue_tx, enqueue_rx) = mpsc::unbounded_channel();
+    let (enqueue_tx, enqueue_rx) = mpsc::channel(32);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (cover_done_tx, mut cover_done_rx) = watch::channel(false);
     let (pending_tx, pending_rx) = watch::channel(0usize);
@@ -64,8 +64,8 @@ async fn session_emits_dummy_cover_after_queue_drains() {
         inner: Arc::clone(&recording),
     };
 
-    enqueue_tx.send(fragment_cell(0)).unwrap();
-    enqueue_tx.send(fragment_cell(1)).unwrap();
+    enqueue_tx.try_send(fragment_cell(0)).unwrap();
+    enqueue_tx.try_send(fragment_cell(1)).unwrap();
 
     let driver = tokio::spawn(async move {
         run_session_emitter_loop_mock(
@@ -121,7 +121,7 @@ async fn session_emits_dummy_cover_after_queue_drains() {
 async fn session_ticks_stay_tau_spaced_under_load() {
     let tau = Duration::from_millis(30);
     let cover = Duration::from_millis(60);
-    let (enqueue_tx, enqueue_rx) = mpsc::unbounded_channel();
+    let (enqueue_tx, enqueue_rx) = mpsc::channel(32);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (cover_done_tx, mut cover_done_rx) = watch::channel(false);
     let (pending_tx, _pending_rx) = watch::channel(0usize);
@@ -143,7 +143,7 @@ async fn session_ticks_stay_tau_spaced_under_load() {
     };
 
     for i in 0..4u8 {
-        enqueue_tx.send(fragment_cell(i)).unwrap();
+        enqueue_tx.try_send(fragment_cell(i)).unwrap();
     }
 
     let driver = tokio::spawn(async move {

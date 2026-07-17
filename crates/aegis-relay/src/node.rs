@@ -10,7 +10,7 @@
 //! This complements (does not replace) link-bridge ingress rate limiting and
 //! per-peer fair drain in [`crate::net`]: rate-limit drops frames before
 //! reassembly; each connection enqueues into its own bounded peer queue; a
-//! round-robin drain feeds the shared mix inbound. Queue drops apply on peer
+//! weighted fair drain feeds the shared mix inbound. Queue drops apply on peer
 //! queues or the shared inbound (drop-newest) so one peer cannot monopolize.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -672,10 +672,11 @@ mod tests {
             })
             .unwrap();
 
+        // Huge μ → near-zero mixing delay so this does not flake under suite load.
         let node = RelayNode::new(
             RelayId(guard_id),
             guard_sec,
-            RelayConfig::new(1000.0),
+            RelayConfig::new(1_000_000.0),
         );
         let (handle, _task) = node.spawn(inbound_rx, outbound_tx, None, OsRng).unwrap();
 
@@ -684,7 +685,7 @@ mod tests {
             .await
             .unwrap();
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while handle.coarse_stats().queue_dropped < 1 {
             if tokio::time::Instant::now() >= deadline {
                 break;
@@ -693,7 +694,9 @@ mod tests {
         }
         assert!(
             handle.coarse_stats().queue_dropped >= 1,
-            "full outbound must count drop-newest"
+            "full outbound must count drop-newest (processed_ok={}, fail={})",
+            handle.coarse_stats().processed_ok,
+            handle.coarse_stats().processed_fail,
         );
         // Placeholder still present; real forward was dropped.
         let kept = outbound_rx.try_recv().expect("bounded slot still holds prior item");

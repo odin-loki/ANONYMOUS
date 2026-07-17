@@ -1,6 +1,9 @@
 //! Constant-rate emitter — one cell per slot τ, real-or-dummy (§4.2).
 //!
 //! Utilization ρ = λ_peak · τ must stay ≤ 0.7 or the latency tail explodes (§7).
+//! Real-cell queues are capped at [`EmitterConfig::max_backlog`] (default
+//! [`DEFAULT_MAX_BACKLOG`]); Mode-1 prefers returning [`BacklogFullError`] over
+//! unbounded memory growth.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -16,6 +19,12 @@ pub const DEFAULT_MAX_RHO: f64 = 0.7;
 
 /// Worked-example peak enqueue rate (msg/s) paired with τ ≈ 0.35 s → ρ = 0.7.
 pub const DEFAULT_PEAK_RATE_PER_SEC: f64 = 2.0;
+
+/// Default cap on queued real cells (payload + pre-formed wire cells).
+///
+/// Holds roughly fourteen full Sphinx packets at [`SPHINX_FRAGMENT_COUNT`] fragments
+/// each (~252 cells) with headroom; Mode-1 prefers failing send over unbounded memory.
+pub const DEFAULT_MAX_BACKLOG: usize = 256;
 
 /// Lab override: set `AEGIS_ALLOW_HIGH_RHO=1` (or `true`) to skip ρ enforcement.
 pub fn env_allows_high_rho() -> bool {
@@ -37,6 +46,15 @@ pub struct RhoLimitError {
     pub tau_secs: f64,
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error(
+    "emitter backlog full (max {max_backlog} queued real cells); \
+     Mode-1 prefers failing send over unbounded memory"
+)]
+pub struct BacklogFullError {
+    pub max_backlog: usize,
+}
+
 /// Maximum payload bytes in a real data cell (header + padding must fit in 512 B).
 pub const DATA_HEADER_LEN: usize = 1 + 2; // command + u16 length
 
@@ -50,6 +68,8 @@ pub struct EmitterConfig {
     pub tau: Duration,
     /// Peak application enqueue rate (messages / second) used for ρ validation.
     pub peak_rate_per_sec: f64,
+    /// Maximum queued real cells before [`ConstantRateEmitter::enqueue`] fails.
+    pub max_backlog: usize,
 }
 
 impl Default for EmitterConfig {
@@ -57,6 +77,7 @@ impl Default for EmitterConfig {
         Self {
             tau: Duration::from_millis(350),
             peak_rate_per_sec: DEFAULT_PEAK_RATE_PER_SEC,
+            max_backlog: DEFAULT_MAX_BACKLOG,
         }
     }
 }
@@ -108,6 +129,8 @@ pub struct ConstantRateEmitter<R: RngCore + CryptoRngCore> {
     /// Pre-formed wire cells (e.g. Sphinx fragments) emitted as-is.
     cell_queue: VecDeque<OutboundCell>,
     tick: u64,
+    /// Cells rejected at capacity (drop-newest path / driver defense-in-depth).
+    dropped_enqueue_count: u64,
     rng: R,
 }
 
@@ -118,6 +141,7 @@ impl<R: RngCore + CryptoRngCore> ConstantRateEmitter<R> {
             queue: VecDeque::new(),
             cell_queue: VecDeque::new(),
             tick: 0,
+            dropped_enqueue_count: 0,
             rng,
         }
     }
@@ -131,17 +155,58 @@ impl<R: RngCore + CryptoRngCore> ConstantRateEmitter<R> {
     }
 
     /// Queue a real message for FIFO emission on a future tick.
-    pub fn enqueue(&mut self, payload: Vec<u8>) {
+    ///
+    /// Returns [`BacklogFullError`] when at [`EmitterConfig::max_backlog`] (Mode-1:
+    /// fail the send rather than grow memory without bound).
+    pub fn enqueue(&mut self, payload: Vec<u8>) -> Result<(), BacklogFullError> {
         debug_assert!(
             payload.len() <= MAX_CELL_PAYLOAD,
             "payload exceeds single-cell capacity"
         );
+        self.try_push_real()?;
         self.queue.push_back(payload);
+        Ok(())
     }
 
     /// Queue a pre-formed 512-byte wire cell (e.g. a Sphinx fragment).
-    pub fn enqueue_cell(&mut self, cell: OutboundCell) {
+    pub fn enqueue_cell(&mut self, cell: OutboundCell) -> Result<(), BacklogFullError> {
+        self.try_push_real()?;
         self.cell_queue.push_back(cell);
+        Ok(())
+    }
+
+    /// Like [`Self::enqueue`], but drops the incoming cell when full and increments
+    /// [`Self::dropped_enqueue_count`] (lab / defense-in-depth only).
+    pub fn enqueue_drop_newest(&mut self, payload: Vec<u8>) {
+        debug_assert!(
+            payload.len() <= MAX_CELL_PAYLOAD,
+            "payload exceeds single-cell capacity"
+        );
+        if self.pending_emissions() >= self.config.max_backlog {
+            self.dropped_enqueue_count += 1;
+            return;
+        }
+        self.queue.push_back(payload);
+    }
+
+    /// Cells dropped by [`Self::enqueue_drop_newest`] or [`Self::note_dropped_enqueue`].
+    pub fn dropped_enqueue_count(&self) -> u64 {
+        self.dropped_enqueue_count
+    }
+
+    /// Record one dropped enqueue (e.g. driver defense when channel/emitter disagree).
+    pub fn note_dropped_enqueue(&mut self) {
+        self.dropped_enqueue_count += 1;
+    }
+
+    fn try_push_real(&mut self) -> Result<(), BacklogFullError> {
+        if self.pending_emissions() >= self.config.max_backlog {
+            Err(BacklogFullError {
+                max_backlog: self.config.max_backlog,
+            })
+        } else {
+            Ok(())
+        }
     }
 
     /// Real cells still queued (payload or pre-formed).
@@ -210,6 +275,7 @@ fn encode_dummy_cell<R: RngCore + CryptoRngCore>(rng: &mut R) -> OutboundCell {
 mod tests {
     use super::*;
     use crate::transport::ObserverRecord;
+    use aegis_crypto::fragment::SPHINX_FRAGMENT_COUNT;
     use rand_core::OsRng;
 
     struct RecordingTransport {
@@ -270,7 +336,7 @@ mod tests {
 
         for t in 0..ticks {
             if t > 0 && t % enqueue_every.max(1) == 0 {
-                emitter.enqueue(vec![0xAB; 32]);
+                emitter.enqueue(vec![0xAB; 32]).unwrap();
             }
             emitter.tick(&mut transport);
         }
@@ -304,7 +370,7 @@ mod tests {
         for _ in 0..ticks {
             arrival_credit += rho;
             while arrival_credit >= 1.0 {
-                emitter.enqueue(vec![0xCD; 16]);
+                emitter.enqueue(vec![0xCD; 16]).unwrap();
                 arrival_credit -= 1.0;
             }
             emitter.tick(&mut transport);
@@ -333,6 +399,7 @@ mod tests {
         let cfg = EmitterConfig {
             tau: Duration::from_millis(500),
             peak_rate_per_sec: 2.0,
+            ..Default::default()
         };
         assert!(cfg.rho() > DEFAULT_MAX_RHO);
         let err = cfg.validate_rho().unwrap_err();
@@ -345,6 +412,7 @@ mod tests {
         let cfg = EmitterConfig {
             tau: Duration::from_millis(200),
             peak_rate_per_sec: 2.0,
+            ..Default::default()
         };
         assert!(cfg.rho() < DEFAULT_MAX_RHO);
         cfg.validate_rho().expect("ρ below limit must pass");
@@ -355,6 +423,7 @@ mod tests {
         let cfg = EmitterConfig {
             tau: Duration::from_millis(500),
             peak_rate_per_sec: 2.0,
+            ..Default::default()
         };
         cfg.validate_rho_with_options(DEFAULT_MAX_RHO, true)
             .expect("allow_high_rho must skip enforcement");
@@ -366,6 +435,80 @@ mod tests {
         assert_eq!(
             rho_at_peak_rate(2.0, tau),
             ConstantRateEmitter::<OsRng>::rho_at_peak_rate(2.0, tau)
+        );
+    }
+
+    #[test]
+    fn enqueue_rejects_when_backlog_at_cap() {
+        let cap = 4usize;
+        let mut emitter = ConstantRateEmitter::new(
+            EmitterConfig {
+                max_backlog: cap,
+                ..Default::default()
+            },
+            OsRng,
+        );
+
+        for i in 0..cap {
+            emitter.enqueue(vec![i as u8]).expect("under cap");
+        }
+        assert_eq!(emitter.pending_emissions(), cap);
+
+        let err = emitter.enqueue(vec![0xFF]).unwrap_err();
+        assert_eq!(
+            err,
+            BacklogFullError {
+                max_backlog: cap,
+            }
+        );
+        assert_eq!(emitter.pending_emissions(), cap);
+    }
+
+    #[test]
+    fn enqueue_cell_rejects_when_backlog_at_cap() {
+        let cap = 2usize;
+        let mut emitter = ConstantRateEmitter::new(
+            EmitterConfig {
+                max_backlog: cap,
+                ..Default::default()
+            },
+            OsRng,
+        );
+
+        emitter
+            .enqueue_cell(OutboundCell(Cell::zeroed()))
+            .unwrap();
+        emitter
+            .enqueue_cell(OutboundCell(Cell::zeroed()))
+            .unwrap();
+        assert!(emitter.enqueue_cell(OutboundCell(Cell::zeroed())).is_err());
+    }
+
+    #[test]
+    fn enqueue_drop_newest_increments_counter_without_growing_queue() {
+        let cap = 2usize;
+        let mut emitter = ConstantRateEmitter::new(
+            EmitterConfig {
+                max_backlog: cap,
+                ..Default::default()
+            },
+            OsRng,
+        );
+
+        emitter.enqueue(vec![1]).unwrap();
+        emitter.enqueue(vec![2]).unwrap();
+        emitter.enqueue_drop_newest(vec![3]);
+        emitter.enqueue_drop_newest(vec![4]);
+
+        assert_eq!(emitter.pending_emissions(), cap);
+        assert_eq!(emitter.dropped_enqueue_count(), 2);
+    }
+
+    #[test]
+    fn default_max_backlog_fits_multiple_sphinx_packets() {
+        assert!(
+            DEFAULT_MAX_BACKLOG >= SPHINX_FRAGMENT_COUNT * 10,
+            "default backlog should hold at least ten fragmented packets"
         );
     }
 }

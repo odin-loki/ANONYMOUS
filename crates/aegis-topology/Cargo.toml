@@ -13,9 +13,15 @@ path = "src/bin/aegis_ceremony.rs"
 
 [features]
 default = []
-## Unsigned `RelayRoster::admit` / `admit_for_tests` for lab and cross-crate tests only.
-## Production builds must leave this off and use signed admission APIs.
+## Lab-only APIs: unsigned roster admission and unfiltered path/guard selection
+## (`RelayRoster::admit_for_tests`, `GuardSelector::new_for_tests`,
+## `select_path_for_tests`). Production builds must leave this off and use signed
+## admission + `build_bound_path_pruned_with_guards` / reputation-weighted guards.
 test-utils = []
+
+[[test]]
+name = "sybil_admission"
+required-features = ["test-utils"]
 
 [dependencies]
 rand = { version = "0.8", features = ["std_rng"] }

@@ -24,7 +24,9 @@
 //! that **no `RelayId` appears in the serialized proof bytes**. Identity binding
 //! is out-of-band: callers derive a [`ReputationNullifier`] (or check a ledger
 //! commitment) separately and associate it with the presentation by policy.
-//! See `docs/ops/anonymous_reputation.md` for AC future work vs what shipped.
+//! Local replay prevention uses [`crate::nullifier::NullifierRegistry`] via
+//! [`verify_anonymous_and_spend`]. This is **not** a full anonymous-credential
+//! issuer — see `docs/ops/anonymous_reputation.md`.
 
 use bulletproofs::{BulletproofGens, PedersenGens, RangeProof};
 use curve25519_dalek::ristretto::CompressedRistretto;
@@ -33,6 +35,7 @@ use merlin::Transcript;
 use rand::thread_rng;
 use sha3::{Digest, Sha3_256};
 
+use crate::nullifier::{NullifierError, NullifierRegistry};
 use crate::reputation::ReputationScore;
 
 /// Scale factor mapping `[0.0, 1.0]` reputation scores to integers.
@@ -214,6 +217,26 @@ pub fn verify_anonymous(presentation: &AnonymousReputationPresentation, threshol
         return false;
     }
     BulletproofsReputationProof::verify(&presentation.proof, threshold)
+}
+
+/// Verify threshold ZK, then spend `nullifier` in `registry` for `epoch`.
+///
+/// On cryptographic failure returns `Ok(false)` without mutating the registry.
+/// On replay returns [`NullifierError::AlreadyUsed`].
+///
+/// Local / single-node only — not a consensus issuer.
+pub fn verify_anonymous_and_spend(
+    registry: &mut NullifierRegistry,
+    presentation: &AnonymousReputationPresentation,
+    threshold: f64,
+    epoch: u64,
+    nullifier: ReputationNullifier,
+) -> Result<bool, NullifierError> {
+    if !verify_anonymous(presentation, threshold) {
+        return Ok(false);
+    }
+    registry.try_register(epoch, nullifier)?;
+    Ok(true)
 }
 
 /// Derive a nullifier for out-of-band binding:
@@ -422,5 +445,30 @@ mod tests {
         let other_id = [8u8; 32];
         let d = derive_reputation_nullifier(&other_id, 1, &blind);
         assert_ne!(a, d);
+    }
+
+    #[test]
+    fn verify_anonymous_and_spend_rejects_replay() {
+        use crate::nullifier::NullifierRegistry;
+
+        let presentation = present_anonymous(ReputationScore(0.8), 0.5);
+        let nullifier = derive_reputation_nullifier(&[1u8; 32], 42, &[2u8; 32]);
+        let mut registry = NullifierRegistry::new();
+
+        assert_eq!(
+            verify_anonymous_and_spend(&mut registry, &presentation, 0.5, 42, nullifier).unwrap(),
+            true
+        );
+        assert!(matches!(
+            verify_anonymous_and_spend(&mut registry, &presentation, 0.5, 42, nullifier),
+            Err(crate::nullifier::NullifierError::AlreadyUsed { epoch: 42 })
+        ));
+        // Failed threshold must not spend.
+        let mut reg2 = NullifierRegistry::new();
+        assert_eq!(
+            verify_anonymous_and_spend(&mut reg2, &presentation, 0.95, 1, nullifier).unwrap(),
+            false
+        );
+        assert!(!reg2.is_spent(1, &nullifier));
     }
 }

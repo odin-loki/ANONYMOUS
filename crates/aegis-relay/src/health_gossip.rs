@@ -5,6 +5,11 @@
 //! ([`Command::PeerHealthAdvert`](aegis_crypto::cell::Command::PeerHealthAdvert))
 //! that never enter Sphinx reassembly. Receivers verify the Ed25519 signature
 //! and accept only from admitted peer-table neighbors.
+//!
+//! **Lightweight majority merge:** verified adverts are buffered per subject until
+//! [`DEFAULT_GOSSIP_MAJORITY_K`] distinct reporters observe the same subject; then
+//! the **median** reported failure rate is applied at half weight. This reduces
+//! single-malicious-neighbor bias; it is **not** BFT.
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,7 +18,7 @@ use aegis_crypto::cell::{Cell, Command, CELL_LEN};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use thiserror::Error;
 
-use crate::peer_health::PeerHealthTracker;
+use crate::peer_health::{GossipMergeOutcome, PeerHealthTracker};
 use crate::relay_id::RelayId;
 
 /// Canonical signed body length (no command byte, no signature).
@@ -29,9 +34,10 @@ pub const ADVERT_WIRE_LEN: usize = ADVERT_BODY_LEN + ADVERT_SIG_LEN;
 /// Default max age for accepted adverts (seconds).
 pub const DEFAULT_MAX_ADVERT_AGE_SECS: u64 = 3600;
 
-/// Gossip outcomes are applied at half weight (simple trust-of-reporter decay).
-pub const GOSSIP_WEIGHT_NUM: u64 = 1;
-pub const GOSSIP_WEIGHT_DEN: u64 = 2;
+pub use crate::peer_health::{
+    GossipMergeOutcome as GossipAcceptOutcome, DEFAULT_GOSSIP_MAJORITY_K as GOSSIP_MAJORITY_K,
+    GOSSIP_WEIGHT_DEN, GOSSIP_WEIGHT_NUM,
+};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum HealthGossipError {
@@ -153,14 +159,15 @@ pub fn unix_timestamp_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Verify and merge a gossip advert into local peer-health sampling.
+/// Verify and majority-merge a gossip advert into local peer-health sampling.
 ///
 /// Trust rules (minimal, not BFT):
 /// - `link_peer` must equal `advert.reporter` (authenticated hop neighbor).
 /// - `reporter` must appear in `peer_table` (admitted neighbor).
 /// - Signature must verify under that peer's configured gossip verifying key.
 /// - Timestamp must be within `max_age_secs` of `now_secs` (and not far future).
-/// - Counts are applied at [`GOSSIP_WEIGHT_NUM`]/[`GOSSIP_WEIGHT_DEN`] weight.
+/// - Buffered until `tracker.gossip_majority_k()` distinct reporters; then median
+///   failure rate applied at [`GOSSIP_WEIGHT_NUM`]/[`GOSSIP_WEIGHT_DEN`] weight.
 pub fn accept_advert(
     advert: &PeerHealthAdvert,
     link_peer: RelayId,
@@ -168,7 +175,7 @@ pub fn accept_advert(
     now_secs: u64,
     max_age_secs: u64,
     tracker: &PeerHealthTracker,
-) -> Result<(), HealthGossipError> {
+) -> Result<GossipMergeOutcome, HealthGossipError> {
     if *link_peer.as_bytes() != advert.reporter {
         return Err(HealthGossipError::ReporterMismatch);
     }
@@ -192,14 +199,12 @@ pub fn accept_advert(
         return Err(HealthGossipError::StaleTimestamp);
     }
 
-    tracker.apply_gossip_outcomes(
+    Ok(tracker.ingest_gossip_observation(
+        advert.reporter,
         advert.subject,
         advert.successes,
         advert.failures,
-        GOSSIP_WEIGHT_NUM,
-        GOSSIP_WEIGHT_DEN,
-    );
-    Ok(())
+    ))
 }
 
 #[cfg(test)]
@@ -217,6 +222,17 @@ mod tests {
         let mut x = [0u8; 32];
         x[0] = n;
         x
+    }
+
+    fn table_with(reporter: [u8; 32], key: &SigningKey) -> HashMap<RelayId, PeerInfo> {
+        let mut table = HashMap::new();
+        let addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        table.insert(
+            RelayId(reporter),
+            PeerInfo::new(addr, [0u8; 32])
+                .with_gossip_verifying_key(key.verifying_key().to_bytes()),
+        );
+        table
     }
 
     #[test]
@@ -243,20 +259,14 @@ mod tests {
     }
 
     #[test]
-    fn accept_from_peer_table_neighbor_applies_decay() {
+    fn majority_k1_applies_immediately_half_weight() {
         let key = sk(9);
         let reporter = id(9);
         let subject = id(3);
         let advert = PeerHealthAdvert::sign(&key, reporter, subject, 8, 2, 1_000);
-        let mut table = HashMap::new();
-        let addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
-        table.insert(
-            RelayId(reporter),
-            PeerInfo::new(addr, [0u8; 32])
-                .with_gossip_verifying_key(key.verifying_key().to_bytes()),
-        );
-        let tracker = PeerHealthTracker::new();
-        accept_advert(
+        let table = table_with(reporter, &key);
+        let tracker = PeerHealthTracker::with_gossip_majority_k(1);
+        let out = accept_advert(
             &advert,
             RelayId(reporter),
             &table,
@@ -265,16 +275,106 @@ mod tests {
             &tracker,
         )
         .unwrap();
+        assert_eq!(out, GossipMergeOutcome::Applied { reporters: 1 });
         // 8/2 at 1/2 weight → 4 ok, 1 fail → rate 0.2
         let rate = tracker.failure_rate(subject).unwrap();
         assert!((rate - 0.2).abs() < 1e-9);
     }
 
     #[test]
+    fn majority_k2_buffers_single_reporter() {
+        let key = sk(9);
+        let reporter = id(9);
+        let subject = id(3);
+        let advert = PeerHealthAdvert::sign(&key, reporter, subject, 0, 10, 1_000);
+        let table = table_with(reporter, &key);
+        let tracker = PeerHealthTracker::with_gossip_majority_k(2);
+        let out = accept_advert(
+            &advert,
+            RelayId(reporter),
+            &table,
+            1_000,
+            DEFAULT_MAX_ADVERT_AGE_SECS,
+            &tracker,
+        )
+        .unwrap();
+        assert_eq!(out, GossipMergeOutcome::Buffered { have: 1, need: 2 });
+        assert!(tracker.failure_rate(subject).is_none());
+        assert_eq!(tracker.pending_gossip_reporters(subject), 1);
+    }
+
+    #[test]
+    fn majority_k3_median_resists_single_malicious_spike() {
+        let k_a = sk(1);
+        let k_b = sk(2);
+        let k_evil = sk(3);
+        let subject = id(50);
+        let mut table = HashMap::new();
+        for (n, key) in [(1u8, &k_a), (2, &k_b), (3, &k_evil)] {
+            let addr: SocketAddr = format!("127.0.0.1:{n}").parse().unwrap();
+            table.insert(
+                RelayId(id(n)),
+                PeerInfo::new(addr, [0u8; 32])
+                    .with_gossip_verifying_key(key.verifying_key().to_bytes()),
+            );
+        }
+        let tracker = PeerHealthTracker::with_gossip_majority_k(3);
+
+        let a1 = PeerHealthAdvert::sign(&k_a, id(1), subject, 90, 10, 100);
+        let a2 = PeerHealthAdvert::sign(&k_b, id(2), subject, 88, 12, 100);
+        let a3 = PeerHealthAdvert::sign(&k_evil, id(3), subject, 0, 100, 100);
+
+        assert!(matches!(
+            accept_advert(
+                &a1,
+                RelayId(id(1)),
+                &table,
+                100,
+                DEFAULT_MAX_ADVERT_AGE_SECS,
+                &tracker
+            )
+            .unwrap(),
+            GossipMergeOutcome::Buffered { .. }
+        ));
+        assert!(matches!(
+            accept_advert(
+                &a2,
+                RelayId(id(2)),
+                &table,
+                100,
+                DEFAULT_MAX_ADVERT_AGE_SECS,
+                &tracker
+            )
+            .unwrap(),
+            GossipMergeOutcome::Buffered { .. }
+        ));
+        let out = accept_advert(
+            &a3,
+            RelayId(id(3)),
+            &table,
+            100,
+            DEFAULT_MAX_ADVERT_AGE_SECS,
+            &tracker,
+        )
+        .unwrap();
+        assert_eq!(out, GossipMergeOutcome::Applied { reporters: 3 });
+
+        let rate = tracker.failure_rate(subject).unwrap();
+        assert!(
+            rate < 0.25,
+            "median merge should damp malicious 100% reporter, got {rate}"
+        );
+        assert!(
+            rate > 0.05,
+            "median should reflect honest ~10% failure, got {rate}"
+        );
+    }
+
+    #[test]
     fn reject_unknown_reporter() {
         let key = sk(2);
         let advert = PeerHealthAdvert::sign(&key, id(2), id(3), 1, 0, 50);
-        let tracker = PeerHealthTracker::new();
+        let tracker = PeerHealthTracker::with_gossip_majority_k(1);
         let err = accept_advert(
             &advert,
             RelayId(id(2)),
@@ -292,14 +392,8 @@ mod tests {
         let key = sk(4);
         let reporter = id(4);
         let advert = PeerHealthAdvert::sign(&key, reporter, id(5), 1, 0, 10);
-        let mut table = HashMap::new();
-        let addr: SocketAddr = "127.0.0.1:4".parse().unwrap();
-        table.insert(
-            RelayId(reporter),
-            PeerInfo::new(addr, [0u8; 32])
-                .with_gossip_verifying_key(key.verifying_key().to_bytes()),
-        );
-        let tracker = PeerHealthTracker::new();
+        let table = table_with(reporter, &key);
+        let tracker = PeerHealthTracker::with_gossip_majority_k(1);
         let err = accept_advert(
             &advert,
             RelayId(reporter),
@@ -310,5 +404,12 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, HealthGossipError::StaleTimestamp);
+    }
+
+    #[test]
+    fn default_majority_k_is_two() {
+        assert_eq!(GOSSIP_MAJORITY_K, 2);
+        assert_eq!(GOSSIP_WEIGHT_NUM, 1);
+        assert_eq!(GOSSIP_WEIGHT_DEN, 2);
     }
 }

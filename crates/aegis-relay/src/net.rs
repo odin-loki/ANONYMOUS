@@ -31,15 +31,17 @@
 //! **on by default** (Mode-1 Ã— [`DEFAULT_EXPECTED_INGRESS_CLIENTS`]); set `None` or
 //! `0.0` to disable.
 //!
-//! ## Bounded inbound queue (drop-newest) + per-peer fair drain
+//! ## Bounded inbound queue (drop-newest) + per-peer weighted fair drain
 //!
 //! Each inbound TCP connection gets its own bounded per-peer `mpsc` (capacity
 //! [`PER_PEER_INBOUND_CAPACITY`]). Reassembled Sphinx packets are enqueued with
 //! [`crate::node::try_send_drop_newest`] into that peer queue. A fair-drain task
-//! round-robins one packet at a time from live peer queues into the relay's
-//! shared inbound channel (capacity [`crate::node::RELAY_CHANNEL_CAPACITY`]),
-//! so one busy peer cannot monopolize the mix queue. When a peer queue or the
-//! shared inbound is full, the **newest** packet is dropped and
+//! uses **weighted deficit round-robin** (WFQ-style) into the relay's shared
+//! inbound channel (capacity [`crate::node::RELAY_CHANNEL_CAPACITY`]), so one
+//! busy peer cannot monopolize the mix queue. Weights default to
+//! [`DEFAULT_PEER_QUEUE_WEIGHT`] (`1`); after handshake, weights are derived from
+//! peer-health success rate (unhealthy peers get lower weight). When a peer
+//! queue or the shared inbound is full, the **newest** packet is dropped and
 //! [`QueueDropStats::dropped`] increments. Rate-limit drops happen first
 //! (pre-reassembly); queue drops are a second shed for post-reassembly backlog.
 
@@ -84,9 +86,15 @@ pub const DEFAULT_LINK_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default cap on concurrent inbound TCP connections per listener.
 pub const DEFAULT_MAX_INBOUND_CONNECTIONS: usize = 256;
 
-/// Per-connection inbound queue capacity before fair round-robin drain into the
+/// Per-connection inbound queue capacity before weighted fair drain into the
 /// shared relay inbound channel.
 pub const PER_PEER_INBOUND_CAPACITY: usize = 16;
+
+/// Default per-peer inbound drain weight when no health samples exist.
+pub const DEFAULT_PEER_QUEUE_WEIGHT: u32 = 1;
+
+/// Maximum per-peer inbound drain weight (healthy peers with ~100% success).
+pub const MAX_PEER_QUEUE_WEIGHT: u32 = 8;
 
 /// Mode-1 spec worked-example slot period Ï„ (seconds).
 pub const MODE1_TAU_SECS: f64 = 0.35;
@@ -187,11 +195,40 @@ impl QueueDropStats {
     }
 }
 
+/// Map peer-health success rate to a drain weight in `[1, MAX_PEER_QUEUE_WEIGHT]`.
+///
+/// No samples → [`DEFAULT_PEER_QUEUE_WEIGHT`]. Low success (unhealthy) → lower weight.
+pub fn peer_queue_weight_from_success_rate(success_rate: Option<f64>) -> u32 {
+    match success_rate {
+        None => DEFAULT_PEER_QUEUE_WEIGHT,
+        Some(rate) => {
+            let clamped = rate.clamp(0.0, 1.0);
+            let w = (clamped * MAX_PEER_QUEUE_WEIGHT as f64).round() as u32;
+            w.clamp(DEFAULT_PEER_QUEUE_WEIGHT, MAX_PEER_QUEUE_WEIGHT)
+        }
+    }
+}
+
+fn peer_queue_weight_for(
+    matched_peer: Option<RelayId>,
+    peer_health: Option<&PeerHealthTracker>,
+) -> u32 {
+    let Some(id) = matched_peer else {
+        return DEFAULT_PEER_QUEUE_WEIGHT;
+    };
+    let Some(health) = peer_health else {
+        return DEFAULT_PEER_QUEUE_WEIGHT;
+    };
+    peer_queue_weight_from_success_rate(health.success_rate(*id.as_bytes()))
+}
+
 /// Per-connection sender into the fair-inbound hub (drop-newest on the peer queue).
 struct FairPeerSender {
     tx: mpsc::Sender<SphinxPacket>,
     notify: Arc<Notify>,
     drop_stats: Arc<QueueDropStats>,
+    hub: Arc<FairInboundHub>,
+    slot_id: usize,
 }
 
 impl FairPeerSender {
@@ -200,11 +237,23 @@ impl FairPeerSender {
         self.notify.notify_one();
         result
     }
+
+    async fn set_weight(&self, weight: u32) {
+        self.hub.set_weight(self.slot_id, weight).await;
+    }
 }
 
-/// Round-robin hub: per-connection receivers drained fairly into the mix inbound.
+/// Live peer slot: receiver + WFQ weight + remaining service credits.
+struct FairPeerSlot {
+    rx: mpsc::Receiver<SphinxPacket>,
+    weight: u32,
+    /// Remaining packets this peer may send before the cursor advances.
+    credits: u32,
+}
+
+/// Weighted fair hub: per-connection receivers drained by deficit round-robin.
 struct FairInboundHub {
-    slots: Mutex<Vec<Option<mpsc::Receiver<SphinxPacket>>>>,
+    slots: Mutex<Vec<Option<FairPeerSlot>>>,
     notify: Arc<Notify>,
 }
 
@@ -220,25 +269,102 @@ impl FairInboundHub {
         self: &Arc<Self>,
         drop_stats: Arc<QueueDropStats>,
     ) -> (usize, FairPeerSender) {
+        self.register_with_weight(drop_stats, DEFAULT_PEER_QUEUE_WEIGHT)
+            .await
+    }
+
+    async fn register_with_weight(
+        self: &Arc<Self>,
+        drop_stats: Arc<QueueDropStats>,
+        weight: u32,
+    ) -> (usize, FairPeerSender) {
+        let weight = weight.max(DEFAULT_PEER_QUEUE_WEIGHT);
         let (tx, rx) = mpsc::channel(PER_PEER_INBOUND_CAPACITY);
         let mut slots = self.slots.lock().await;
+        let slot = FairPeerSlot {
+            rx,
+            weight,
+            credits: 0,
+        };
         let slot_id = if let Some(i) = slots.iter().position(|s| s.is_none()) {
-            slots[i] = Some(rx);
+            slots[i] = Some(slot);
             i
         } else {
-            slots.push(Some(rx));
+            slots.push(Some(slot));
             slots.len() - 1
         };
         let sender = FairPeerSender {
             tx,
             notify: Arc::clone(&self.notify),
             drop_stats,
+            hub: Arc::clone(self),
+            slot_id,
         };
         // Wake the drain task if it is blocked on an empty slot table (avoids
         // lost wakeup between empty-check and `notified().await`).
         self.notify.notify_one();
         (slot_id, sender)
     }
+
+    async fn set_weight(&self, slot_id: usize, weight: u32) {
+        let weight = weight.max(DEFAULT_PEER_QUEUE_WEIGHT);
+        let mut slots = self.slots.lock().await;
+        if let Some(Some(slot)) = slots.get_mut(slot_id) {
+            slot.weight = weight;
+        }
+    }
+}
+
+/// Weighted fair take: each peer may emit up to `weight` packets per visit
+/// (credit refill). Equal weights (`1`) reduce to classic round-robin.
+fn fair_wfq_take_one(
+    slots: &mut [Option<FairPeerSlot>],
+    cursor: &mut usize,
+) -> Option<SphinxPacket> {
+    let n = slots.len();
+    if n == 0 {
+        return None;
+    }
+    for step in 0..n {
+        let i = (*cursor + step) % n;
+        let outcome = match slots.get_mut(i).and_then(|s| s.as_mut()) {
+            Some(slot) => {
+                if slot.credits == 0 {
+                    slot.credits = slot.weight.max(DEFAULT_PEER_QUEUE_WEIGHT);
+                }
+                match slot.rx.try_recv() {
+                    Ok(pkt) => {
+                        slot.credits = slot.credits.saturating_sub(1);
+                        let advance = slot.credits == 0;
+                        Some(Ok((pkt, advance)))
+                    }
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        // Empty peer forfeits remaining credits so a silent peer
+                        // cannot bank weight across rounds.
+                        slot.credits = 0;
+                        None
+                    }
+                    Err(mpsc::error::TryRecvError::Disconnected) => Some(Err(())),
+                }
+            }
+            None => None,
+        };
+        match outcome {
+            Some(Ok((pkt, advance))) => {
+                if advance {
+                    *cursor = i.wrapping_add(1);
+                } else {
+                    *cursor = i;
+                }
+                return Some(pkt);
+            }
+            Some(Err(())) => {
+                slots[i] = None;
+            }
+            None => {}
+        }
+    }
+    None
 }
 
 fn spawn_fair_inbound_drain(
@@ -260,26 +386,7 @@ fn spawn_fair_inbound_drain(
                     notified.await;
                     continue;
                 }
-                let n = slots.len();
-                let mut found = None;
-                for step in 0..n {
-                    let i = (cursor + step) % n;
-                    match slots.get_mut(i).and_then(|s| s.as_mut()) {
-                        Some(rx) => match rx.try_recv() {
-                            Ok(pkt) => {
-                                cursor = i.wrapping_add(1);
-                                found = Some(pkt);
-                                break;
-                            }
-                            Err(mpsc::error::TryRecvError::Empty) => {}
-                            Err(mpsc::error::TryRecvError::Disconnected) => {
-                                slots[i] = None;
-                            }
-                        },
-                        None => {}
-                    }
-                }
-                found
+                fair_wfq_take_one(&mut slots, &mut cursor)
             };
 
             match packet {
@@ -297,35 +404,31 @@ fn spawn_fair_inbound_drain(
     })
 }
 
-/// Drain one round-robin pass for tests (exposes fair scheduling without TCP).
+/// Drain one weighted-fair packet for tests (exposes WFQ scheduling without TCP).
 #[cfg(test)]
 async fn fair_drain_once_for_test(
     hub: &FairInboundHub,
     cursor: &mut usize,
 ) -> Option<SphinxPacket> {
     let mut slots = hub.slots.lock().await;
-    let n = slots.len();
-    if n == 0 {
-        return None;
-    }
-    for step in 0..n {
-        let i = (*cursor + step) % n;
-        if let Some(rx) = slots.get_mut(i).and_then(|s| s.as_mut()) {
-            if let Ok(pkt) = rx.try_recv() {
-                *cursor = i.wrapping_add(1);
-                return Some(pkt);
-            }
-        }
-    }
-    None
+    fair_wfq_take_one(&mut slots, cursor)
 }
 
 /// Which hop-link handshake to run after TCP connect/accept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum LinkHandshakeMode {
-    /// Ephemeral X25519 + PSK MAC (current default).
-    #[default]
+    /// Ephemeral X25519 + PSK MAC.
+    ///
+    /// Default when the `noise-link` feature is disabled.
+    #[cfg_attr(not(feature = "noise-link"), default)]
     LegacyPsk,
+    /// Select Noise when local (+ peer) static keys are present; else LegacyPsk.
+    ///
+    /// Default when `noise-link` is enabled. Keeps LegacyPsk behavior when keys
+    /// are absent.
+    #[cfg(feature = "noise-link")]
+    #[default]
+    Auto,
     /// Noise_IK-compatible mutual auth with roster static keys (`noise-link` feature).
     #[cfg(feature = "noise-link")]
     Noise,
@@ -338,9 +441,10 @@ pub struct LinkBridgeConfig {
     pub max_inbound_connections: usize,
     /// When true, bind the peer roster relay id into handshake MAC inputs.
     pub identity_binding: bool,
-    /// Handshake protocol selection (`LegacyPsk` or `Noise`).
+    /// Handshake protocol selection (`Auto` / `LegacyPsk` / `Noise`).
     pub handshake: LinkHandshakeMode,
-    /// Local Noise static secret (32 bytes). Required when `handshake == Noise`.
+    /// Local Noise static secret (32 bytes). Required when `handshake == Noise`;
+    /// when `handshake == Auto`, enables Noise if the peer static is also known.
     pub noise_static_secret: Option<[u8; 32]>,
     /// Expected initiator static public for shared ingress Noise auth (optional).
     pub ingress_noise_static_public: Option<[u8; 32]>,
@@ -349,7 +453,7 @@ pub struct LinkBridgeConfig {
     pub ingress_rate_limit_stats: Option<Arc<IngressRateLimitStats>>,
     /// Optional shared counter for inbound queue-full drops (tests / ops).
     pub queue_drop_stats: Option<Arc<QueueDropStats>>,
-    /// Inter-cell spacing for cover egress on the wire (Mode-1 Ï„ by default).
+    /// Inter-cell spacing for cover egress on the wire (Mode-1 τ by default).
     ///
     /// Cover dispatcher emits **one** sealed cell per tick when non-zero, matching
     /// client Mode-1 cadence. Set to [`Duration::ZERO`] in lab tests that only
@@ -364,7 +468,7 @@ impl Default for LinkBridgeConfig {
             read_timeout: DEFAULT_LINK_READ_TIMEOUT,
             max_inbound_connections: DEFAULT_MAX_INBOUND_CONNECTIONS,
             identity_binding: true,
-            handshake: LinkHandshakeMode::LegacyPsk,
+            handshake: LinkHandshakeMode::default(),
             noise_static_secret: None,
             ingress_noise_static_public: None,
             ingress_rate_limit: IngressRateLimitConfig::default(),
@@ -382,10 +486,37 @@ impl LinkBridgeConfig {
         self
     }
 
-    /// Disable cover Ï„-pacing (burst cover cells; lab / unit tests).
+    /// Disable cover τ-pacing (burst cover cells; lab / unit tests).
     pub fn without_cover_cell_pacing(mut self) -> Self {
         self.cover_cell_tau = Duration::ZERO;
         self
+    }
+
+    /// Whether the initiator should run Noise for this peer.
+    ///
+    /// `Auto` selects Noise only when both local `noise_static_secret` and
+    /// `peer_noise_static` are present; otherwise LegacyPsk.
+    #[cfg(feature = "noise-link")]
+    pub fn initiator_selects_noise(&self, peer_noise_static: Option<[u8; 32]>) -> bool {
+        match self.handshake {
+            LinkHandshakeMode::Noise => true,
+            LinkHandshakeMode::LegacyPsk => false,
+            LinkHandshakeMode::Auto => {
+                self.noise_static_secret.is_some() && peer_noise_static.is_some()
+            }
+        }
+    }
+
+    /// Whether the responder should run Noise for inbound connections.
+    ///
+    /// `Auto` selects Noise when local `noise_static_secret` is configured.
+    #[cfg(feature = "noise-link")]
+    pub fn responder_selects_noise(&self) -> bool {
+        match self.handshake {
+            LinkHandshakeMode::Noise => true,
+            LinkHandshakeMode::LegacyPsk => false,
+            LinkHandshakeMode::Auto => self.noise_static_secret.is_some(),
+        }
     }
 }
 
@@ -866,7 +997,8 @@ async fn write_all_timeout(
 /// Initiator-side link handshake on an established TCP stream.
 ///
 /// `peer_noise_static` is the roster-expected responder static public key when
-/// [`LinkBridgeConfig::handshake`] is [`LinkHandshakeMode::Noise`]; ignored for LegacyPsk.
+/// Noise is selected (`Noise` mode, or `Auto` with both local and peer statics);
+/// ignored for LegacyPsk.
 pub async fn run_initiator_handshake<R: RngCore + CryptoRngCore>(
     stream: &mut TcpStream,
     psk: &[u8; 32],
@@ -877,7 +1009,7 @@ pub async fn run_initiator_handshake<R: RngCore + CryptoRngCore>(
     bridge_config: &LinkBridgeConfig,
 ) -> Result<LinkKey, NetError> {
     #[cfg(feature = "noise-link")]
-    if bridge_config.handshake == LinkHandshakeMode::Noise {
+    if bridge_config.initiator_selects_noise(peer_noise_static) {
         return run_initiator_noise_handshake(stream, peer_noise_static, rng, bridge_config).await;
     }
     let _ = peer_noise_static;
@@ -959,7 +1091,7 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
     peer_health: Option<&PeerHealthTracker>,
 ) -> Result<(LinkKey, Option<RelayId>), NetError> {
     #[cfg(feature = "noise-link")]
-    if bridge_config.handshake == LinkHandshakeMode::Noise {
+    if bridge_config.responder_selects_noise() {
         return run_responder_noise_handshake(
             stream,
             ingress_link_key,
@@ -1237,6 +1369,11 @@ async fn run_inbound_connection(
         peer_health,
     )
     .await?;
+
+    // Weighted fair inbound: unhealthy peers (low success rate) get lower weight.
+    peer_tx
+        .set_weight(peer_queue_weight_for(matched_peer, peer_health))
+        .await;
 
     let mut frame = [0u8; LINK_FRAME_LEN];
     let mut reassembler = SphinxReassembler::new();
@@ -2800,9 +2937,59 @@ mod tests {
                 .expect("packet available");
             order.push(pkt.as_bytes()[0]);
         }
-        // Round-robin must serve B between A's packets (not AAAA then BB).
+        // Equal weights → classic RR: B between A's packets (not AAAA then BB).
         assert_eq!(order, vec![0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xAA]);
         assert!(fair_drain_once_for_test(&hub, &mut cursor).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fair_inbound_weighted_prefers_healthy_peer() {
+        use aegis_crypto::sphinx::SPHINX_PACKET_LEN;
+
+        let hub = FairInboundHub::new();
+        let stats = Arc::new(QueueDropStats::default());
+        // Healthy peer weight 3; unhealthy weight 1.
+        let (_id_a, tx_a) = hub.register_with_weight(Arc::clone(&stats), 3).await;
+        let (_id_b, tx_b) = hub.register_with_weight(Arc::clone(&stats), 1).await;
+
+        let mk = |tag: u8| {
+            let mut bytes = [0u8; SPHINX_PACKET_LEN];
+            bytes[0] = tag;
+            SphinxPacket::from_bytes(bytes)
+        };
+        for _ in 0..6 {
+            assert!(tx_a.try_enqueue(mk(0xAA)).is_ok());
+            assert!(tx_b.try_enqueue(mk(0xBB)).is_ok());
+        }
+
+        let mut cursor = 0usize;
+        let mut order = Vec::new();
+        for _ in 0..8 {
+            let pkt = fair_drain_once_for_test(&hub, &mut cursor)
+                .await
+                .expect("packet available");
+            order.push(pkt.as_bytes()[0]);
+        }
+        // Weight-3 peer gets three packets before weight-1 peer's turn.
+        assert_eq!(
+            &order[..4],
+            &[0xAA, 0xAA, 0xAA, 0xBB],
+            "WFQ must serve heavy peer first: {order:?}"
+        );
+        let a_count = order.iter().filter(|&&b| b == 0xAA).count();
+        let b_count = order.iter().filter(|&&b| b == 0xBB).count();
+        assert!(a_count > b_count, "healthy peer should win share: {order:?}");
+    }
+
+    #[test]
+    fn peer_queue_weight_maps_success_rate() {
+        assert_eq!(
+            peer_queue_weight_from_success_rate(None),
+            DEFAULT_PEER_QUEUE_WEIGHT
+        );
+        assert_eq!(peer_queue_weight_from_success_rate(Some(1.0)), MAX_PEER_QUEUE_WEIGHT);
+        assert_eq!(peer_queue_weight_from_success_rate(Some(0.0)), DEFAULT_PEER_QUEUE_WEIGHT);
+        assert_eq!(peer_queue_weight_from_success_rate(Some(0.5)), 4);
     }
 
     #[tokio::test]
@@ -2843,7 +3030,8 @@ mod tests {
                 .with_gossip_verifying_key(reporter_sk.verifying_key().to_bytes()),
         );
 
-        let health = Arc::new(PeerHealthTracker::new());
+        // K=1 for this link-level round-trip; production default majority_k=2.
+        let health = Arc::new(PeerHealthTracker::with_gossip_majority_k(1));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let cfg = LinkBridgeConfig::default().without_ingress_rate_limit();
@@ -3036,12 +3224,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_psk_still_default_after_noise_wiring() {
+    async fn legacy_psk_still_used_when_keys_absent() {
         let psk = test_psk(0x42);
         let relay_id = test_relay_id(0x01);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let cfg = LinkBridgeConfig::default();
+        #[cfg(feature = "noise-link")]
+        {
+            assert_eq!(cfg.handshake, LinkHandshakeMode::Auto);
+            assert!(!cfg.initiator_selects_noise(None));
+            assert!(!cfg.responder_selects_noise());
+        }
+        #[cfg(not(feature = "noise-link"))]
         assert_eq!(cfg.handshake, LinkHandshakeMode::LegacyPsk);
 
         let cfg_server = cfg.clone();
@@ -3069,5 +3264,78 @@ mod tests {
                 .unwrap();
         let (key_r, _) = server.await.unwrap().unwrap();
         assert_eq!(key_i, key_r);
+    }
+
+    #[cfg(feature = "noise-link")]
+    #[tokio::test]
+    async fn handshake_auto_selects_noise_when_keys_present() {
+        use aegis_crypto::noise_link::{derive_noise_static_secret, noise_static_public};
+
+        let init_sk = derive_noise_static_secret(&[0x51u8; 32]);
+        let resp_sk = derive_noise_static_secret(&[0x52u8; 32]);
+        let init_pk = noise_static_public(&init_sk);
+        let resp_pk = noise_static_public(&resp_sk);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer_id = test_relay_id(0xB1);
+        let local_id = test_relay_id(0xB2);
+        let psk = test_psk(0xCC);
+
+        let peer = PeerInfo::new(addr, psk).with_noise_static_public(init_pk);
+        let peer_table = HashMap::from([(peer_id, peer)]);
+
+        let mut cfg = LinkBridgeConfig::default();
+        assert_eq!(cfg.handshake, LinkHandshakeMode::Auto);
+        cfg.noise_static_secret = Some(resp_sk);
+        assert!(cfg.responder_selects_noise());
+
+        let cfg_server = cfg.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            run_responder_handshake(
+                &mut stream,
+                local_id,
+                None,
+                None,
+                &peer_table,
+                &mut rng,
+                &cfg_server,
+                None,
+            )
+            .await
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let mut rng = OsRng;
+        let mut init_cfg = LinkBridgeConfig::default();
+        init_cfg.noise_static_secret = Some(init_sk);
+        assert!(init_cfg.initiator_selects_noise(Some(resp_pk)));
+        let key_i = run_initiator_handshake(
+            &mut client,
+            &psk,
+            local_id,
+            None,
+            Some(resp_pk),
+            &mut rng,
+            &init_cfg,
+        )
+        .await
+        .unwrap();
+        let (key_r, matched) = server.await.unwrap().unwrap();
+        assert_eq!(matched, Some(peer_id));
+        assert_eq!(key_i, key_r);
+    }
+
+    #[cfg(feature = "noise-link")]
+    #[test]
+    fn handshake_auto_falls_back_without_peer_static() {
+        let mut cfg = LinkBridgeConfig::default();
+        cfg.noise_static_secret = Some([0x77; 32]);
+        // Responder can offer Noise with local secret alone.
+        assert!(cfg.responder_selects_noise());
+        // Initiator needs peer static too — otherwise LegacyPsk.
+        assert!(!cfg.initiator_selects_noise(None));
     }
 }

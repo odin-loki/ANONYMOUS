@@ -63,7 +63,7 @@ All of the above is independently re-verifiable with `cd sim && PYTHONPATH=. pyt
 ## Security profiling
 Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing + a real implementation-level threat model, not just the paper design) lives across:
 - `docs/AEGIS_crypto_constant_time_review.md` — constant-time review + real `cargo-fuzz`/libFuzzer results (via WSL; Windows lacks libFuzzer sanitizer support) for `aegis-crypto`'s attacker-facing parsers, plus `aegis-topology`'s roster/beacon deserialization.
-- `docs/AEGIS_implementation_threat_model.md` — STRIDE pass on the real code; actionable call-site gaps closed (**Profiling complete**). Residuals are research/ops (ZK anonymous reputation, TEE, Noise, etc.); ingress rate-limit + DPAPI are among the done mitigations — see that doc's table.
+- `docs/AEGIS_implementation_threat_model.md` — STRIDE pass on the real code; actionable call-site gaps closed (**Profiling complete**). Research/ops leftovers wave closed except B-class External (hardware TEE SDK, multi-org BFT, full dudect lab, full AC issuer) — see `docs/ops/RESEARCH_OPS_STATUS.md`.
 - `crates/aegis-topology/tests/sybil_admission.rs` — a real Sybil-admission simulation against the actual roster/reputation code, with measured before/after numbers.
 - `sim/data/real_testnet_malicious_trace.csv` + `sim/scripts/analyze_malicious_trace.py` — a flooding/adversarial trace capture compared against the benign trace and synthetic stand-in.
 - `crates/deny.toml` — supply-chain policy (`cargo deny check`: advisories/licenses/bans/sources), enforced alongside a workspace-wide Clippy security lint set (`unsafe_code = forbid`, warn on `unwrap_used`/`expect_used`/`indexing_slicing`/`arithmetic_side_effects`).
@@ -83,8 +83,9 @@ Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing 
    `-- --ignored`) reproduces the Phase-8 benign and malicious real trace captures.
 
    **Security profiling status (2026-07-17): done** — call-site gaps closed, and
-   the research/ops residual wave is shipped (Partial/Mitigated). See
-   `docs/AEGIS_research_ops_hardening_plan.md` and `docs/ops/`.
+   the research/ops leftovers wave is **closed** except B-class External. See
+   `docs/AEGIS_research_ops_hardening_plan.md`, `docs/ops/RESEARCH_OPS_STATUS.md`,
+   and `docs/ops/`.
 
    Call-site mitigations: paced session + ρ≤0.7, ingress token-bucket + global
    budget, M-of-N + KEM-derived `RelayId`, CT replay scan, signed reputation
@@ -92,12 +93,14 @@ Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing 
    handshake, required L2 bulk cover (τ-paced), peer-health→EWMA + health
    gossip, g=3 guards, anomaly-gated admission, verified roster load, DPAPI +
    Unix keyring KEM seeds, exit sink, post-shaping traces, anonymous reputation
-   presentations, per-peer fair inbound RR, drop-newest queues, CI fuzz/deny.
+   presentations + local nullifier registry, per-peer weighted fair inbound
+   (WFQ-style), drop-newest queues, Auto→Noise when static keys present, CI
+   fuzz/deny.
 
-   Honest leftovers (not unfinished wiring): hardware TEE SDK, HSM/Shamir
-   ceremony, BLAKE2s-Noise byte-compat / default-on Noise, full AC issuer,
-   BFT reputation consensus, WSL dudect proofs, weighted (not equal) WFQ.
-   See **Profiling complete** in `docs/AEGIS_implementation_threat_model.md`.
+   B-class External leftovers (not unfinished wiring): hardware TEE SDK,
+   multi-org BFT reputation consensus, full dudect lab, full AC issuer;
+   also HSM/Shamir ceremony, BLAKE2s-Noise byte-compat. See **Profiling
+   complete** in `docs/AEGIS_implementation_threat_model.md`.
 
 ## Honest boundaries (do not oversell — see spec §8, §9)
 - Strong guarantees are for **internal** (client↔client) traffic. Clearnet exit is

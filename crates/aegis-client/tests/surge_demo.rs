@@ -60,7 +60,7 @@ fn surge_demo_wire_is_flat_while_true_traffic_spikes() {
 
     for (t, &n) in schedule.iter().enumerate() {
         for _ in 0..n {
-            emitter.enqueue(vec![0xC2; 64]);
+            emitter.enqueue(vec![0xC2; 64]).unwrap();
             true_total += 1;
         }
         let phase = if t < total_ticks / 5 {
@@ -144,7 +144,7 @@ fn observer_record_has_no_real_dummy_leak() {
     let mut emitter = ConstantRateEmitter::new(config, OsRng);
     let mut transport = ObserverTransport::new();
 
-    emitter.enqueue(vec![1, 2, 3]);
+    emitter.enqueue(vec![1, 2, 3]).unwrap();
     for _ in 0..10 {
         emitter.tick(&mut transport);
     }

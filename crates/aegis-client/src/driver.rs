@@ -44,7 +44,7 @@ pub async fn run_emitter_loop<R, T>(
 pub async fn run_session_emitter_loop<R>(
     mut emitter: ConstantRateEmitter<R>,
     transport: TcpCellTransport,
-    mut enqueue_rx: mpsc::UnboundedReceiver<OutboundCell>,
+    mut enqueue_rx: mpsc::Receiver<OutboundCell>,
     mut shutdown: watch::Receiver<bool>,
     cover_after_send: Duration,
     cover_done_tx: watch::Sender<bool>,
@@ -71,7 +71,9 @@ where
             maybe_cell = enqueue_rx.recv() => {
                 match maybe_cell {
                     Some(cell) => {
-                        emitter.enqueue_cell(cell);
+                        if emitter.enqueue_cell(cell).is_err() {
+                            emitter.note_dropped_enqueue();
+                        }
                         cover_deadline = None;
                         saw_real_since_cover = true;
                         let _ = cover_done_tx.send(false);
@@ -127,6 +129,7 @@ pub fn config_with_tau_and_peak(tau_secs: f64, peak_rate_per_sec: f64) -> crate:
     crate::emitter::EmitterConfig {
         tau: Duration::from_secs_f64(tau_secs),
         peak_rate_per_sec,
+        ..crate::emitter::EmitterConfig::default()
     }
 }
 
@@ -174,7 +177,7 @@ pub mod test_support {
     pub async fn run_session_emitter_loop_mock<R, T>(
         mut emitter: ConstantRateEmitter<R>,
         mut transport: T,
-        mut enqueue_rx: mpsc::UnboundedReceiver<OutboundCell>,
+        mut enqueue_rx: mpsc::Receiver<OutboundCell>,
         mut shutdown: watch::Receiver<bool>,
         cover_after_send: Duration,
         cover_done_tx: watch::Sender<bool>,
@@ -201,7 +204,9 @@ pub mod test_support {
                 maybe_cell = enqueue_rx.recv() => {
                     match maybe_cell {
                         Some(cell) => {
-                            emitter.enqueue_cell(cell);
+                            if emitter.enqueue_cell(cell).is_err() {
+                                emitter.note_dropped_enqueue();
+                            }
                             cover_deadline = None;
                             saw_real_since_cover = true;
                             let _ = cover_done_tx.send(false);

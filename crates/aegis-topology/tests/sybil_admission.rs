@@ -5,7 +5,12 @@
 //! Measures what fraction of the guard and path-selection surface Sybils capture
 //! under the actual `build_topology` / `GuardSelector` / `select_path*` logic.
 //!
-//! Run: `cargo test -p aegis-topology --test sybil_admission`
+//! Intentionally uses unfiltered (deprecated / `test-utils`) path/guard APIs for
+//! honest residual measurement — keep `#[allow(deprecated)]` on those call sites.
+//!
+//! Run: `cargo test -p aegis-topology --features test-utils --test sybil_admission`
+
+#![allow(deprecated)]
 
 use std::collections::HashSet;
 use std::time::Duration;

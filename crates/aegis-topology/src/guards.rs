@@ -1,4 +1,10 @@
 //! Stable vetted layered guards (spec §4.6) and exposure plateau math.
+//!
+//! **Production callers** should use [`GuardSelector::new_reputation_weighted_pruned`]
+//! (or [`crate::path::build_bound_path_pruned_with_guards`] which constructs guards
+//! internally). Unfiltered [`GuardSelector::new`] / [`GuardSelector::new_for_tests`]
+//! exist only under `cfg(test)` or the `test-utils` feature (default off) for Sybil
+//! science and residual-threat measurement.
 
 use aegis_trust::policy::RelayPruningPolicy;
 use aegis_trust::reputation::ReputationLedger;
@@ -58,10 +64,14 @@ pub struct GuardSelector {
 }
 
 impl GuardSelector {
-    /// Pick `config.guard_count` relays from topology layer 1, deterministically per
-    /// `(client_seed, epoch)`. The full set is held for the epoch; path builders pin
-    /// layer-1 via [`Self::entry_guard_for_packet`] (sticky primary by default).
-    pub fn new(
+    /// Pick `config.guard_count` relays from topology layer 1 without reputation
+    /// filtering — **test/lab only**.
+    ///
+    /// Available only under `cfg(test)` or the `test-utils` feature (default off).
+    /// Production must use [`Self::new_reputation_weighted_pruned`] or
+    /// [`crate::path::build_bound_path_pruned_with_guards`].
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_for_tests(
         topology: &Topology,
         config: &GuardConfig,
         client_seed: u64,
@@ -100,6 +110,24 @@ impl GuardSelector {
             guards: candidates,
             pin_mode: config.pin_mode,
         })
+    }
+
+    /// Unfiltered guard selection (no reputation floor).
+    ///
+    /// **Not compiled into production builds** of this crate unless the `test-utils`
+    /// feature is enabled. Prefer [`Self::new_for_tests`] in new test code;
+    /// production must use [`Self::new_reputation_weighted_pruned`] or
+    /// [`crate::path::build_bound_path_pruned_with_guards`].
+    #[cfg(any(test, feature = "test-utils"))]
+    #[deprecated(
+        note = "unfiltered guard selection is test-only; production must use new_reputation_weighted_pruned / build_bound_path_pruned_with_guards (enable feature aegis-topology/test-utils only in test deps)"
+    )]
+    pub fn new(
+        topology: &Topology,
+        config: &GuardConfig,
+        client_seed: u64,
+    ) -> Result<Self, TopologyError> {
+        Self::new_for_tests(topology, config, client_seed)
     }
 
     /// Like [`Self::new`] but only considers layer-1 relays whose
@@ -335,6 +363,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn reputation_unaware_guard_selector_unchanged() {
         let roster = sample_roster(12);
         let topo = build_topology(&roster, 5, &TopologyConfig::high_threat(), 0).unwrap();

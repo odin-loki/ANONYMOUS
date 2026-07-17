@@ -26,9 +26,9 @@ Each residual must have:
 | 6 | Cross-relay health gossip | Signed `PeerHealthAdvert` | **Partial** |
 | 7 | ZK anonymous reputation | Anonymous presentation + nullifier API | **Partial** |
 | 8 | Adversarial multi-conn flood | Default global ingress budget 8/τ | **Mitigated** |
-| 9 | Sybil / g=3 guard plateau | `GUARD_SET_SIZE=3` + production helpers | **Mitigated** (unfiltered APIs residual) |
+| 9 | Sybil / g=3 guard plateau | `GUARD_SET_SIZE=3` + production helpers + `test-utils` API fence | **Mitigated** |
 | 10 | dudect / CT evidence | In-tree smoke + WSL dudect ops doc | **Partial** |
-| 11 | Per-peer fair queues | Per-peer inbound + RR drain | **Partial/Mitigated** |
+| 11 | Per-peer fair queues | Per-peer inbound + weighted WFQ-style drain | **Partial/Mitigated** |
 
 ## Ops documentation index
 
@@ -54,14 +54,14 @@ Each residual must have:
 | # | Status | Notes |
 |---|--------|-------|
 | 1 | **Partial** | `AttestationProvider` + `SoftwareAttestationProvider`; `core_gates_hold_under_attested`; `docs/ops/tee_attestation.md` |
-| 2 | **Partial** | `docs/ops/consortium_key_ceremony.md` + `aegis-ceremony` bin |
+| 2 | **Partial** | `docs/ops/consortium_key_ceremony.md` + `aegis-ceremony` + optional GF(256) Shamir shares |
 | 3 | **Partial/Mitigated** | `noise_link` + `LinkHandshakeMode::Noise`; default LegacyPsk |
 | 4 | **Partial/Mitigated** | Unix `kem-keyring` + Windows DPAPI; `0600` fallback |
 | 5 | **Partial** | `cover_cell_tau` paced cover dispatcher |
-| 6 | **Partial** | `PeerHealthAdvert` + `docs/ops/health_gossip.md` |
+| 6 | **Partial** | `PeerHealthAdvert` + `majority_k` median merge + `docs/ops/health_gossip.md` |
 | 7 | **Partial** | `AnonymousReputationPresentation` + nullifier helper |
 | 8 | **Mitigated** | Default `global_max_cells_per_sec = 8/τ` |
-| 9 | **Mitigated** | `GUARD_SET_SIZE=3` + `build_bound_path_pruned_with_guards` |
+| 9 | **Mitigated** | `GUARD_SET_SIZE=3` + `build_bound_path_pruned_with_guards`; unfiltered APIs gated `test-utils` |
 | 10 | **Partial** | `dudect_smoke` + `docs/ops/constant_time_ci.md` |
 | 11 | **Partial/Mitigated** | Per-peer inbound queues + RR fair drain |
 

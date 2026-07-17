@@ -1,4 +1,9 @@
 //! Per-packet path selection and compromise math (spec §4.5, §6).
+//!
+//! **Production callers** should use [`build_bound_path_pruned_with_guards`] or the
+//! `*_reputation_weighted_pruned` helpers. Unfiltered [`select_path_for_tests`] /
+//! [`select_path_indexed_for_tests`] exist only under `cfg(test)` or the `test-utils`
+//! feature (default off) for Sybil science and residual-threat measurement.
 
 use std::collections::HashMap;
 
@@ -55,23 +60,12 @@ pub fn path_satisfies_jurisdiction(
     Ok(true)
 }
 
-/// Select one relay per layer using a fresh OS CSPRNG draw on every call.
+/// Core path selection: one relay per layer using a fresh OS CSPRNG draw on every call.
 ///
 /// Layer 1 is pinned from the held guard set when `guards` is provided
-/// ([`GuardSelector::entry_guard_for_packet`] with index 0 — sticky primary by
-/// default). Inner hops (layers 2..L) are uniformly random per packet.
-///
-/// For rotate pinning across the g-set, use [`select_path_indexed`].
-pub fn select_path(
-    topology: &Topology,
-    guards: Option<&GuardSelector>,
-) -> Result<Vec<RelayId>, TopologyError> {
-    select_path_indexed(topology, guards, 0)
-}
-
-/// Like [`select_path`] but pins layer-1 with `packet_index` under the selector's
-/// [`crate::guards::GuardPinMode`] (sticky primary or rotate across the g-set).
-pub fn select_path_indexed(
+/// ([`GuardSelector::entry_guard_for_packet`]). Inner hops (layers 2..L) are uniformly
+/// random per packet. Used internally by reputation-weighted and pruned path builders.
+pub(crate) fn select_path_indexed_impl(
     topology: &Topology,
     guards: Option<&GuardSelector>,
     packet_index: u64,
@@ -105,6 +99,66 @@ pub fn select_path_indexed(
     Ok(path)
 }
 
+/// Select one relay per layer without reputation filtering — **test/lab only**.
+///
+/// Layer 1 is pinned from the held guard set when `guards` is provided
+/// ([`GuardSelector::entry_guard_for_packet`] with index 0 — sticky primary by
+/// default). Inner hops (layers 2..L) are uniformly random per packet.
+///
+/// Available only under `cfg(test)` or the `test-utils` feature (default off).
+/// Production must use [`build_bound_path_pruned_with_guards`] or
+/// [`select_path_reputation_weighted_pruned`].
+///
+/// For rotate pinning across the g-set, use [`select_path_indexed_for_tests`].
+#[cfg(any(test, feature = "test-utils"))]
+pub fn select_path_for_tests(
+    topology: &Topology,
+    guards: Option<&GuardSelector>,
+) -> Result<Vec<RelayId>, TopologyError> {
+    select_path_indexed_for_tests(topology, guards, 0)
+}
+
+/// Unfiltered path selection (no reputation floor).
+///
+/// **Not compiled into production builds** of this crate unless the `test-utils`
+/// feature is enabled. Prefer [`select_path_for_tests`] in new test code; production
+/// must use [`build_bound_path_pruned_with_guards`] or
+/// [`select_path_reputation_weighted_pruned`].
+#[cfg(any(test, feature = "test-utils"))]
+#[deprecated(
+    note = "unfiltered path selection is test-only; production must use build_bound_path_pruned_with_guards / select_path_reputation_weighted_pruned (enable feature aegis-topology/test-utils only in test deps)"
+)]
+pub fn select_path(
+    topology: &Topology,
+    guards: Option<&GuardSelector>,
+) -> Result<Vec<RelayId>, TopologyError> {
+    select_path_for_tests(topology, guards)
+}
+
+/// Like [`select_path_for_tests`] but pins layer-1 with `packet_index` under the
+/// selector's [`crate::guards::GuardPinMode`] (sticky primary or rotate across the g-set).
+#[cfg(any(test, feature = "test-utils"))]
+pub fn select_path_indexed_for_tests(
+    topology: &Topology,
+    guards: Option<&GuardSelector>,
+    packet_index: u64,
+) -> Result<Vec<RelayId>, TopologyError> {
+    select_path_indexed_impl(topology, guards, packet_index)
+}
+
+/// Unfiltered indexed path selection — **test/lab only** (deprecated alias).
+#[cfg(any(test, feature = "test-utils"))]
+#[deprecated(
+    note = "unfiltered path selection is test-only; production must use build_bound_path_pruned_with_guards / select_path_reputation_weighted_pruned (enable feature aegis-topology/test-utils only in test deps)"
+)]
+pub fn select_path_indexed(
+    topology: &Topology,
+    guards: Option<&GuardSelector>,
+    packet_index: u64,
+) -> Result<Vec<RelayId>, TopologyError> {
+    select_path_indexed_for_tests(topology, guards, packet_index)
+}
+
 /// Like [`select_path`] but rejects paths that violate jurisdiction policy.
 pub fn select_diverse_path(
     topology: &Topology,
@@ -114,7 +168,7 @@ pub fn select_diverse_path(
     max_attempts: usize,
 ) -> Result<Vec<RelayId>, TopologyError> {
     for _ in 0..max_attempts {
-        let path = select_path(topology, guards)?;
+        let path = select_path_indexed_impl(topology, guards, 0)?;
         if path_satisfies_jurisdiction(&path, roster, policy)? {
             return Ok(path);
         }
@@ -149,7 +203,7 @@ pub fn select_path_reputation_weighted(
     max_attempts: usize,
 ) -> Result<Vec<RelayId>, TopologyError> {
     for _ in 0..max_attempts {
-        let path = select_path(topology, guards)?;
+        let path = select_path_indexed_impl(topology, guards, 0)?;
         for id in &path {
             roster
                 .get(*id)
@@ -176,7 +230,7 @@ pub fn select_diverse_reputation_path(
     max_attempts: usize,
 ) -> Result<Vec<RelayId>, TopologyError> {
     for _ in 0..max_attempts {
-        let path = select_path(topology, guards)?;
+        let path = select_path_indexed_impl(topology, guards, 0)?;
         if !path_satisfies_reputation(&path, ledger, min_reputation) {
             continue;
         }
@@ -200,7 +254,7 @@ pub fn select_path_reputation_weighted_pruned(
     max_attempts: usize,
 ) -> Result<Vec<RelayId>, TopologyError> {
     for _ in 0..max_attempts {
-        let path = select_path(topology, guards)?;
+        let path = select_path_indexed_impl(topology, guards, 0)?;
         for id in &path {
             roster
                 .get(*id)
@@ -263,8 +317,7 @@ pub fn build_bound_path_pruned(
 /// [`GuardConfig::default`] = 3) then a pruned bound path pinned to that set.
 ///
 /// This is the recommended production entry point — multi-guard + reputation
-/// filtering together. Unfiltered `select_path` / `GuardSelector::new` remain for
-/// research and residual-threat measurement.
+/// filtering together. Unfiltered path/guard APIs are gated behind `test-utils`.
 pub fn build_bound_path_pruned_with_guards(
     topology: &Topology,
     roster: &RelayRoster,
@@ -326,7 +379,7 @@ pub fn select_diverse_reputation_path_pruned(
     max_attempts: usize,
 ) -> Result<Vec<RelayId>, TopologyError> {
     for _ in 0..max_attempts {
-        let path = select_path(topology, guards)?;
+        let path = select_path_indexed_impl(topology, guards, 0)?;
         if !path_satisfies_pruning_policy(&path, policy, min_reputation) {
             continue;
         }
@@ -384,6 +437,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn reputation_unaware_path_selection_unchanged() {
         let roster = sample_roster(24, &["US", "DE", "FR", "UK", "JP", "CA"]);
         let topo = build_topology(&roster, 1, &TopologyConfig::high_threat(), 0).unwrap();
