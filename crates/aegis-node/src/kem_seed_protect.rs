@@ -4,13 +4,17 @@
 //!
 //! - **Legacy plaintext:** UTF-8 TOML (`x25519_seed` / `mlkem_d` / `mlkem_z` hex).
 //! - **Windows DPAPI (default when `kem-dpapi` is enabled):** magic header
-//!   [`KEM_SEED_DPAPI_MAGIC`] followed by a `CryptProtectData` blob (user scope).
+//!   [`KEM_SEED_DPAPI_MAGIC`] followed by a `CryptProtectData` blob (**same-user**
+//!   scope via `CryptProtectData` / `Scope::User` — decryptable only by the
+//!   Windows user profile that created it; not an HSM or cross-user secret store).
 //! - **Unix keyring (default when `kem-keyring` is enabled):** magic header
 //!   [`KEM_SEED_KEYRING_MAGIC`] followed by the keyring account UTF-8; the seed
 //!   TOML lives in the OS keychain (service [`KEM_KEYRING_SERVICE`]).
 //!
 //! Fallback when keyring is unavailable or disabled: plaintext TOML + Unix mode
-//! `0600`. Legacy plaintext files continue to load on all platforms.
+//! `0600` on write. **Load refuses** Unix seed files whose mode grants group or
+//! world access (`mode & 0o077 != 0`), including legacy plaintext. Legacy
+//! plaintext with owner-only mode still loads on all platforms.
 
 use sha3::{Digest, Sha3_256};
 use std::path::Path;
@@ -32,6 +36,33 @@ pub fn is_dpapi_protected(data: &[u8]) -> bool {
 /// True when `data` begins with the keyring pointer magic header.
 pub fn is_keyring_protected(data: &[u8]) -> bool {
     data.starts_with(KEM_SEED_KEYRING_MAGIC)
+}
+
+/// Refuse load when a Unix `kem.seeds` path is group- or world-accessible.
+///
+/// Applies to all on-disk formats (plaintext, keyring pointer, etc.). No-op on
+/// non-Unix targets (Windows relies on DPAPI same-user binding instead).
+#[cfg(unix)]
+pub fn assert_kem_seed_file_mode_safe(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path)
+        .map_err(|e| format!("kem.seeds metadata: {e}"))?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(format!(
+            "kem.seeds at {} has insecure mode {mode:o} (group/world access); \
+             expected owner-only (0600 or tighter)",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn assert_kem_seed_file_mode_safe(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 /// Stable keyring account for a node config path (or optional relay id hex).
@@ -230,7 +261,43 @@ mlkem_z = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
         assert!(!is_keyring_protected(&stored));
     }
 
-    /// Keyring round-trip when a secret-service / keychain is available.
+    #[cfg(unix)]
+    #[test]
+    fn kem_seed_file_rejects_group_world_readable_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-kem-mode-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("kem.seeds");
+        std::fs::write(&path, b"x25519_seed = \"aa\"\n").unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        let err = assert_kem_seed_file_mode_safe(&path).unwrap_err();
+        assert!(
+            err.contains("insecure mode"),
+            "unexpected error: {err}"
+        );
+
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&path, perms).unwrap();
+        assert!(assert_kem_seed_file_mode_safe(&path).is_ok());
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn kem_seed_file_mode_check_is_noop_off_unix() {
+        let path = Path::new("/nonexistent/kem.seeds");
+        assert!(assert_kem_seed_file_mode_safe(path).is_ok());
+    }
     /// Skips cleanly when the platform keyring backend is missing (CI/headless).
     #[cfg(all(unix, feature = "kem-keyring"))]
     #[test]

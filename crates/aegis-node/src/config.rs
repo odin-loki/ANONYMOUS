@@ -11,9 +11,12 @@
 //!   (service `aegis-node`; account = relay id or config-path hash). Pointer file
 //!   uses magic [`crate::kem_seed_protect::KEM_SEED_KEYRING_MAGIC`]. Falls back to
 //!   plaintext TOML + mode `0600` if the keychain is unavailable.
-//! - **Windows** (feature `kem-dpapi`, default): DPAPI user-scope wrap
-//!   (`CryptProtectData`) with magic [`crate::kem_seed_protect::KEM_SEED_DPAPI_MAGIC`];
-//!   legacy plaintext `kem.seeds` still loads.
+//! - **Windows** (feature `kem-dpapi`, default): DPAPI **same-user** wrap
+//!   (`CryptProtectData`, user scope) with magic
+//!   [`crate::kem_seed_protect::KEM_SEED_DPAPI_MAGIC`]; decryptable only by the
+//!   creating Windows profile. Legacy owner-readable plaintext still loads.
+//! - **Unix load hardening:** [`crate::kem_seed_protect::assert_kem_seed_file_mode_safe`]
+//!   refuses group/world-readable `kem.seeds` (stricter than write-time `0600` alone).
 
 use std::collections::HashMap;
 use std::fs;
@@ -254,6 +257,17 @@ impl ReputationConfig {
         if let Err(e) = registry.save_to_file(&path) {
             eprintln!("warning: nullifier registry save failed ({e})");
         }
+    }
+
+    /// Merge a peer-exported nullifier registry file into `registry` and optionally persist.
+    pub fn merge_nullifier_registry_from(
+        &self,
+        registry: &mut NullifierRegistry,
+        import_path: &str,
+    ) -> Result<aegis_trust::NullifierMergeReport, NullifierError> {
+        let report = registry.merge_from_file(Path::new(import_path))?;
+        self.save_nullifier_registry(registry);
+        Ok(report)
     }
 }
 
@@ -512,6 +526,8 @@ pub fn resolve_kem_seeds(config_path: &Path, kem: &KemFileConfig) -> Result<KemS
     if !seed_path.is_file() {
         return Err(ConfigError::MissingKem);
     }
+    crate::kem_seed_protect::assert_kem_seed_file_mode_safe(&seed_path)
+        .map_err(ConfigError::KemProtect)?;
     let raw = fs::read(&seed_path)?;
     let plain = crate::kem_seed_protect::unprotect_seed_bytes(&raw)
         .map_err(ConfigError::KemProtect)?;
@@ -1499,6 +1515,38 @@ mlkem_z = "{}"
         let _ = std::fs::remove_dir(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn kem_resolve_rejects_group_world_readable_seed_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = test_config_dir("unix-loose-mode");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("node.toml");
+        let seed_path = dir.join(DEFAULT_KEM_SEED_FILENAME);
+        let seeds = fixed_seeds();
+        std::fs::write(&seed_path, toml::to_string(&seeds).unwrap()).unwrap();
+        let mut perms = std::fs::metadata(&seed_path).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&seed_path, perms).unwrap();
+        std::fs::write(
+            &config_path,
+            minimal_node_toml(&format!(
+                "[kem]\nfile = \"{DEFAULT_KEM_SEED_FILENAME}\"\n"
+            )),
+        )
+        .unwrap();
+
+        let file = NodeConfigFile::load(&config_path).unwrap();
+        let err = resolve_kem_seeds(&config_path, file.kem.as_ref().unwrap()).unwrap_err();
+        assert!(matches!(err, ConfigError::KemProtect(_)));
+        assert!(err.to_string().contains("insecure mode"));
+
+        let _ = std::fs::remove_file(&seed_path);
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
     #[test]
     fn kem_legacy_plaintext_seed_file_still_loads() {
         let dir = test_config_dir("legacy-plain-file");
@@ -1508,6 +1556,13 @@ mlkem_z = "{}"
         let seeds = fixed_seeds();
         // Intentionally write raw TOML (no DPAPI magic) — pre-DPAPI format.
         std::fs::write(&seed_path, toml::to_string(&seeds).unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&seed_path).unwrap().permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(&seed_path, perms).unwrap();
+        }
         std::fs::write(
             &config_path,
             minimal_node_toml(&format!(

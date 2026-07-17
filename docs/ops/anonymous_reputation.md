@@ -10,6 +10,7 @@
 | Anonymous presentation | `AnonymousReputationPresentation { proof, score_commitment }` via `present_anonymous` / `verify_anonymous` | **No `RelayId` in serialized proof bytes** |
 | Out-of-band nullifier | `derive_reputation_nullifier(relay_id, epoch, blinding)` | Verifier binds identity / spend-once **outside** the proof blob |
 | Local nullifier registry | `aegis_trust::NullifierRegistry` + `verify_anonymous_and_spend` | File-backed spent set **per epoch**; rejects replay on this node |
+| Shared nullifier sync (Partial) | `NullifierRegistry::export_to_file` / `merge_from_file` | Operator file exchange merges peer spends idempotently; rejects corrupt duplicate entries; **not** cross-node consensus |
 | Minimal issuer (Partial) | `AnonymousCredentialIssuer` / `IssuedAnonymousCredential` | Software-bound Ed25519 token: epoch + score band + presentation + nullifier; `AnonymousCredentialIssuerParams::save_to_file` for verifier pubkey |
 | Node optional path | `[reputation] nullifier_registry_path` in `aegis-node` TOML | Load on start; save on health drain + shutdown |
 
@@ -21,7 +22,8 @@
 2. `AnonymousCredentialIssuer::verify_credential` or `verify_and_spend` — issuer signature + `verify_anonymous`.
 3. Register / reject via `NullifierRegistry::try_register` (or `verify_anonymous_and_spend`) per epoch policy.
 4. Persist registry when `nullifier_registry_path` is set (local only).
-5. Do **not** expect RelayId inside `proof.range_proof` / commitments.
+5. To share spends across co-located nodes without gossip: export from node A (`export_to_file`), merge on node B (`merge_from_file` or `ReputationConfig::merge_nullifier_registry_from`), then save. Re-import is idempotent; corrupt files with duplicate nullifiers in one epoch are rejected.
+6. Do **not** expect RelayId inside `proof.range_proof` / commitments.
 
 ### Issuer flow (Partial)
 
@@ -51,7 +53,7 @@ This slice is **not** a paper-complete anonymous credential system. Still **Exte
 1. **Interactive blinded issuance** — no ZK show protocol; issuer learns `relay_id` when signing.
 2. **Anonymous credentials / unlinkable showings** across epochs without a shared blinding channel.
 3. **Consensus-backed score commitments** (multi-operator ledger) so the Pedersen opening is globally agreed.
-4. **Cross-node nullifier consensus** — today's registry is local/file-backed; another node does not see spends.
+4. **Cross-node nullifier consensus** — file merge shares spends operator-to-operator; no wire gossip or BFT ledger.
 5. **PQ-safe** reputation proofs (spec scopes current ZK as non-PQ).
 6. **Wire format + gossip** for presentations between relays/clients.
 7. **Accumulator / consensus issuer** so a relay cannot forge a threshold proof for a score it does not hold in a shared ledger.

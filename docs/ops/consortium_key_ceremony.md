@@ -2,6 +2,7 @@
 
 **Status:** ops runbook + tooling (2026-07-17)  
 **APIs:** `ConsortiumKey`, `ThresholdConsortium`, `ThresholdSignedRelayRecord` in `aegis-topology::roster`  
+**Custody:** `SoftwareCustodyProvider` / `HsmCustodyProvider` + `select_ceremony_custody` in `aegis-topology::custody`  
 **Helper:** `cargo run -p aegis-topology --bin aegis-ceremony`  
 **Shamir:** optional GF(256) share split/reconstruct in `aegis-topology::shamir` / `ceremony`
 
@@ -9,6 +10,40 @@ This ceremony produces the Ed25519 authority keys that sign permissioned
 [`RelayRecord`](../../crates/aegis-topology/src/types.rs) admissions (including the
 hybrid KEM public-key commitment). Nodes verify admissions with
 `ThresholdConsortium` / `admit_threshold_signed`.
+
+## Custody modes (`aegis-topology::custody`)
+
+| Mode | Provider | Behavior on this build |
+|------|----------|------------------------|
+| `CeremonyCustodyMode::Software` | `SoftwareCustodyProvider` | Shamir split + file ceremony (default; CI/lab) |
+| `CeremonyCustodyMode::Hardware` | `HsmCustodyProvider` | **Fail-closed** — `CeremonyError::HsmUnavailable` (no PKCS#11 SDK) |
+
+```rust
+use aegis_topology::{select_ceremony_custody, CeremonyCustodyMode, SoftwareCustodyProvider};
+
+// Lab default — same Shamir + aegis-ceremony path as today.
+let provider: SoftwareCustodyProvider =
+    select_ceremony_custody(CeremonyCustodyMode::Software)?;
+
+// Production HSM wiring — fails closed until a vendor SDK is linked:
+assert!(matches!(
+    select_ceremony_custody(CeremonyCustodyMode::Hardware),
+    Err(CeremonyError::HsmUnavailable)
+));
+```
+
+### Required HSM operations (production contract)
+
+When a PKCS#11 / vendor SDK is linked, [`HsmCustodyProvider`] must implement:
+
+1. **Generate / wrap seed share** — create an Ed25519 authority key inside the HSM;
+   export only a wrapped Shamir share blob ([`HsmWrappedShareFields`]); never emit cleartext seeds.
+2. **Sign admission** — produce [`AuthorityAdmissionSignature`] over a [`RelayRecord`] using the
+   HSM-held key without exporting the signing seed.
+3. **Verify wrap metadata** — bind authority index, custodian id, and Shamir x into wrap AAD.
+
+This workspace deliberately has **no** PKCS#11 dependency; hardware mode always returns
+`CeremonyError::HsmUnavailable`.
 
 ## Prerequisites
 
@@ -131,7 +166,9 @@ Share hex format: 1-byte x-coordinate (`01`…`ff`) + 32-byte y (per-byte Shamir
 
 ## Residual
 
-Ceremony Shamir is **lab/ops custody** for 32-byte seeds — not HSM integration,
-not multi-party computation, and not proactive share refresh. Seeds/share files
+Ceremony Shamir is **lab/ops custody** for 32-byte seeds. **In-tree:** `SoftwareCustodyProvider`
++ `HsmCustodyProvider` fail-closed stub + `select_ceremony_custody` document the HSM contract
+(generate/wrap seed share, sign admission). **External:** link PKCS#11 / vendor HSM SDK +
+operator MPC ceremony; not multi-party computation or proactive share refresh. Seeds/share files
 use mode `0600` on Unix. Production operators should prefer HSMs where available
 and treat the helper as a bootstrap aid.

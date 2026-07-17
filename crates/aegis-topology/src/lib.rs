@@ -11,6 +11,7 @@
 
 pub mod beacon;
 pub mod ceremony;
+pub mod custody;
 pub mod error;
 pub mod guards;
 pub mod layers;
@@ -27,6 +28,11 @@ pub use beacon::{
 pub use ceremony::{
     reconstruct_authority_seed, reconstruct_seed_from_files, run_ceremony,
     write_reconstructed_seed, CeremonyConfig, CeremonyOutput,
+};
+pub use custody::{
+    select_ceremony_custody, CeremonyCustodyMode, CeremonyError, HsmCustodyProvider,
+    HsmWrappedShareFields, SoftwareCustodyProvider, HSM_CUSTODY_PROVIDER_ID,
+    SOFTWARE_CUSTODY_PROVIDER_ID,
 };
 pub use shamir::{
     decode_share_hex, encode_share_hex, reconstruct_seed, split_seed, SeedShare, ShamirError,

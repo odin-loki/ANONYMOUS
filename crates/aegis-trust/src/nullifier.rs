@@ -20,6 +20,11 @@ const REGISTRY_FILE_VERSION: u32 = 1;
 pub enum NullifierError {
     #[error("nullifier already used in epoch {epoch}")]
     AlreadyUsed { epoch: u64 },
+    #[error("merge conflict in epoch {epoch}: duplicate nullifier {nullifier_hex}")]
+    MergeConflict {
+        epoch: u64,
+        nullifier_hex: String,
+    },
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("json: {0}")]
@@ -39,11 +44,21 @@ struct NullifierRegistryFile {
 
 /// In-memory + optional file-backed set of spent reputation nullifiers.
 ///
-/// Scope is intentionally local to one node/process. Double-spend detection
-/// across operators requires an external shared ledger (not shipped here).
+/// Scope is intentionally local to one node/process. Operators may **merge**
+/// exported registry files from peer nodes via [`Self::merge_from_file`] to share
+/// spends without cross-node consensus — see `docs/ops/anonymous_reputation.md`.
 #[derive(Debug, Clone, Default)]
 pub struct NullifierRegistry {
     used: HashMap<u64, HashSet<ReputationNullifier>>,
+}
+
+/// Counts from [`NullifierRegistry::merge`] / [`NullifierRegistry::merge_from_file`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NullifierMergeReport {
+    /// Nullifiers newly recorded in the receiver.
+    pub added: usize,
+    /// Nullifiers already present (idempotent re-import).
+    pub already_present: usize,
 }
 
 impl NullifierRegistry {
@@ -106,6 +121,11 @@ impl NullifierRegistry {
 
     /// Persist to JSON at `path` (creates parent directories as needed).
     pub fn save_to_file(&self, path: &Path) -> Result<(), NullifierError> {
+        self.export_to_file(path)
+    }
+
+    /// Export the registry to JSON (alias of [`Self::save_to_file`]).
+    pub fn export_to_file(&self, path: &Path) -> Result<(), NullifierError> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent)?;
@@ -140,11 +160,45 @@ impl NullifierRegistry {
                 .map_err(|_| NullifierError::InvalidNullifierHex(epoch_str.clone()))?;
             let mut set = HashSet::with_capacity(hexes.len());
             for hex in hexes {
-                set.insert(parse_hex_32(&hex)?);
+                let parsed = parse_hex_32(&hex)?;
+                if !set.insert(parsed) {
+                    return Err(NullifierError::MergeConflict {
+                        epoch,
+                        nullifier_hex: hex,
+                    });
+                }
             }
             used.insert(epoch, set);
         }
         Ok(Self { used })
+    }
+
+    /// Union-merge another registry into `self`.
+    ///
+    /// Idempotent: nullifiers already spent locally count as `already_present`.
+    /// Does not claim cross-node consensus — operator file exchange only.
+    pub fn merge(&mut self, other: &Self) -> Result<NullifierMergeReport, NullifierError> {
+        let mut report = NullifierMergeReport {
+            added: 0,
+            already_present: 0,
+        };
+        for (epoch, set) in &other.used {
+            for nullifier in set {
+                if self.is_spent(*epoch, nullifier) {
+                    report.already_present += 1;
+                    continue;
+                }
+                self.try_register(*epoch, *nullifier)?;
+                report.added += 1;
+            }
+        }
+        Ok(report)
+    }
+
+    /// Load a peer-exported registry file and merge into `self`.
+    pub fn merge_from_file(&mut self, path: &Path) -> Result<NullifierMergeReport, NullifierError> {
+        let other = Self::load_from_file(path)?;
+        self.merge(&other)
     }
 }
 
@@ -273,6 +327,64 @@ mod tests {
         assert!(matches!(
             NullifierRegistry::load_from_file(&path),
             Err(NullifierError::UnsupportedVersion(99))
+        ));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn merge_imports_peer_spends_idempotently() {
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-nullifier-merge-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let peer_path = dir.join("peer.json");
+        let local_path = dir.join("local.json");
+
+        let mut peer = NullifierRegistry::new();
+        let a = derive_reputation_nullifier(&[1u8; 32], 10, &[3u8; 32]);
+        let b = derive_reputation_nullifier(&[2u8; 32], 10, &[4u8; 32]);
+        peer.try_register(10, a).unwrap();
+        peer.try_register(10, b).unwrap();
+        peer.export_to_file(&peer_path).unwrap();
+
+        let mut local = NullifierRegistry::new();
+        local.try_register(10, a).unwrap();
+        let report = local.merge_from_file(&peer_path).unwrap();
+        assert_eq!(report.added, 1);
+        assert_eq!(report.already_present, 1);
+        assert!(local.is_spent(10, &a));
+        assert!(local.is_spent(10, &b));
+        assert_eq!(local.len(), 2);
+
+        let again = local.merge_from_file(&peer_path).unwrap();
+        assert_eq!(again.added, 0);
+        assert_eq!(again.already_present, 2);
+
+        local.save_to_file(&local_path).unwrap();
+        let _ = fs::remove_file(&peer_path);
+        let _ = fs::remove_file(&local_path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn load_rejects_duplicate_nullifier_in_same_epoch() {
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-nullifier-dup-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("dup.json");
+        let hex = "aa".repeat(32);
+        fs::write(
+            &path,
+            format!(r#"{{"version":1,"epochs":{{"7":["{hex}","{hex}"]}}}}"#),
+        )
+        .unwrap();
+        assert!(matches!(
+            NullifierRegistry::load_from_file(&path),
+            Err(NullifierError::MergeConflict { epoch: 7, .. })
         ));
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir(&dir);
