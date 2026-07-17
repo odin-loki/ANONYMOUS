@@ -12,7 +12,7 @@ use rand_core::OsRng;
 fn sample_roster(n: u64) -> aegis_topology::RelayRoster {
     let mut roster = aegis_topology::RelayRoster::new();
     for i in 0..n {
-        roster.admit(test_relay_record(i + 1, "US"));
+        roster.admit_for_tests(test_relay_record(i + 1, "US"));
     }
     roster
 }

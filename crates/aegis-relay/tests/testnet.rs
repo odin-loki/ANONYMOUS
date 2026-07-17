@@ -59,7 +59,7 @@ impl Testnet {
 
             let (outbound_tx, outbound_rx) = mpsc::channel(64);
             let node = RelayNode::new(id, secret, RelayConfig::new(mu));
-            let (handle, task) = node.spawn(inbound_rx, outbound_tx, None, OsRng);
+            let (handle, task) = node.spawn(inbound_rx, outbound_tx, None, OsRng).unwrap();
 
             relays.push(RelaySlot {
                 handle,

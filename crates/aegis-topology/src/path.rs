@@ -300,7 +300,7 @@ mod tests {
         let mut roster = RelayRoster::new();
         for i in 0..n {
             let j = jurisdictions[i as usize % jurisdictions.len()];
-            roster.admit(test_relay_record(i + 1, j));
+            roster.admit_for_tests(test_relay_record(i + 1, j));
         }
         roster
     }
@@ -413,7 +413,7 @@ mod tests {
         let mut roster = RelayRoster::new();
         let jurisdictions = ["US", "DE", "FR", "UK"];
         for i in 0..4 {
-            roster.admit(test_relay_record(i, jurisdictions[i as usize]));
+            roster.admit_for_tests(test_relay_record(i, jurisdictions[i as usize]));
         }
         let topo = build_topology(&roster, 0, &TopologyConfig::high_threat(), 0).unwrap();
         let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();

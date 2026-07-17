@@ -6,7 +6,11 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use aegis_crypto::kem::RelayKemSecret;
-use aegis_relay::{PeerInfo, RelayConfig, RelayId, LinkBridgeConfig};
+use aegis_negotiator::SecurityDial;
+use aegis_relay::{
+    BulkCoverConfig, LinkBridgeConfig, PeerInfo, RelayConfig, RelayId, DEFAULT_COVER_ROUND_SECS,
+    DEFAULT_COVER_TARGET_FLOW_COUNT,
+};
 use aegis_topology::{RelayRoster, RosterError, ThresholdConsortium};
 use rand_core::{CryptoRngCore, RngCore};
 use serde::{Deserialize, Serialize};
@@ -36,6 +40,9 @@ pub struct NodeConfigFile {
     pub mu: f64,
     #[serde(default)]
     pub kem: Option<KemSeeds>,
+    /// Optional local roster KEM commitment (64 hex chars) bound into inbound handshake MACs.
+    #[serde(default)]
+    pub kem_commitment: Option<String>,
     #[serde(default)]
     pub ingress: Option<IngressConfig>,
     #[serde(default)]
@@ -51,6 +58,65 @@ pub struct NodeConfigFile {
     /// Optional permissioned relay roster loaded from JSON (spec §4.9).
     #[serde(default)]
     pub roster: Option<RosterFileConfig>,
+    /// Bulk cover-flow policy (spec §5.2 L2). Defaults to production fail-closed.
+    #[serde(default)]
+    pub cover: CoverFileConfig,
+}
+
+/// TOML `[cover]` — bulk cover round auto-start / fail-closed policy.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CoverFileConfig {
+    /// Open L2 bulk rounds and emit cover on the cover channel (default true).
+    #[serde(default = "default_cover_enabled")]
+    pub enabled: bool,
+    /// Refuse to run if cover cannot be started (default true).
+    #[serde(default = "default_cover_require")]
+    pub require: bool,
+    /// Target observed flow count per round (default [`DEFAULT_COVER_TARGET_FLOW_COUNT`]).
+    #[serde(default = "default_cover_target")]
+    pub target_flow_count: u32,
+    /// Seconds between end/begin rotation so cover can emit (default 30; 0 = begin once).
+    #[serde(default = "default_cover_round_secs")]
+    pub round_secs: u64,
+}
+
+impl Default for CoverFileConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_cover_enabled(),
+            require: default_cover_require(),
+            target_flow_count: default_cover_target(),
+            round_secs: default_cover_round_secs(),
+        }
+    }
+}
+
+impl CoverFileConfig {
+    pub fn into_bulk_cover(self) -> BulkCoverConfig {
+        BulkCoverConfig {
+            enabled: self.enabled,
+            require: self.require,
+            dial: SecurityDial::L2UniformBatched,
+            target_flow_count: self.target_flow_count,
+            round_secs: self.round_secs,
+        }
+    }
+}
+
+fn default_cover_enabled() -> bool {
+    true
+}
+
+fn default_cover_require() -> bool {
+    true
+}
+
+fn default_cover_target() -> u32 {
+    DEFAULT_COVER_TARGET_FLOW_COUNT
+}
+
+fn default_cover_round_secs() -> u64 {
+    DEFAULT_COVER_ROUND_SECS
 }
 
 /// Disk roster + consortium authority keys for signature re-verify on load.
@@ -131,6 +197,9 @@ pub struct PeerConfig {
     pub id: String,
     pub addr: String,
     pub link_key: String,
+    /// Optional roster KEM public-key commitment (64 hex chars) for outbound handshake MAC binding.
+    #[serde(default)]
+    pub kem_commitment: Option<String>,
 }
 
 /// Exit delivery for terminal Sphinx peels (`deliver_to` and/or `log_payloads`).
@@ -187,6 +256,8 @@ pub struct NodeRuntimeConfig {
     pub listen: SocketAddr,
     pub relay_config: RelayConfig,
     pub kem_secret: RelayKemSecret,
+    /// Local roster KEM commitment for inbound handshake MAC binding (when configured).
+    pub local_kem_commitment: Option<[u8; 32]>,
     pub ingress_link_key: Option<[u8; 32]>,
     pub peer_table: HashMap<RelayId, PeerInfo>,
     pub link_bridge_config: LinkBridgeConfig,
@@ -245,6 +316,11 @@ impl NodeConfigFile {
             .ingress
             .map(|i| parse_hex32(&i.link_key))
             .transpose()?;
+        let local_kem_commitment = self
+            .kem_commitment
+            .as_deref()
+            .map(parse_hex32)
+            .transpose()?;
         let mut peer_table = HashMap::new();
         for peer in self.peers {
             let id = RelayId(parse_hex32(&peer.id)?);
@@ -253,7 +329,11 @@ impl NodeConfigFile {
                 .parse()
                 .map_err(|_| ConfigError::Hex("peer addr"))?;
             let link_key_bytes = parse_hex32(&peer.link_key)?;
-            peer_table.insert(id, PeerInfo::new(addr, link_key_bytes));
+            let mut info = PeerInfo::new(addr, link_key_bytes);
+            if let Some(ref hex) = peer.kem_commitment {
+                info = info.with_kem_commitment(parse_hex32(hex)?);
+            }
+            peer_table.insert(id, info);
         }
         let roster = self
             .roster
@@ -263,8 +343,9 @@ impl NodeConfigFile {
         Ok(NodeRuntimeConfig {
             relay_id,
             listen,
-            relay_config: RelayConfig::new(self.mu),
+            relay_config: RelayConfig::new(self.mu).with_bulk_cover(self.cover.into_bulk_cover()),
             kem_secret,
+            local_kem_commitment,
             ingress_link_key,
             peer_table,
             link_bridge_config: LinkBridgeConfig {
@@ -336,6 +417,17 @@ mod tests {
     };
     use aegis_trust::reputation::ReputationLedger;
     use rand_core::OsRng;
+
+    #[test]
+    fn cover_defaults_are_production_fail_closed() {
+        let cfg = CoverFileConfig::default();
+        assert!(cfg.enabled);
+        assert!(cfg.require);
+        assert_eq!(cfg.target_flow_count, DEFAULT_COVER_TARGET_FLOW_COUNT);
+        let bulk = cfg.into_bulk_cover();
+        assert!(bulk.validate_spawn(true).is_ok());
+        assert!(bulk.validate_spawn(false).is_err());
+    }
 
     #[test]
     fn roster_config_requires_keys_or_lab_flag() {

@@ -96,11 +96,22 @@ pub struct PeerInfo {
     pub addr: SocketAddr,
     /// 32-byte pre-shared key for handshake authentication (not used directly for AEAD).
     pub link_key_bytes: [u8; 32],
+    /// Optional roster KEM public-key commitment bound into outbound handshake MACs.
+    pub kem_public_commitment: Option<[u8; 32]>,
 }
 
 impl PeerInfo {
     pub fn new(addr: SocketAddr, link_key_bytes: [u8; 32]) -> Self {
-        Self { addr, link_key_bytes }
+        Self {
+            addr,
+            link_key_bytes,
+            kem_public_commitment: None,
+        }
+    }
+
+    pub fn with_kem_commitment(mut self, kem_public_commitment: [u8; 32]) -> Self {
+        self.kem_public_commitment = Some(kem_public_commitment);
+        self
     }
 }
 
@@ -139,6 +150,7 @@ pub enum NetError {
 pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
     listen_addr: SocketAddr,
     local_relay_id: RelayId,
+    local_kem_commitment: Option<[u8; 32]>,
     peer_table: HashMap<RelayId, PeerInfo>,
     ingress_link_key: Option<[u8; 32]>,
     inbound_tx: mpsc::Sender<SphinxPacket>,
@@ -154,6 +166,7 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
     let listener = spawn_inbound_listener(
         listen_addr,
         local_relay_id,
+        local_kem_commitment,
         peer_table.clone(),
         ingress_link_key,
         inbound_tx,
@@ -204,10 +217,14 @@ pub struct LinkSession {
 
 impl LinkSession {
     /// Connect to `addr`, run the initiator link handshake once, and return a reusable session.
+    ///
+    /// When `kem_public_commitment` is `Some`, it is bound into confirm/finish MACs (must match
+    /// the responder's configured local commitment).
     pub async fn connect<R: RngCore + CryptoRngCore>(
         addr: SocketAddr,
         psk: &[u8; 32],
         peer_relay_id: RelayId,
+        kem_public_commitment: Option<[u8; 32]>,
         rng: &mut R,
         bridge_config: &LinkBridgeConfig,
     ) -> Result<Self, NetError> {
@@ -216,7 +233,7 @@ impl LinkSession {
             &mut stream,
             psk,
             peer_relay_id,
-            None,
+            kem_public_commitment,
             rng,
             bridge_config,
         )
@@ -249,11 +266,14 @@ pub async fn send_sphinx_packet<R: RngCore + CryptoRngCore>(
     addr: SocketAddr,
     psk: &[u8; 32],
     peer_relay_id: RelayId,
+    kem_public_commitment: Option<[u8; 32]>,
     packet: &SphinxPacket,
     rng: &mut R,
     bridge_config: &LinkBridgeConfig,
 ) -> Result<(), NetError> {
-    let mut session = LinkSession::connect(addr, psk, peer_relay_id, rng, bridge_config).await?;
+    let mut session =
+        LinkSession::connect(addr, psk, peer_relay_id, kem_public_commitment, rng, bridge_config)
+            .await?;
     write_packet_on_session(&mut session, packet, rng).await
 }
 
@@ -369,9 +389,13 @@ pub async fn run_initiator_handshake<R: RngCore + CryptoRngCore>(
 }
 
 /// Responder-side link handshake; identifies which configured PSK matched.
+///
+/// When local_kem_commitment is Some, it is bound into confirm/finish MACs (must match
+/// the initiator's peer-table / hop commitment for this relay).
 pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
     stream: &mut TcpStream,
     local_relay_id: RelayId,
+    local_kem_commitment: Option<[u8; 32]>,
     ingress_link_key: Option<[u8; 32]>,
     peer_table: &HashMap<RelayId, PeerInfo>,
     rng: &mut R,
@@ -392,10 +416,10 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
     let confirm = parse_link_handshake_mac(&confirm_msg)?;
 
     let transcript = LinkHandshakeTranscript::from_messages(&init, &resp);
+    let binding = link_handshake_binding(bridge_config, local_relay_id, local_kem_commitment);
+    let binding_ref = binding.as_ref();
 
     if let Some(psk) = ingress_link_key {
-        let binding = link_handshake_binding(bridge_config, local_relay_id, None);
-        let binding_ref = binding.as_ref();
         if verify_link_handshake_confirm_mac(&psk, &transcript, binding_ref, &confirm) {
             let session = link_handshake_responder_finish(
                 &psk,
@@ -413,8 +437,6 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
 
     for (id, peer) in peer_table {
         let psk = peer.link_key_bytes;
-        let binding = link_handshake_binding(bridge_config, local_relay_id, None);
-        let binding_ref = binding.as_ref();
         if verify_link_handshake_confirm_mac(&psk, &transcript, binding_ref, &confirm) {
             let session = link_handshake_responder_finish(
                 &psk,
@@ -437,6 +459,7 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
 fn spawn_inbound_listener(
     listen_addr: SocketAddr,
     local_relay_id: RelayId,
+    local_kem_commitment: Option<[u8; 32]>,
     peer_table: HashMap<RelayId, PeerInfo>,
     ingress_link_key: Option<[u8; 32]>,
     inbound_tx: mpsc::Sender<SphinxPacket>,
@@ -468,6 +491,7 @@ fn spawn_inbound_listener(
             };
             let peer_table = peer_table.clone();
             let ingress = ingress_link_key;
+            let kem = local_kem_commitment;
             let inbound_tx = inbound_tx.clone();
             let cfg = bridge_config.clone();
             let local_id = local_relay_id;
@@ -476,6 +500,7 @@ fn spawn_inbound_listener(
                 if let Err(e) = run_inbound_connection(
                     stream,
                     local_id,
+                    kem,
                     peer_table,
                     ingress,
                     inbound_tx,
@@ -493,6 +518,7 @@ fn spawn_inbound_listener(
 async fn run_inbound_connection(
     mut stream: TcpStream,
     local_relay_id: RelayId,
+    local_kem_commitment: Option<[u8; 32]>,
     peer_table: HashMap<RelayId, PeerInfo>,
     ingress_link_key: Option<[u8; 32]>,
     inbound_tx: mpsc::Sender<SphinxPacket>,
@@ -502,6 +528,7 @@ async fn run_inbound_connection(
     let session_key = run_responder_handshake(
         &mut stream,
         local_relay_id,
+        local_kem_commitment,
         ingress_link_key,
         &peer_table,
         &mut rng,
@@ -709,7 +736,7 @@ impl ConnectionPool {
             &mut stream,
             &peer.link_key_bytes,
             peer_id,
-            None,
+            peer.kem_public_commitment,
             rng,
             bridge_config,
         )
@@ -912,6 +939,7 @@ mod tests {
             let key = run_responder_handshake(
                 &mut stream,
                 relay_id,
+                None,
                 Some(psk),
                 &HashMap::new(),
                 &mut rng,
@@ -931,7 +959,7 @@ mod tests {
         });
 
         let mut rng = OsRng;
-        let mut session = LinkSession::connect(addr, &psk, relay_id, &mut rng, &cfg)
+        let mut session = LinkSession::connect(addr, &psk, relay_id, None, &mut rng, &cfg)
             .await
             .unwrap();
         for i in 0..3u8 {
@@ -958,6 +986,7 @@ mod tests {
             run_responder_handshake(
                 &mut stream,
                 relay_id,
+                None,
                 Some(psk),
                 &HashMap::new(),
                 &mut rng,
@@ -992,6 +1021,7 @@ mod tests {
             run_responder_handshake(
                 &mut stream,
                 expected,
+                None,
                 Some(psk),
                 &HashMap::new(),
                 &mut rng,
@@ -1030,6 +1060,7 @@ mod tests {
             run_responder_handshake(
                 &mut stream,
                 relay_id,
+                None,
                 Some(wrong),
                 &HashMap::new(),
                 &mut rng,
@@ -1073,6 +1104,7 @@ mod tests {
             let key = run_responder_handshake(
                 &mut stream,
                 peer_id,
+                None,
                 Some(psk),
                 &HashMap::new(),
                 &mut rng,
@@ -1098,6 +1130,7 @@ mod tests {
         let (_listener_task, _dispatcher_task) = spawn_link_bridge(
             "127.0.0.1:0".parse().unwrap(),
             local_id,
+            None,
             peer_table,
             None,
             mpsc::channel(1).0,
@@ -1135,6 +1168,7 @@ mod tests {
                 &mut stream,
                 test_relay_id(0x01),
                 None,
+                None,
                 &HashMap::new(),
                 &mut rng,
                 &cfg,
@@ -1158,6 +1192,7 @@ mod tests {
         let (_listener_task, _dispatcher_task) = spawn_link_bridge(
             "127.0.0.1:0".parse().unwrap(),
             test_relay_id(0x01),
+            None,
             HashMap::new(),
             None,
             inbound_tx,
@@ -1200,6 +1235,7 @@ mod tests {
             run_inbound_connection(
                 stream,
                 relay_id,
+                None,
                 HashMap::new(),
                 Some(psk),
                 inbound_tx,
@@ -1240,6 +1276,127 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn matching_kem_commitment_handshake_succeeds() {
+        let psk = test_psk(0xB1);
+        let relay_id = test_relay_id(0xB1);
+        let commitment = [0xAAu8; 32];
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = LinkBridgeConfig::default();
+        let cfg_server = cfg.clone();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            run_responder_handshake(
+                &mut stream,
+                relay_id,
+                Some(commitment),
+                Some(psk),
+                &HashMap::new(),
+                &mut rng,
+                &cfg_server,
+            )
+            .await
+            .unwrap()
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let mut rng = OsRng;
+        let key_i = run_initiator_handshake(
+            &mut client,
+            &psk,
+            relay_id,
+            Some(commitment),
+            &mut rng,
+            &cfg,
+        )
+        .await
+        .unwrap();
+        let key_r = server.await.unwrap();
+        assert_eq!(key_i, key_r);
+    }
+
+    #[tokio::test]
+    async fn mismatched_kem_commitment_handshake_fails() {
+        let psk = test_psk(0xB2);
+        let relay_id = test_relay_id(0xB2);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = LinkBridgeConfig::default();
+        let cfg_server = cfg.clone();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            run_responder_handshake(
+                &mut stream,
+                relay_id,
+                Some([0x11u8; 32]),
+                Some(psk),
+                &HashMap::new(),
+                &mut rng,
+                &cfg_server,
+            )
+            .await
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let mut rng = OsRng;
+        let err = run_initiator_handshake(
+            &mut client,
+            &psk,
+            relay_id,
+            Some([0x22u8; 32]),
+            &mut rng,
+            &cfg,
+        )
+        .await;
+        assert!(matches!(
+            err,
+            Err(NetError::ReadTimeout(_))
+                | Err(NetError::Io(_))
+                | Err(NetError::Crypto(CryptoError::IntegrityFailure))
+        ));
+        let server_err = server.await.unwrap();
+        assert!(matches!(server_err, Err(NetError::UnidentifiedInbound)));
+    }
+
+    #[tokio::test]
+    async fn missing_kem_commitment_both_sides_relay_id_only() {
+        let psk = test_psk(0xB3);
+        let relay_id = test_relay_id(0xB3);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = LinkBridgeConfig::default();
+        let cfg_server = cfg.clone();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            run_responder_handshake(
+                &mut stream,
+                relay_id,
+                None,
+                Some(psk),
+                &HashMap::new(),
+                &mut rng,
+                &cfg_server,
+            )
+            .await
+            .unwrap()
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let mut rng = OsRng;
+        let key_i = run_initiator_handshake(&mut client, &psk, relay_id, None, &mut rng, &cfg)
+            .await
+            .unwrap();
+        let key_r = server.await.unwrap();
+        assert_eq!(key_i, key_r);
+    }
+
+    #[tokio::test]
     async fn unknown_next_hop_without_exit_sink_is_silent() {
         use aegis_crypto::sphinx::SPHINX_PACKET_LEN;
 
@@ -1247,6 +1404,7 @@ mod tests {
         let (_listener_task, dispatcher_task) = spawn_link_bridge(
             "127.0.0.1:0".parse().unwrap(),
             test_relay_id(0x01),
+            None,
             HashMap::new(),
             None,
             mpsc::channel(1).0,

@@ -133,11 +133,14 @@ impl TcpTestnet {
             let (cover_tx, cover_rx) = mpsc::channel(64);
 
             let node = RelayNode::new(id, secrets.remove(0), RelayConfig::new(FAST_MU));
-            let (handle, relay_task) = node.spawn(inbound_rx, outbound_tx, Some(cover_tx), OsRng);
+            let (handle, relay_task) = node
+                .spawn(inbound_rx, outbound_tx, Some(cover_tx), OsRng)
+                .expect("spawn relay");
 
             let net_tasks = spawn_link_bridge(
                 listen_addrs[i],
                 id,
+                None,
                 peer_table,
                 ingress,
                 inbound_tx,
@@ -177,6 +180,7 @@ impl TcpTestnet {
             first_hop_addr: listen_addrs[0],
             first_hop_relay_id: hops[0].id,
             link_key_bytes: client_ingress_key,
+            kem_commitment: None,
         };
 
         Self {

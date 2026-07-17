@@ -65,6 +65,8 @@ pub struct ClientLink {
     /// Expected first-hop relay id for the link handshake.
     pub first_hop_relay_id: [u8; 32],
     pub link_key_bytes: [u8; 32],
+    /// Optional first-hop roster KEM commitment for link handshake MAC binding.
+    pub kem_commitment: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Error)]
@@ -81,6 +83,8 @@ pub enum SendError {
     Net(#[from] aegis_relay::NetError),
     #[error("paced session closed")]
     SessionClosed,
+    #[error("{0}")]
+    RhoLimit(#[from] crate::emitter::RhoLimitError),
     #[error("KEM public key does not match roster commitment for hop {hop_id:02x}{hop_id_tail:02x}…")]
     KemBindingMismatch {
         hop_id: u8,
@@ -174,6 +178,7 @@ pub async fn send_payload_with_options<R: RngCore + CryptoRngCore>(
         link.first_hop_addr,
         &link.link_key_bytes,
         aegis_relay::RelayId::from(link.first_hop_relay_id),
+        link.kem_commitment,
         &packet,
         rng,
         &LinkBridgeConfig::default(),
@@ -203,6 +208,7 @@ pub async fn send_payload_paced<R: RngCore + CryptoRngCore>(
         PacedSessionConfig {
             emitter_config: emitter_config.unwrap_or_default(),
             cover_after_send,
+            allow_high_rho: false,
         },
         rng,
     )

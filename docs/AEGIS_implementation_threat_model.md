@@ -15,7 +15,7 @@
 |---|---------|------------------|----------|
 | 1 | **`send_payload` / legacy paced send go quiet after 18 ticks** — unpaced burst and one-shot paced path expose true cadence at client TCP ingress. **Partial (2026-07-17):** default CLI uses `PacedSession` with continuous dummy cover + connection reuse; `--raw` and `send_payload` remain for trace capture. | `aegis-client::send`, `aegis-client::session`, CLI `--raw` | **Medium** (was High for default path) |
 | 2 | **~~No admission rate limit~~** — ~~compromised consortium signing key ⇒ unlimited signed Sybil relays; fresh Sybils get NEUTRAL reputation (0.5) and pass the 0.3 floor immediately.~~ **Mitigated (2026-07-12):** probationary admission reputation (0.1) + configurable rate limit (default 5/24h). **Mitigated (2026-07-17):** M-of-N threshold admission (`ThresholdConsortium` / `admit_threshold_signed`). Residual: consortium key ceremony out of band; reputation `update()` wiring. | `aegis-topology::roster`, `aegis-trust::reputation` | **Low–medium** (was High) |
-| 3 | **Hop link PSK + ephemeral handshake (partial roster binding)** — per-TCP X25519 ECDH derives fresh session keys (forward secrecy); static PSK authenticates the handshake via keyed MAC. **`LinkBridgeConfig::identity_binding`** (default true) binds confirm/finish MACs to the peer roster `RelayId` so a stolen PSK for peer A cannot authenticate as peer B. Residual: PSK still in config/TOML; no Noise or roster-key-derived auth; optional KEM commitment not wired on hop links; ingress accepts any holder of the shared ingress key who knows the first-hop id. | `aegis-crypto::link`, `aegis-relay::net`, `aegis-node::config` | **Low–medium** (was Medium) |
+| 3 | **Hop link PSK + ephemeral handshake (partial roster binding)** — per-TCP X25519 ECDH derives fresh session keys (forward secrecy); static PSK authenticates the handshake via keyed MAC. **`LinkBridgeConfig::identity_binding`** (default true) binds confirm/finish MACs to the peer roster `RelayId` so a stolen PSK for peer A cannot authenticate as peer B. Residual: PSK still in config/TOML; no Noise or roster-key-derived auth; optional KEM commitment wired from node/client config when present; ingress accepts any holder of the shared ingress key who knows the first-hop id. | `aegis-crypto::link`, `aegis-relay::net`, `aegis-node::config` | **Low–medium** (was Medium) |
 | 4 | **Relay error/load counters observable** — fine-grained per-error counters remain available via [`RelayHandle::debug_stats`] for in-process tests only; external surfaces must use [`RelayHandle::coarse_stats`] (aggregated buckets). Residual GPA risk if coarse buckets are scraped at high frequency under flood. | `aegis-relay::node::RelayCoarseStats` | **Low–medium** (was Medium) |
 | 5 | **Replay cache eviction under sustained flood** — **Partial (2026-07-17):** generation/`advance_epoch()` + proactive shorten at 85% fill on large caches. Residual: `HashSet` membership not constant-time; shortened window under flood is intentional trade-off. | `aegis-crypto::replay` | **Low–medium** (was Medium) |
 
@@ -142,7 +142,7 @@ Simulations backing numeric claims:
 |---------|----------|--------|-----|
 | `RelayId::from_u64` is placeholder — not PK-derived from KEM keys. | `types::RelayId` | **Partial** — signed admission now binds SHA3-256 KEM commitment (`RelayRecord::kem_public_commitment`, `binds_kem_public`); id field still opaque until PK-derived ids land. | Low–medium |
 | Signed admission binds id + jurisdiction + KEM commitment via ed25519. | `roster::admit_threshold_signed`, `RelayRecord::binds_kem_public` | **Mitigated** when production path used; path builders must call `binds_kem_public` before encapsulation. | — |
-| Test-only `RelayRoster::admit()` skips signature. | `roster.rs:105–117` | **Open gap** if used in prod — explicitly documented test-only. | High if misused |
+| Test-only `RelayRoster::admit()` skips signature. | `roster::admit` / `admit_for_tests` | **Mitigated (2026-07-17)** — unsigned admit compiled only under `cfg(test)` or feature `test-utils` (default off); `admit` marked `#[deprecated]`; production must use signed APIs. Residual: enabling `test-utils` in a prod binary re-opens the gap. | Low (was High if misused) |
 
 ### Tampering
 
@@ -271,7 +271,7 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| Cover requirement is advisory — relay must call `begin_bulk_round`. | `cover.rs` vs `aegis-relay` | **Partial** — misconfigured relay skips cover. | Medium |
+| Cover requirement is advisory — relay must call `begin_bulk_round`. | `cover.rs` vs `aegis-relay` / `aegis-node` | **Mitigated (2026-07-17)** — `[cover]` defaults `enabled=true`/`require=true`; `RelayNode::spawn` fail-closed without cover channel when required; `start_bulk_cover` begins L2 rounds at node startup (+ optional rotation). Residual: in-process callers that leave `BulkCoverConfig` at defaults (enabled=false) and never call `start_bulk_cover` can still skip cover; round rotation interval is ops-tuned. | Low (was Medium) |
 
 ---
 
@@ -301,7 +301,7 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| **`send_payload` / CLI `--raw` bypass emitter** — unpaced burst at client TCP ingress; GPA sees true cadence. | `send.rs:154–183`, CLI `--raw`, `trace_capture.rs` | **Partial (2026-07-17)** — default CLI and [`PacedSession`](../../crates/aegis-client/src/session.rs) use continuous `ConstantRateEmitter` + post-send cover; raw API retained for adversarial trace capture only. Residual: one-time TCP/handshake per session; ρ not auto-enforced. | **Medium** (High if misusing raw API) |
+| **`send_payload` / CLI `--raw` bypass emitter** — unpaced burst at client TCP ingress; GPA sees true cadence. | `send.rs:154–183`, CLI `--raw`, `trace_capture.rs` | **Partial (2026-07-17)** — default CLI and [`PacedSession`](../../crates/aegis-client/src/session.rs) use continuous `ConstantRateEmitter` + post-send cover; raw API retained for adversarial trace capture only. Residual: one-time TCP/handshake per session; paced path now enforces ρ ≤ 0.7 (see DoS row). | **Medium** (High if misusing raw API) |
 | Hard-cap padder emits exactly Q slots per round externally. | `padding::HardCapPadder::round` | **Mitigated** when used. | — |
 | Dummy cells use CSPRNG padding. | `emitter::encode_dummy_cell` | **Mitigated**. | — |
 
@@ -310,7 +310,7 @@ Simulations backing numeric claims:
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
 | Emitter queue unbounded on `enqueue`. | `emitter::ConstantRateEmitter` | **Partial** — memory DoS if client never ticks. | Low |
-| ρ > 0.7 warning via `rho_at_peak_rate` only — not enforced. | `emitter::rho_at_peak_rate` | **Open gap** — operator must configure τ. | Medium |
+| ρ > 0.7 warning via `rho_at_peak_rate` only — not enforced. | `emitter::rho_at_peak_rate`, `PacedSession` / CLI paced path | **Mitigated (2026-07-17)** — `EmitterConfig::validate_rho` rejects λ_peak·τ > 0.7 when creating `PacedSession` / paced CLI (defaults τ=0.35, peak=2.0 → ρ=0.7); lab override via `--allow-high-rho` or `AEGIS_ALLOW_HIGH_RHO`. Residual: raw/`ConstantRateEmitter` direct construction still unconstrained. | — |
 
 ### Elevation of privilege
 
@@ -424,7 +424,8 @@ Relay ──peel──► sphinx::process ──delay──► forward (GPA sees
 - Permissioned admission **when** `admit_threshold_signed` (or 1-of-1 `admit_signed`) used with configured consortium authorities
 - Roster↔KEM binding via signed `kem_public_commitment` (`RelayRecord::binds_kem_public`)
 - TEE-not-required path documented (`aegis-trust::tee`)
-- Honest bulk cover limitations documented (`aegis-relay::cover_flow`); cover bursts wired on hop links via cover outbound channel (`aegis-relay::net`)
+- Honest bulk cover limitations documented (`aegis-relay::cover_flow`); cover bursts wired on hop links via cover outbound channel (`aegis-relay::net`); production `aegis-node` auto-starts bulk cover via `start_bulk_cover` with fail-closed `[cover].require`
+- Unsigned `RelayRoster::admit` gated behind `cfg(test)` / feature `test-utils` (default off)
 
 ---
 
@@ -433,7 +434,7 @@ Relay ──peel──► sphinx::process ──delay──► forward (GPA sees
 1. Wire **mandatory** `ConstantRateEmitter` on all client egress via [`PacedSession`](../../crates/aegis-client/src/session.rs) (continuous dummy cover + one TCP link per session); keep raw `send_payload` / `--raw` for adversarial trace capture only. **Done (2026-07-17):** CLI default uses paced session with post-send cover; residual: initial TCP+handshake still visible once per session.
 2. ~~**Admission rate limits** + M-of-N consortium signatures; initial reputation **below** guard floor until vetting period.~~ **Done:** rate limits + `PROBATIONARY` admission seeding + `ThresholdConsortium` / `admit_threshold_signed` (2026-07-17).
 3. ~~**Roster↔KEM key binding** in signed admission record.~~ **Done (2026-07-17):** `RelayRecord::kem_public_commitment` signed in canonical admission bytes; verify with `binds_kem_public` at path-build. **Partial (2026-07-17):** production path builders [`build_bound_path_pruned`](../../crates/aegis-topology/src/path.rs) + [`hops_from_bound_path`](../../crates/aegis-client/src/send.rs) attach commitments; [`build_packet_require_bindings`](../../crates/aegis-client/src/send.rs) / CLI `--require-kem-binding` enforce required bindings. Residual: `RelayId` still opaque placeholder; legacy `build_packet` still allows missing commitments.
-4. Link-layer **mutual auth** or Noise handshake derived from roster keys. **Partial (2026-07-17):** ephemeral X25519 + PSK MAC with roster `RelayId` binding (`LinkHandshakeBinding`, `LinkBridgeConfig::identity_binding`). Residual: full Noise / roster-key-derived auth; optional KEM commitment in MAC not wired from node config; ingress still shared-key.
+4. Link-layer **mutual auth** or Noise handshake derived from roster keys. **Partial (2026-07-17):** ephemeral X25519 + PSK MAC with roster `RelayId` binding (`LinkHandshakeBinding`, `LinkBridgeConfig::identity_binding`). Residual: full Noise / roster-key-derived auth; ingress still shared-key. **Partial (2026-07-17):** optional roster KEM commitment hex from node TOML peers / local `kem_commitment` and client hop config is bound into `LinkHandshakeBinding` MACs when present (both sides must agree; absent on both keeps RelayId-only binding).
 5. Export **coarse-grained** metrics only via [`RelayHandle::coarse_stats`]; keep [`RelayHandle::debug_stats`] in-process. ~~Avoid per-error-type telemetry visible to external GPA.~~ **Done (2026-07-17):** `RelayCoarseStats` + documented `debug_stats` boundary.
 6. Constant-time replay cache or epoch-shortening under load (see crypto review). **Partial (2026-07-17):** epoch/generation advance under flood. Residual: CT `HashSet` lookup still open.
 7. ~~Wire `AnomalyDetector` to admission/pruning decisions.~~ **Partial (2026-07-17):** `RelayPruningPolicy` demotes on anomaly; path/guard `*_pruned` selection + [`build_bound_path_pruned`](../../crates/aegis-topology/src/path.rs) use `is_eligible`; admission gating **Done** via [`RelayRoster::admit_signed_pruned`](../../crates/aegis-topology/src/roster.rs) / [`admit_threshold_signed_pruned`](../../crates/aegis-topology/src/roster.rs) (reject new admissions when candidate fails `is_eligible`; seed reputation on policy ledger). [`PeerHealthTracker`](../../crates/aegis-relay/src/peer_health.rs) / [`drain_into_policy`](../../crates/aegis-relay/src/peer_health.rs) feed metrics (`aegis-node` every 30s). `aegis-node` has no live roster-admission path — production callers must use `admit_*_pruned`. Residual: callers must use pruned APIs (legacy `admit_*` for tests/dev); no peer-health gossip; inbound handshake failures not keyed to peer id.

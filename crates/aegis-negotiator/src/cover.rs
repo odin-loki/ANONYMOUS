@@ -4,6 +4,10 @@
 //! confirmation stays at baseline (~1/M). Relays synthesize cover flows to pad the
 //! count; **this crate only computes how many cover flows are required** — actual
 //! generation and injection is [`aegis-relay`]'s responsibility.
+//!
+//! Production relays must open a bulk round via `RelayHandle::begin_bulk_round`
+//! (wired by `aegis-node` / `aegis_relay::start_bulk_cover` when cover is enabled).
+//! The math here is not advisory when that fail-closed path is used.
 
 use crate::dial::SecurityDial;
 

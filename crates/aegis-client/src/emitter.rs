@@ -7,8 +7,35 @@ use std::time::Duration;
 
 use aegis_crypto::cell::{Cell, Command, CELL_LEN};
 use rand_core::{CryptoRngCore, RngCore};
+use thiserror::Error;
 
 use crate::transport::{OutboundCell, Transport};
+
+/// Spec §4.2 / §7: offered load ρ = λ_peak · τ must stay ≤ this value.
+pub const DEFAULT_MAX_RHO: f64 = 0.7;
+
+/// Worked-example peak enqueue rate (msg/s) paired with τ ≈ 0.35 s → ρ = 0.7.
+pub const DEFAULT_PEAK_RATE_PER_SEC: f64 = 2.0;
+
+/// Lab override: set `AEGIS_ALLOW_HIGH_RHO=1` (or `true`) to skip ρ enforcement.
+pub fn env_allows_high_rho() -> bool {
+    std::env::var("AEGIS_ALLOW_HIGH_RHO")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+#[derive(Debug, Error, PartialEq)]
+#[error(
+    "offered load ρ = {rho:.4} exceeds maximum {max_rho} \
+     (peak_rate {peak_rate} msg/s × τ {tau_secs:.4}s); \
+     increase τ or reduce peak_rate, or enable allow_high_rho for lab use"
+)]
+pub struct RhoLimitError {
+    pub rho: f64,
+    pub max_rho: f64,
+    pub peak_rate: f64,
+    pub tau_secs: f64,
+}
 
 /// Maximum payload bytes in a real data cell (header + padding must fit in 512 B).
 pub const DATA_HEADER_LEN: usize = 1 + 2; // command + u16 length
@@ -21,14 +48,56 @@ pub const MAX_CELL_PAYLOAD: usize = CELL_LEN - DATA_HEADER_LEN;
 pub struct EmitterConfig {
     /// Slot period τ (spec worked example ≈ 0.35 s).
     pub tau: Duration,
+    /// Peak application enqueue rate (messages / second) used for ρ validation.
+    pub peak_rate_per_sec: f64,
 }
 
 impl Default for EmitterConfig {
     fn default() -> Self {
         Self {
             tau: Duration::from_millis(350),
+            peak_rate_per_sec: DEFAULT_PEAK_RATE_PER_SEC,
         }
     }
+}
+
+impl EmitterConfig {
+    /// Offered load ρ = λ_peak · τ for this configuration.
+    pub fn rho(&self) -> f64 {
+        rho_at_peak_rate(self.peak_rate_per_sec, self.tau)
+    }
+
+    /// Reject configurations that would exceed [`DEFAULT_MAX_RHO`].
+    pub fn validate_rho(&self) -> Result<(), RhoLimitError> {
+        self.validate_rho_with_options(DEFAULT_MAX_RHO, false)
+    }
+
+    /// Reject when ρ > `max_rho` unless `allow_high_rho` is set (lab override).
+    pub fn validate_rho_with_options(
+        &self,
+        max_rho: f64,
+        allow_high_rho: bool,
+    ) -> Result<(), RhoLimitError> {
+        if allow_high_rho {
+            return Ok(());
+        }
+        let rho = self.rho();
+        if rho > max_rho {
+            Err(RhoLimitError {
+                rho,
+                max_rho,
+                peak_rate: self.peak_rate_per_sec,
+                tau_secs: self.tau.as_secs_f64(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Conceptual peak utilization ρ given a peak enqueue rate (messages / second).
+pub fn rho_at_peak_rate(peak_rate_per_sec: f64, tau: Duration) -> f64 {
+    peak_rate_per_sec * tau.as_secs_f64()
 }
 
 /// Constant-rate client emitter: exactly one cell every tick.
@@ -111,7 +180,7 @@ impl<R: RngCore + CryptoRngCore> ConstantRateEmitter<R> {
 
     /// Conceptual peak utilization ρ given a peak enqueue rate (messages / second).
     pub fn rho_at_peak_rate(peak_rate_per_sec: f64, tau: Duration) -> f64 {
-        peak_rate_per_sec * tau.as_secs_f64()
+        rho_at_peak_rate(peak_rate_per_sec, tau)
     }
 }
 
@@ -184,7 +253,13 @@ mod tests {
     #[test]
     fn rho_below_threshold_keeps_backlog_bounded() {
         let tau = Duration::from_millis(350);
-        let mut emitter = ConstantRateEmitter::new(EmitterConfig { tau }, OsRng);
+        let mut emitter = ConstantRateEmitter::new(
+            EmitterConfig {
+                tau,
+                ..Default::default()
+            },
+            OsRng,
+        );
         let mut transport = RecordingTransport::new();
 
         // ρ = 0.5 * 0.35 = 0.175 << 0.7
@@ -210,7 +285,13 @@ mod tests {
     #[test]
     fn rho_above_threshold_grows_backlog() {
         let tau = Duration::from_millis(350);
-        let mut emitter = ConstantRateEmitter::new(EmitterConfig { tau }, OsRng);
+        let mut emitter = ConstantRateEmitter::new(
+            EmitterConfig {
+                tau,
+                ..Default::default()
+            },
+            OsRng,
+        );
         let mut transport = RecordingTransport::new();
 
         // ρ = λ_peak · τ > 1 ⇒ arrivals exceed one cell/slot ⇒ backlog grows without bound.
@@ -233,6 +314,58 @@ mod tests {
             emitter.backlog() > 20,
             "ρ > 1 should accumulate backlog, got {}",
             emitter.backlog()
+        );
+    }
+
+    #[test]
+    fn default_config_rho_at_limit() {
+        let cfg = EmitterConfig::default();
+        let rho = cfg.rho();
+        assert!(
+            (rho - DEFAULT_MAX_RHO).abs() < 1e-9,
+            "default τ and peak_rate should yield ρ = 0.7, got {rho}"
+        );
+        cfg.validate_rho().expect("default config must pass");
+    }
+
+    #[test]
+    fn validate_rho_rejects_high_load() {
+        let cfg = EmitterConfig {
+            tau: Duration::from_millis(500),
+            peak_rate_per_sec: 2.0,
+        };
+        assert!(cfg.rho() > DEFAULT_MAX_RHO);
+        let err = cfg.validate_rho().unwrap_err();
+        assert_eq!(err.max_rho, DEFAULT_MAX_RHO);
+        assert!(err.rho > DEFAULT_MAX_RHO);
+    }
+
+    #[test]
+    fn validate_rho_accepts_below_limit() {
+        let cfg = EmitterConfig {
+            tau: Duration::from_millis(200),
+            peak_rate_per_sec: 2.0,
+        };
+        assert!(cfg.rho() < DEFAULT_MAX_RHO);
+        cfg.validate_rho().expect("ρ below limit must pass");
+    }
+
+    #[test]
+    fn validate_rho_allows_lab_override() {
+        let cfg = EmitterConfig {
+            tau: Duration::from_millis(500),
+            peak_rate_per_sec: 2.0,
+        };
+        cfg.validate_rho_with_options(DEFAULT_MAX_RHO, true)
+            .expect("allow_high_rho must skip enforcement");
+    }
+
+    #[test]
+    fn rho_at_peak_rate_matches_helper() {
+        let tau = Duration::from_millis(350);
+        assert_eq!(
+            rho_at_peak_rate(2.0, tau),
+            ConstantRateEmitter::<OsRng>::rho_at_peak_rate(2.0, tau)
         );
     }
 }

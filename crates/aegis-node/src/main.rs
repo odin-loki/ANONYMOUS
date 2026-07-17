@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use aegis_node::{exit_sink, NodeConfigFile};
-use aegis_relay::{PeerHealthTracker, RelayForwardTrace, RelayNode, spawn_link_bridge};
+use aegis_relay::{
+    spawn_link_bridge, start_bulk_cover, PeerHealthTracker, RelayForwardTrace, RelayNode,
+};
 use aegis_trust::RelayPruningPolicy;
 use clap::Parser;
 use rand_core::OsRng;
@@ -75,12 +77,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (cover_tx, cover_rx) = mpsc::channel(64);
 
     let relay_id = runtime.relay_id;
+    let bulk_cover = runtime.relay_config.bulk_cover.clone();
     let node = RelayNode::new(
         relay_id,
         runtime.kem_secret,
         runtime.relay_config,
     );
-    let (handle, relay_task) = node.spawn(inbound_rx, outbound_tx, Some(cover_tx), OsRng);
+    // Fail-closed when `[cover].require` and cover channel/policy cannot run.
+    let (handle, relay_task) = node.spawn(inbound_rx, outbound_tx, Some(cover_tx), OsRng)?;
+    let cover_task = start_bulk_cover(&handle, &bulk_cover).await?;
+    if bulk_cover.enabled {
+        eprintln!(
+            "bulk cover started (target_flow_count={}, round_secs={})",
+            bulk_cover.target_flow_count, bulk_cover.round_secs
+        );
+    }
 
     let exit_settings = runtime.exit.into_settings()?;
     let exit_tx = exit_sink::spawn_exit_sink(exit_settings);
@@ -92,6 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_listener_task, _dispatcher_task) = spawn_link_bridge(
         runtime.listen,
         relay_id,
+        runtime.local_kem_commitment,
         runtime.peer_table,
         runtime.ingress_link_key,
         inbound_tx,
@@ -111,6 +123,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::signal::ctrl_c().await?;
     eprintln!("shutting down");
+    if let Some(task) = cover_task {
+        task.abort();
+    }
     relay_task.abort();
     Ok(())
 }

@@ -118,6 +118,15 @@ where
 pub fn config_with_tau_secs(tau_secs: f64) -> crate::emitter::EmitterConfig {
     crate::emitter::EmitterConfig {
         tau: Duration::from_secs_f64(tau_secs),
+        ..crate::emitter::EmitterConfig::default()
+    }
+}
+
+/// Build emitter config from τ and peak enqueue rate (msg/s).
+pub fn config_with_tau_and_peak(tau_secs: f64, peak_rate_per_sec: f64) -> crate::emitter::EmitterConfig {
+    crate::emitter::EmitterConfig {
+        tau: Duration::from_secs_f64(tau_secs),
+        peak_rate_per_sec,
     }
 }
 

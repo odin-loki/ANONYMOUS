@@ -55,7 +55,7 @@ mod tests {
         let mut roster = RelayRoster::new();
         for i in 0..n {
             let j = jurisdictions[i as usize % jurisdictions.len()];
-            roster.admit(test_relay_record(i + 1, j));
+            roster.admit_for_tests(test_relay_record(i + 1, j));
         }
         roster
     }
@@ -165,7 +165,7 @@ mod tests {
     fn jurisdiction_check_rejects_concentrated_path() {
         let mut roster = RelayRoster::new();
         for i in 0..4 {
-            roster.admit(test_relay_record(i, "US"));
+            roster.admit_for_tests(test_relay_record(i, "US"));
         }
         let path: Vec<_> = (0..4).map(RelayId::from_u64).collect();
         let policy = JurisdictionPolicy::default();
@@ -179,7 +179,7 @@ mod tests {
         let mut roster = RelayRoster::new();
         let jurisdictions = ["US", "DE", "FR", "UK"];
         for (i, j) in jurisdictions.iter().enumerate() {
-            roster.admit(test_relay_record(i as u64, *j));
+            roster.admit_for_tests(test_relay_record(i as u64, *j));
         }
         let path: Vec<_> = (0..4).map(RelayId::from_u64).collect();
         let policy = JurisdictionPolicy::default();

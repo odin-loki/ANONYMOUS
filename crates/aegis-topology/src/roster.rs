@@ -9,6 +9,10 @@
 //! / [`RelayRoster::admit_threshold_signed_pruned`] so anomaly-demoted relays cannot re-enter.
 //! Legacy [`RelayRoster::admit_signed`] / [`admit_threshold_signed`] remain for tests and
 //! tooling; `aegis-node` currently has no live roster-admission path.
+//!
+//! Unsigned [`RelayRoster::admit`] / [`RelayRoster::admit_for_tests`] exist only under
+//! `cfg(test)` or the `test-utils` feature (default off) so production cannot silently
+//! call unsigned admission.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -428,9 +432,24 @@ impl RelayRoster {
 
     /// Admit a relay without cryptographic authorization.
     ///
-    /// **Test-only / no authentication.** Do not use in production deployments;
-    /// prefer [`Self::admit_threshold_signed`] with consortium signatures.
+    /// **Not compiled into production builds** of this crate unless the
+    /// `test-utils` feature is enabled. Prefer [`Self::admit_for_tests`] in new
+    /// test code; production must use [`Self::admit_threshold_signed`] /
+    /// [`Self::admit_signed`] (or the `*_pruned` variants).
+    #[cfg(any(test, feature = "test-utils"))]
+    #[deprecated(
+        note = "unsigned admission is test-only; production must use admit_threshold_signed / admit_signed (enable feature aegis-topology/test-utils only in test deps)"
+    )]
     pub fn admit(&mut self, relay: RelayRecord) {
+        self.admit_for_tests(relay);
+    }
+
+    /// Test/lab unsigned admission (no consortium signature).
+    ///
+    /// Available only under `cfg(test)` or the `test-utils` feature (default off).
+    /// Production callers must use signed admission APIs.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn admit_for_tests(&mut self, relay: RelayRecord) {
         self.relays.insert(
             relay.id,
             RosterEntry {

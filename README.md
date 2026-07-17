@@ -83,10 +83,11 @@ Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing 
    `-- --ignored`) reproduces the Phase-8 benign and malicious real trace captures.
 
    **Security profiling status (2026-07-17): done** for actionable call-site gaps.
-   Mitigations include paced session, M-of-N + KEM binding, link FS + roster-id
-   handshake binding, cover on wire, peer-health→pruning, anomaly-gated
-   `admit_*_pruned`, verified roster load policy (`[roster]` on node/client),
-   exit sink, post-shaping traces, bound pruned paths, CI fuzz/deny.
+   Mitigations include paced session + ρ≤0.7 enforcement, M-of-N + KEM binding,
+   link FS + roster-id (+ optional KEM) handshake binding, required L2 bulk cover
+   on `aegis-node`, peer-health→pruning, anomaly-gated `admit_*_pruned`, fenced
+   unsigned `admit` (`test-utils` only), verified roster load, exit sink,
+   post-shaping traces, bound pruned paths, CI fuzz/deny.
 
    Accepted residuals (ops / research, not unfinished wiring): real TEE attestation;
    consortium key ceremony; full Noise / roster-key-derived link auth; constant-time

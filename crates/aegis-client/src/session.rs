@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::driver::run_session_emitter_loop;
-use crate::emitter::{ConstantRateEmitter, EmitterConfig};
+use crate::emitter::{ConstantRateEmitter, EmitterConfig, env_allows_high_rho};
 use crate::send::{build_packet_with_options, BuildPacketOptions, ClientHop, ClientLink, SendError};
 use crate::tcp_transport::TcpCellTransport;
 use crate::transport::OutboundCell;
@@ -24,6 +24,8 @@ pub struct PacedSessionConfig {
     pub emitter_config: EmitterConfig,
     /// Dummy cover duration after the fragment queue drains following a send.
     pub cover_after_send: Duration,
+    /// Skip ρ ≤ 0.7 enforcement (lab / adversarial trace only).
+    pub allow_high_rho: bool,
 }
 
 impl Default for PacedSessionConfig {
@@ -31,8 +33,17 @@ impl Default for PacedSessionConfig {
         Self {
             emitter_config: EmitterConfig::default(),
             cover_after_send: Duration::from_secs(2),
+            allow_high_rho: false,
         }
     }
+}
+
+fn validate_paced_config(config: &PacedSessionConfig) -> Result<(), crate::send::SendError> {
+    let allow = config.allow_high_rho || env_allows_high_rho();
+    config
+        .emitter_config
+        .validate_rho_with_options(crate::emitter::DEFAULT_MAX_RHO, allow)?;
+    Ok(())
 }
 
 /// Established first-hop session with a running constant-rate emitter task.
@@ -55,12 +66,17 @@ impl PacedSession {
         config: PacedSessionConfig,
         connect_rng: &mut R,
     ) -> Result<Self, SendError> {
+        validate_paced_config(&config)?;
         let transport = TcpCellTransport::connect(link, bridge_config, connect_rng).await?;
-        Ok(Self::start_with_transport(config, transport))
+        Self::start_with_transport(config, transport)
     }
 
     /// Start a session on an already-connected transport (tests / injection).
-    pub fn start_with_transport(config: PacedSessionConfig, transport: TcpCellTransport) -> Self {
+    pub fn start_with_transport(
+        config: PacedSessionConfig,
+        transport: TcpCellTransport,
+    ) -> Result<Self, SendError> {
+        validate_paced_config(&config)?;
         let tau = config.emitter_config.tau;
         let cover_after_send = config.cover_after_send;
         let (enqueue_tx, enqueue_rx) = mpsc::unbounded_channel();
@@ -84,7 +100,7 @@ impl PacedSession {
             .await
         });
 
-        Self {
+        Ok(Self {
             tau,
             enqueue_tx,
             shutdown_tx,
@@ -93,7 +109,7 @@ impl PacedSession {
             pending_rx,
             driver,
             cover_after_send,
-        }
+        })
     }
 
     /// Slot period τ for this session.

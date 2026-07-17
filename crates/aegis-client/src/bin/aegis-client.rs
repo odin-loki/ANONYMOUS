@@ -5,7 +5,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use aegis_client::driver::config_with_tau_secs;
+use aegis_client::driver::config_with_tau_and_peak;
+use aegis_client::emitter::env_allows_high_rho;
 use aegis_client::roster_load::{load_roster_from_config, RosterFileConfig};
 use aegis_client::send::{BuildPacketOptions, ClientHop, ClientLink};
 use aegis_client::session::{PacedSession, PacedSessionConfig};
@@ -42,6 +43,14 @@ struct Cli {
     /// Slot period τ in seconds (spec worked example 0.35).
     #[arg(long, default_value_t = 0.35)]
     tau_secs: f64,
+
+    /// Peak message enqueue rate (msg/s) for ρ validation (spec default 2.0).
+    #[arg(long, default_value_t = 2.0)]
+    peak_rate: f64,
+
+    /// Allow offered load ρ > 0.7 (lab / adversarial trace only).
+    #[arg(long)]
+    allow_high_rho: bool,
 
     /// Require roster KEM commitment on every hop (default: on when any hop config includes `kem_commitment`).
     #[arg(long)]
@@ -152,6 +161,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         first_hop_addr,
         first_hop_relay_id,
         link_key_bytes: parse_hex32(&file.ingress_link_key)?,
+        kem_commitment: hops
+            .first()
+            .and_then(|h| h.kem_commitment.map(|c| c.0)),
     };
 
     let require_kem_binding = if cli.no_require_kem_binding {
@@ -181,8 +193,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &link,
             &LinkBridgeConfig::default(),
             PacedSessionConfig {
-                emitter_config: config_with_tau_secs(cli.tau_secs),
+                emitter_config: config_with_tau_and_peak(cli.tau_secs, cli.peak_rate),
                 cover_after_send: Duration::from_secs_f64(cli.cover_secs),
+                allow_high_rho: cli.allow_high_rho || env_allows_high_rho(),
             },
             &mut rng,
         )

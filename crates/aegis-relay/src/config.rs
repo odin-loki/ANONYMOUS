@@ -1,4 +1,8 @@
-//! Relay configuration — mixing delay parameter `mu` (spec §4.4, §7).
+//! Relay configuration — mixing delay parameter `mu` (spec §4.4, §7)
+//! and optional bulk cover-flow policy (spec §5.2 L2).
+
+use aegis_negotiator::cover::{l2_cover_requirement, CoverRequirement};
+use aegis_negotiator::dial::{dial_requires_relay_cover, SecurityDial, L2_BASELINE_CONCURRENCY};
 
 /// Default rate parameter for per-hop Exp(μ) mixing delay.
 ///
@@ -16,21 +20,164 @@
 /// soft tuning target, not a hard gate.
 pub const DEFAULT_MU: f64 = 2.0;
 
+/// Default observed-flow target for L2 bulk cover rounds ([`L2_BASELINE_CONCURRENCY`]).
+pub const DEFAULT_COVER_TARGET_FLOW_COUNT: u32 = L2_BASELINE_CONCURRENCY as u32;
+
+/// Default bulk-round rotation interval when cover is enabled (seconds).
+pub const DEFAULT_COVER_ROUND_SECS: u64 = 30;
+
+/// Error when bulk cover policy is required but cannot be satisfied.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CoverPolicyError {
+    #[error("bulk cover is required by config but the cover outbound channel is absent")]
+    CoverChannelRequired,
+    #[error("bulk cover is required by config but cover flow is disabled")]
+    CoverDisabledWhileRequired,
+    #[error("bulk cover dial {0:?} does not require relay cover — misconfigured policy")]
+    DialDoesNotRequireCover(SecurityDial),
+}
+
+/// Bulk cover-flow policy for a mix relay (spec §5.2 L2).
+///
+/// When [`Self::enabled`], production nodes must wire a cover outbound channel and
+/// call [`crate::RelayHandle::begin_bulk_round`] (auto-started by [`crate::start_bulk_cover`]
+/// / `aegis-node`). When [`Self::require`] is set, startup fails closed if cover cannot run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BulkCoverConfig {
+    /// When true, open L2 bulk rounds and emit cover padding at round close.
+    pub enabled: bool,
+    /// When true, refuse to run without cover channel + enabled cover policy.
+    pub require: bool,
+    /// Security dial for auto-started rounds (must be L2 when cover is required).
+    pub dial: SecurityDial,
+    /// Target observed flow count per bulk round.
+    pub target_flow_count: u32,
+    /// How often to close/re-open the bulk round so cover can emit (seconds).
+    pub round_secs: u64,
+}
+
+impl Default for BulkCoverConfig {
+    fn default() -> Self {
+        Self {
+            // Off by default so in-process unit tests that drive rounds manually stay unchanged.
+            enabled: false,
+            require: false,
+            dial: SecurityDial::L2UniformBatched,
+            target_flow_count: DEFAULT_COVER_TARGET_FLOW_COUNT,
+            round_secs: DEFAULT_COVER_ROUND_SECS,
+        }
+    }
+}
+
+impl BulkCoverConfig {
+    /// Production-oriented defaults: cover enabled and required.
+    #[must_use]
+    pub fn production() -> Self {
+        Self {
+            enabled: true,
+            require: true,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn requirement(&self) -> CoverRequirement {
+        l2_cover_requirement(self.target_flow_count)
+    }
+
+    /// Fail closed when cover is required but cannot be satisfied at spawn time.
+    pub fn validate_spawn(&self, cover_channel_present: bool) -> Result<(), CoverPolicyError> {
+        if !self.require {
+            return Ok(());
+        }
+        if !self.enabled {
+            return Err(CoverPolicyError::CoverDisabledWhileRequired);
+        }
+        if !cover_channel_present {
+            return Err(CoverPolicyError::CoverChannelRequired);
+        }
+        if !dial_requires_relay_cover(self.dial) {
+            return Err(CoverPolicyError::DialDoesNotRequireCover(self.dial));
+        }
+        Ok(())
+    }
+}
+
 /// Per-relay configuration.
 #[derive(Clone, Debug)]
 pub struct RelayConfig {
     /// Rate parameter μ for Exp(μ) per-hop mixing delay (mean delay = 1/μ).
     pub mu: f64,
+    /// Bulk cover-flow policy (L2). Production nodes should use [`BulkCoverConfig::production`].
+    pub bulk_cover: BulkCoverConfig,
 }
 
 impl Default for RelayConfig {
     fn default() -> Self {
-        Self { mu: DEFAULT_MU }
+        Self {
+            mu: DEFAULT_MU,
+            bulk_cover: BulkCoverConfig::default(),
+        }
     }
 }
 
 impl RelayConfig {
     pub fn new(mu: f64) -> Self {
-        Self { mu }
+        Self {
+            mu,
+            bulk_cover: BulkCoverConfig::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_bulk_cover(mut self, bulk_cover: BulkCoverConfig) -> Self {
+        self.bulk_cover = bulk_cover;
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aegis_negotiator::SecurityDial;
+
+    #[test]
+    fn production_policy_requires_cover_channel() {
+        let policy = BulkCoverConfig::production();
+        assert!(policy.enabled && policy.require);
+        assert_eq!(
+            policy.validate_spawn(false),
+            Err(CoverPolicyError::CoverChannelRequired)
+        );
+        assert!(policy.validate_spawn(true).is_ok());
+    }
+
+    #[test]
+    fn require_with_disabled_cover_fails() {
+        let policy = BulkCoverConfig {
+            enabled: false,
+            require: true,
+            ..BulkCoverConfig::default()
+        };
+        assert_eq!(
+            policy.validate_spawn(true),
+            Err(CoverPolicyError::CoverDisabledWhileRequired)
+        );
+    }
+
+    #[test]
+    fn non_l2_dial_rejected_when_required() {
+        let policy = BulkCoverConfig {
+            enabled: true,
+            require: true,
+            dial: SecurityDial::L0Raw,
+            ..BulkCoverConfig::default()
+        };
+        assert_eq!(
+            policy.validate_spawn(true),
+            Err(CoverPolicyError::DialDoesNotRequireCover(
+                SecurityDial::L0Raw
+            ))
+        );
     }
 }

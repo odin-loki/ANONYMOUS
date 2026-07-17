@@ -15,7 +15,7 @@ use rand_core::{CryptoRngCore, RngCore};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
-use crate::config::RelayConfig;
+use crate::config::{BulkCoverConfig, CoverPolicyError, RelayConfig};
 use crate::cover_flow::{BulkRoundCommand, BulkRoundTracker, CoverFlowConfig};
 use crate::delay::sample_mixing_delay;
 use crate::relay_id::RelayId;
@@ -214,13 +214,22 @@ impl RelayNode {
     /// bursts from [`RelayHandle::end_bulk_round`] are sent there for link-layer sealing
     /// (see [`crate::net::spawn_link_bridge`]). Bulk cover padding is driven via
     /// [`RelayHandle::begin_bulk_round`] / [`RelayHandle::end_bulk_round`].
+    ///
+    /// When [`RelayConfig::bulk_cover`] has [`BulkCoverConfig::require`], this fails
+    /// closed if `cover_tx` is `None` or cover is disabled. Callers that enable cover
+    /// should then invoke [`start_bulk_cover`] so a misconfigured node cannot accept
+    /// bulk while silently skipping cover rounds.
     pub fn spawn<R: RngCore + CryptoRngCore + Send + 'static>(
         self,
         inbound: mpsc::Receiver<SphinxPacket>,
         outbound: mpsc::Sender<ForwardedPacket>,
         cover_tx: Option<mpsc::Sender<Vec<Cell>>>,
         mut rng: R,
-    ) -> (RelayHandle, JoinHandle<()>) {
+    ) -> Result<(RelayHandle, JoinHandle<()>), CoverPolicyError> {
+        self.config
+            .bulk_cover
+            .validate_spawn(cover_tx.is_some())?;
+
         let stats = Arc::new(RelayStats::new());
         let (round_tx, mut round_rx) = mpsc::channel(16);
         let handle = RelayHandle {
@@ -289,8 +298,53 @@ impl RelayNode {
             }
         });
 
-        (handle, join)
+        Ok((handle, join))
     }
+}
+
+/// Begin (and optionally rotate) bulk cover rounds for a running relay.
+///
+/// When `policy.enabled` is false, this is a no-op. When enabled, opens an L2 bulk
+/// round immediately and, if `policy.round_secs > 0`, spawns a task that periodically
+/// closes and re-opens the round so cover padding can emit on the cover channel.
+///
+/// Returns the optional rotation task handle (abort on shutdown).
+pub async fn start_bulk_cover(
+    handle: &RelayHandle,
+    policy: &BulkCoverConfig,
+) -> Result<Option<JoinHandle<()>>, RelayStoppedError> {
+    if !policy.enabled {
+        return Ok(None);
+    }
+
+    handle
+        .begin_bulk_round(policy.dial, policy.requirement())
+        .await?;
+
+    if policy.round_secs == 0 {
+        return Ok(None);
+    }
+
+    let handle = handle.clone();
+    let dial = policy.dial;
+    let requirement = policy.requirement();
+    let period = Duration::from_secs(policy.round_secs);
+    let task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // First tick completes immediately; skip so we don't end the just-started round.
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if handle.end_bulk_round().await.is_err() {
+                break;
+            }
+            if handle.begin_bulk_round(dial, requirement).await.is_err() {
+                break;
+            }
+        }
+    });
+    Ok(Some(task))
 }
 
 async fn process_one_packet<R: RngCore + CryptoRngCore>(
@@ -357,6 +411,7 @@ pub fn packet_delta(packet: &SphinxPacket) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{BulkCoverConfig, CoverPolicyError, DEFAULT_MU};
     use aegis_crypto::cell::Command;
     use aegis_crypto::fragment::SPHINX_FRAGMENT_COUNT;
     use aegis_crypto::kem::RelayKemSecret;
@@ -412,7 +467,7 @@ mod tests {
             relay_test_path(&mut rng);
 
         let node = RelayNode::new(guard_id, guard_sec, RelayConfig::default());
-        let (handle, _task) = node.spawn(inbound_rx, outbound_tx, None, OsRng);
+        let (handle, _task) = node.spawn(inbound_rx, outbound_tx, None, OsRng).unwrap();
 
         // Round 1: L2, target 3, one real flow -> 2 cover flows.
         handle
@@ -468,7 +523,9 @@ mod tests {
 
         let (cover_tx, mut cover_rx) = mpsc::channel(8);
         let node = RelayNode::new(guard_id, guard_sec, RelayConfig::default());
-        let (handle, _task) = node.spawn(inbound_rx, outbound_tx, Some(cover_tx), OsRng);
+        let (handle, _task) = node
+            .spawn(inbound_rx, outbound_tx, Some(cover_tx), OsRng)
+            .unwrap();
 
         handle
             .begin_bulk_round(SecurityDial::L2UniformBatched, CoverRequirement::new(4))
@@ -508,7 +565,7 @@ mod tests {
             relay_test_path(&mut rng);
 
         let node = RelayNode::new(guard_id, guard_sec, RelayConfig::default());
-        let (handle, _task) = node.spawn(inbound_rx, outbound_tx, None, OsRng);
+        let (handle, _task) = node.spawn(inbound_rx, outbound_tx, None, OsRng).unwrap();
 
         let packet = build(&path, b"ok", &mut rng).unwrap();
         inbound_tx.send(packet).await.unwrap();
@@ -537,5 +594,51 @@ mod tests {
         }
         .failure_rate()
         .is_none());
+    }
+
+    #[test]
+    fn require_cover_fails_closed_without_channel() {
+        let mut rng = OsRng;
+        let (guard_sec, guard_id, _path, _tx, inbound_rx, outbound_tx, _outbound_rx) =
+            relay_test_path(&mut rng);
+        let cfg = RelayConfig::new(DEFAULT_MU).with_bulk_cover(BulkCoverConfig::production());
+        let node = RelayNode::new(guard_id, guard_sec, cfg);
+        let err = node
+            .spawn(inbound_rx, outbound_tx, None, OsRng)
+            .expect_err("must refuse bulk without cover channel");
+        assert_eq!(err, CoverPolicyError::CoverChannelRequired);
+    }
+
+    #[tokio::test]
+    async fn start_bulk_cover_begins_round_when_enabled() {
+        let mut rng = OsRng;
+        let (guard_sec, guard_id, path, inbound_tx, inbound_rx, outbound_tx, mut outbound_rx) =
+            relay_test_path(&mut rng);
+        let (cover_tx, mut cover_rx) = mpsc::channel(8);
+        let policy = BulkCoverConfig {
+            enabled: true,
+            require: true,
+            dial: SecurityDial::L2UniformBatched,
+            target_flow_count: 3,
+            round_secs: 0,
+        };
+        let node = RelayNode::new(
+            guard_id,
+            guard_sec,
+            RelayConfig::new(DEFAULT_MU).with_bulk_cover(policy.clone()),
+        );
+        let (handle, _task) = node
+            .spawn(inbound_rx, outbound_tx, Some(cover_tx), OsRng)
+            .unwrap();
+        start_bulk_cover(&handle, &policy).await.unwrap();
+
+        let packet = build(&path, b"auto", &mut rng).unwrap();
+        inbound_tx.send(packet).await.unwrap();
+        let _ = outbound_rx.recv().await;
+        handle.end_bulk_round().await.unwrap();
+
+        let burst = cover_rx.try_recv().expect("cover emitted after started round");
+        assert_eq!(burst.len(), SPHINX_FRAGMENT_COUNT);
+        assert_eq!(handle.debug_stats().cover_flow_count, 2);
     }
 }

@@ -7,6 +7,12 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+## Unsigned `RelayRoster::admit` / `admit_for_tests` for lab and cross-crate tests only.
+## Production builds must leave this off and use signed admission APIs.
+test-utils = []
+
 [dependencies]
 rand = { version = "0.8", features = ["std_rng"] }
 rand_core.workspace = true

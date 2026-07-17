@@ -21,9 +21,11 @@ pub mod session;
 pub mod tcp_transport;
 pub mod transport;
 
-pub use driver::{config_with_tau_secs, run_emitter_loop};
+pub use driver::{config_with_tau_and_peak, config_with_tau_secs, run_emitter_loop};
 pub use emitter::{
-    ConstantRateEmitter, EmitterConfig, MAX_CELL_PAYLOAD, DATA_HEADER_LEN,
+    env_allows_high_rho, rho_at_peak_rate, ConstantRateEmitter, EmitterConfig,
+    DEFAULT_MAX_RHO, DEFAULT_PEAK_RATE_PER_SEC, MAX_CELL_PAYLOAD, DATA_HEADER_LEN,
+    RhoLimitError,
 };
 pub use padding::{
     analyze_hard_cap, CountHardCapPadder, DeliverySlot, HardCapConfig, HardCapPadder,

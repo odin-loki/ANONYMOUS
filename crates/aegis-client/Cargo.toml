@@ -25,3 +25,4 @@ toml = "0.8"
 [dev-dependencies]
 rand_core = { version = "0.6", features = ["getrandom"] }
 aegis-trust = { path = "../aegis-trust" }
+aegis-topology = { path = "../aegis-topology", features = ["test-utils"] }

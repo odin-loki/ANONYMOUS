@@ -20,6 +20,11 @@
 //! counting window; cover bursts are emitted on the optional cover outbound channel and
 //! sealed by [`net::spawn_link_bridge`].
 //!
+//! Production path: set [`BulkCoverConfig::require`] (via [`BulkCoverConfig::production`]),
+//! pass a cover channel into [`RelayNode::spawn`] (fails closed otherwise), then call
+//! [`start_bulk_cover`] so rounds actually start — a misconfigured node cannot accept
+//! bulk while silently skipping cover.
+//!
 //! ## TCP link bridge
 //!
 //! Real hop links are implemented in [`net`]: fixed-width AEAD frames over
@@ -35,7 +40,10 @@ pub mod peer_health;
 pub mod relay_id;
 pub mod trace;
 
-pub use config::{RelayConfig, DEFAULT_MU};
+pub use config::{
+    BulkCoverConfig, CoverPolicyError, RelayConfig, DEFAULT_COVER_ROUND_SECS,
+    DEFAULT_COVER_TARGET_FLOW_COUNT, DEFAULT_MU,
+};
 pub use cover_flow::{
     is_relay_cover_fragment, BulkRoundCommand, BulkRoundTracker, CoverEmitResult, CoverFlow,
     CoverFlowConfig, CoverFlowGenerator, COVER_FRAGMENT_RESERVED,
@@ -47,7 +55,8 @@ pub use net::{
     DEFAULT_LINK_READ_TIMEOUT, DEFAULT_MAX_INBOUND_CONNECTIONS,
 };
 pub use node::{
-    packet_delta, ForwardedPacket, RelayCoarseStats, RelayDebugStats, RelayHandle, RelayNode,
+    packet_delta, start_bulk_cover, ForwardedPacket, RelayCoarseStats, RelayDebugStats,
+    RelayHandle, RelayNode, RelayStoppedError,
 };
 pub use peer_health::PeerHealthTracker;
 pub use relay_id::RelayId;

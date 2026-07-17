@@ -50,7 +50,13 @@ async fn session_emits_dummy_cover_after_queue_drains() {
     let (cover_done_tx, mut cover_done_rx) = watch::channel(false);
     let (pending_tx, pending_rx) = watch::channel(0usize);
 
-    let emitter = ConstantRateEmitter::new(EmitterConfig { tau }, OsRng);
+    let emitter = ConstantRateEmitter::new(
+        EmitterConfig {
+            tau,
+            ..Default::default()
+        },
+        OsRng,
+    );
     let recording = Arc::new(std::sync::Mutex::new(RecordingTransport::new()));
     let transport = SharedRecordingTransport {
         inner: Arc::clone(&recording),
@@ -118,7 +124,13 @@ async fn session_ticks_stay_tau_spaced_under_load() {
     let (cover_done_tx, mut cover_done_rx) = watch::channel(false);
     let (pending_tx, _pending_rx) = watch::channel(0usize);
 
-    let emitter = ConstantRateEmitter::new(EmitterConfig { tau }, OsRng);
+    let emitter = ConstantRateEmitter::new(
+        EmitterConfig {
+            tau,
+            ..Default::default()
+        },
+        OsRng,
+    );
     let recording = Arc::new(std::sync::Mutex::new(RecordingTransport::new()));
     let instants = Arc::new(std::sync::Mutex::new(Vec::<Instant>::new()));
     let timed = TimedRecordingTransport {
@@ -213,6 +225,7 @@ async fn two_paced_sends_reuse_one_tcp_handshake() {
         let key = run_responder_handshake(
             &mut stream,
             first_hop_id,
+            None,
             Some(psk),
             &HashMap::new(),
             &mut rng,
@@ -237,14 +250,19 @@ async fn two_paced_sends_reuse_one_tcp_handshake() {
         first_hop_addr: addr,
         first_hop_relay_id: hops[0].id,
         link_key_bytes: psk,
+        kem_commitment: None,
     };
     let tau = Duration::from_millis(25);
     let mut session = PacedSession::connect(
         &link,
         &cfg,
         PacedSessionConfig {
-            emitter_config: EmitterConfig { tau },
+            emitter_config: EmitterConfig {
+                tau,
+                ..Default::default()
+            },
             cover_after_send: Duration::from_millis(50),
+            allow_high_rho: false,
         },
         &mut OsRng,
     )

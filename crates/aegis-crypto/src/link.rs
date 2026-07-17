@@ -610,6 +610,61 @@ mod tests {
     }
 
     #[test]
+    fn handshake_honest_with_matching_kem_commitment() {
+        let psk = [0x42u8; 32];
+        let mut rng = OsRng;
+        let binding = LinkHandshakeBinding::peer_id(test_peer_id(0x10))
+            .with_kem_commitment([0xCCu8; 32]);
+        let (key_i, key_r) = run_honest_handshake(psk, Some(binding), &mut rng);
+        assert_eq!(key_i, key_r);
+    }
+
+    #[test]
+    fn handshake_rejects_mismatched_kem_commitment() {
+        let psk = [0x42u8; 32];
+        let mut rng = OsRng;
+        let initiator_binding = LinkHandshakeBinding::peer_id(test_peer_id(0x10))
+            .with_kem_commitment([0x01u8; 32]);
+        let responder_binding = LinkHandshakeBinding::peer_id(test_peer_id(0x10))
+            .with_kem_commitment([0x02u8; 32]);
+        let (init_sk, init_msg) = link_handshake_init_write(&mut rng);
+        let init = parse_link_handshake_init(&init_msg).unwrap();
+        let (resp_sk, resp_msg) = link_handshake_resp_write(&mut rng);
+        let resp = parse_link_handshake_resp(&resp_msg).unwrap();
+        let transcript = LinkHandshakeTranscript::from_messages(&init, &resp);
+        let confirm = link_handshake_confirm_mac(&psk, &transcript, Some(&initiator_binding));
+        let finish = link_handshake_finish_mac(&psk, &transcript, Some(&initiator_binding));
+        assert!(link_handshake_initiator_finish(
+            &psk,
+            init_sk,
+            &init,
+            &resp_msg,
+            &finish,
+            Some(&initiator_binding),
+        )
+        .is_ok());
+        let err = link_handshake_responder_finish(
+            &psk,
+            resp_sk,
+            &init,
+            &resp,
+            &confirm,
+            Some(&responder_binding),
+        );
+        assert!(matches!(err, Err(CryptoError::IntegrityFailure)));
+    }
+
+    #[test]
+    fn handshake_relay_id_only_when_kem_commitment_absent() {
+        let psk = [0x42u8; 32];
+        let mut rng = OsRng;
+        let binding = LinkHandshakeBinding::peer_id(test_peer_id(0x11));
+        assert!(binding.kem_public_commitment.is_none());
+        let (key_i, key_r) = run_honest_handshake(psk, Some(binding), &mut rng);
+        assert_eq!(key_i, key_r);
+    }
+
+    #[test]
     fn session_key_seals_after_handshake() {
         let psk = [0x11u8; 32];
         let mut rng = OsRng;

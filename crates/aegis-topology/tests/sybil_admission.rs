@@ -366,7 +366,7 @@ fn admission_rate_limit_caps_sybil_roster_growth_per_window() {
 
     // Long-standing vetted pool (pre-window, test-only admit — unseen => NEUTRAL for compat).
     for id in 1..=HONEST_COUNT {
-        roster.admit(honest_record(id));
+        roster.admit_for_tests(honest_record(id));
         seed_vetted_reputation(&mut ledger, RelayId::from_u64(id));
     }
 

@@ -50,7 +50,13 @@ fn sample_hops(n: usize) -> Vec<aegis_client::send::ClientHop> {
 async fn paced_emitter_ticks_are_tau_spaced() {
     let tau = Duration::from_millis(30);
     let tick_count = 8usize;
-    let mut emitter = ConstantRateEmitter::new(EmitterConfig { tau }, OsRng);
+    let mut emitter = ConstantRateEmitter::new(
+        EmitterConfig {
+            tau,
+            ..Default::default()
+        },
+        OsRng,
+    );
     for _ in 0..tick_count {
         emitter.enqueue_cell(OutboundCell(Cell::zeroed()));
     }
