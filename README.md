@@ -58,7 +58,7 @@ cd ../crates && cargo build --workspace && cargo test --workspace
 | 7 | trust/attestation                           | core gates hold with TEE assumed broken | **partial** — `aegis-trust` ships a real reputation ledger + anomaly detector (26/26), a genuine Bulletproofs zero-knowledge range proof for reputation thresholds, and reputation-aware guard/path selection in `aegis-topology` that a Sybil-admission simulation shows collapses rep-filtered path capture from ~45% to 0% at a 50% flood; real TEE attestation remains an explicit deferred interface boundary |
 | 8 | hardening                                   | real-trace shapeability; documented ε per tier | **done** — a benign client-send trace and a malicious/flooding trace, both captured from the real Sphinx/TCP testnet, were run through `shapeability_report` and compared against each other and the synthetic stand-in; see `docs/AEGIS_phase8_hardening_notes.md` §4 |
 
-All of the above is independently re-verifiable with `cd sim && PYTHONPATH=. pytest -q` and `cd crates && cargo test --workspace` (**187 passed, 2 ignored, 0 failed**, plus `cargo deny check` clean, `.github/workflows/ci.yml` for test/deny/nightly fuzz-smoke, and a workspace-wide `unsafe_code = forbid` lint policy — see `docs/AEGIS_implementation_threat_model.md`).
+All of the above is independently re-verifiable with `cd sim && PYTHONPATH=. pytest -q` (**25 passed**) and `cd crates && cargo test --workspace` (**195 passed, 3 ignored, 0 failed**, plus `cargo deny check` clean, `.github/workflows/ci.yml` for test/deny/nightly fuzz-smoke, and a workspace-wide `unsafe_code = forbid` lint policy — see `docs/AEGIS_implementation_threat_model.md`).
 
 ## Security profiling
 Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing + a real implementation-level threat model, not just the paper design) lives across:
@@ -83,10 +83,12 @@ Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing 
    `-- --ignored`) reproduces the Phase-8 benign and malicious real trace captures.
 
    Remaining real work: real TEE attestation for Phase 7; wire `binds_kem_public` into
-   live client path build and `RelayPruningPolicy` into production path selection;
-   consortium key ceremony (M-of-N code is in place); multi-process testnet
-   orchestration; cover-burst timing indistinguishability. See
-   `docs/AEGIS_implementation_threat_model.md` for the full residual-gap list.
+   live client path build; feed relay metrics into `RelayPruningPolicy` at runtime
+   (selection APIs are wired — see `select_path_reputation_weighted_pruned` /
+   `GuardSelector::new_reputation_weighted_pruned`); consortium key ceremony (M-of-N
+   code is in place); multi-process testnet orchestration; cover-burst timing
+   indistinguishability. See `docs/AEGIS_implementation_threat_model.md` for the full
+   residual-gap list.
 
 ## Honest boundaries (do not oversell — see spec §8, §9)
 - Strong guarantees are for **internal** (client↔client) traffic. Clearnet exit is

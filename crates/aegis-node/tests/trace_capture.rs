@@ -161,6 +161,7 @@ impl TcpTestnet {
             .map(|(i, (id, pk))| ClientHop {
                 id: id.0,
                 kem_public: pk.clone(),
+                kem_commitment: None,
                 addr: if i == 0 {
                     Some(listen_addrs[0])
                 } else {

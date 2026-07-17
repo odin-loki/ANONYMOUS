@@ -27,10 +27,11 @@ pub use guards::{guard_exposure_plateau, GuardConfig, GuardSelector};
 pub use layers::{build_topology, build_topology_reputation_filtered, Topology};
 pub use path::{
     path_compromise_probability, path_satisfies_jurisdiction, path_satisfies_reputation,
-    select_diverse_path, select_diverse_reputation_path, select_path,
-    select_path_reputation_weighted, JurisdictionPolicy,
+    select_diverse_path, select_diverse_reputation_path, select_diverse_reputation_path_pruned,
+    select_path, select_path_reputation_weighted, select_path_reputation_weighted_pruned,
+    JurisdictionPolicy,
 };
-pub use pruning::path_satisfies_pruning_policy;
+pub use pruning::{path_satisfies_pruning_policy, relay_satisfies_pruning_policy};
 pub use roster::{
     AuthorityAdmissionSignature, ConsortiumKey, RelayRoster, RosterAdmissionPolicy,
     SignedRelayRecord, ThresholdConsortium, ThresholdSignedRelayRecord,

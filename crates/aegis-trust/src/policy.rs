@@ -71,6 +71,10 @@ impl RelayPruningPolicy {
     }
 
     /// Whether `relay` may participate in reputation-filtered guard/path selection.
+    ///
+    /// Topology callers should use the `*_pruned` APIs in `aegis-topology` (`select_path_reputation_weighted_pruned`,
+    /// `GuardSelector::new_reputation_weighted_pruned`) which invoke this hook; relays must
+    /// still be fed metrics via [`Self::observe_metric`] for demotion to take effect.
     pub fn is_eligible(&self, relay: [u8; 32], min_reputation: f64) -> bool {
         self.ledger.score(relay).0 >= min_reputation
     }

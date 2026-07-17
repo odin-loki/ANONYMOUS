@@ -41,11 +41,7 @@ fn sample_hops(n: usize) -> Vec<aegis_client::send::ClientHop> {
             let (_sec, pk) = RelayKemSecret::generate(&mut rng);
             let mut id = [0u8; 32];
             id[0] = i as u8;
-            aegis_client::send::ClientHop {
-                id,
-                kem_public: pk,
-                addr: None,
-            }
+            aegis_client::send::ClientHop::new(id, pk, None)
         })
         .collect()
 }

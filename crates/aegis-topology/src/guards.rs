@@ -1,11 +1,13 @@
 //! Stable vetted layered guards (spec §4.6) and exposure plateau math.
 
+use aegis_trust::policy::RelayPruningPolicy;
 use aegis_trust::reputation::ReputationLedger;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
 use crate::error::TopologyError;
 use crate::layers::Topology;
+use crate::pruning::relay_satisfies_pruning_policy;
 use crate::types::RelayId;
 
 /// Guard selection parameters for one client across an epoch.
@@ -124,6 +126,56 @@ impl GuardSelector {
         })
     }
 
+    /// Like [`Self::new_reputation_weighted`] but filters layer-1 candidates with
+    /// [`RelayPruningPolicy::is_eligible`] at `min_reputation` (anomaly demotion).
+    pub fn new_reputation_weighted_pruned(
+        topology: &Topology,
+        config: &GuardConfig,
+        client_seed: u64,
+        policy: &RelayPruningPolicy,
+        min_reputation: f64,
+    ) -> Result<Self, TopologyError> {
+        let layer1 = topology
+            .layer(0)
+            .ok_or(TopologyError::EmptyLayer {
+                layer: 1,
+                epoch: topology.epoch,
+            })?;
+
+        let needed = config.guard_count as usize;
+        let candidates: Vec<RelayId> = layer1
+            .iter()
+            .copied()
+            .filter(|id| relay_satisfies_pruning_policy(*id, policy, min_reputation))
+            .collect();
+
+        if candidates.len() < needed {
+            return Err(TopologyError::InsufficientReputation {
+                available: candidates.len(),
+                needed,
+                min_reputation,
+            });
+        }
+
+        let mut candidates = candidates;
+        let mut rng = StdRng::seed_from_u64(
+            client_seed
+                .wrapping_mul(0x517c_c1b7_2722_0a95)
+                .wrapping_add(topology.epoch),
+        );
+
+        for i in 0..needed {
+            let j = rng.gen_range(i..candidates.len());
+            candidates.swap(i, j);
+        }
+        candidates.truncate(needed);
+
+        Ok(Self {
+            epoch: topology.epoch,
+            guards: candidates,
+        })
+    }
+
     /// Primary entry guard — stable for all packets in this epoch.
     pub fn primary_guard(&self) -> RelayId {
         self.guards[0]
@@ -151,6 +203,7 @@ pub fn guard_exposure_plateau(c: f64, g: u32) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use aegis_trust::policy::{RelayPruningPolicy, DEFAULT_PATH_REPUTATION_FLOOR};
     use aegis_trust::reputation::ReputationLedger;
 
     use super::*;
@@ -223,5 +276,67 @@ mod tests {
         let guards = GuardSelector::new(&topo, &GuardConfig::default(), 123).unwrap();
         assert_eq!(guards.guards.len(), 3);
         assert_eq!(guards.epoch, 5);
+    }
+
+    fn demote_via_anomaly(relay: RelayId) -> RelayPruningPolicy {
+        let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+        for _ in 0..100 {
+            policy.observe_metric(*relay.as_bytes(), 10.0);
+        }
+        policy.observe_metric(*relay.as_bytes(), 1000.0);
+        assert!(
+            !policy.is_eligible(*relay.as_bytes(), DEFAULT_PATH_REPUTATION_FLOOR),
+            "anomaly demotion must push relay below path floor"
+        );
+        policy
+    }
+
+    #[test]
+    fn pruned_guard_excludes_anomaly_demoted_relay() {
+        let roster = sample_roster(12);
+        let topo = build_topology(&roster, 1, &TopologyConfig::high_threat(), 0).unwrap();
+        let bad = RelayId::from_u64(1);
+        let policy = demote_via_anomaly(bad);
+
+        for seed in 0..100u64 {
+            let guards = GuardSelector::new_reputation_weighted_pruned(
+                &topo,
+                &GuardConfig::default(),
+                seed,
+                &policy,
+                DEFAULT_PATH_REPUTATION_FLOOR,
+            )
+            .unwrap();
+            assert!(
+                !guards.guards.contains(&bad),
+                "demoted relay must never be selected as guard"
+            );
+        }
+    }
+
+    #[test]
+    fn pruned_guard_errors_when_too_few_eligible_candidates() {
+        let roster = sample_roster(6);
+        let topo = build_topology(&roster, 0, &TopologyConfig::standard(), 0).unwrap();
+        let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+        for id in &topo.layers[0] {
+            for _ in 0..100 {
+                policy.observe_metric(*id.as_bytes(), 10.0);
+            }
+            policy.observe_metric(*id.as_bytes(), 1000.0);
+        }
+
+        let err = GuardSelector::new_reputation_weighted_pruned(
+            &topo,
+            &GuardConfig::default(),
+            0,
+            &policy,
+            DEFAULT_PATH_REPUTATION_FLOOR,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            TopologyError::InsufficientReputation { needed: 3, .. }
+        ));
     }
 }

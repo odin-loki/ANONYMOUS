@@ -9,6 +9,7 @@ use aegis_client::driver::config_with_tau_secs;
 use aegis_client::send::{send_payload, ClientHop, ClientLink};
 use aegis_client::session::{PacedSession, PacedSessionConfig};
 use aegis_crypto::kem::RelayKemSecret;
+use aegis_topology::types::KemPublicCommitment;
 use aegis_relay::LinkBridgeConfig;
 use clap::Parser;
 use rand_core::OsRng;
@@ -56,6 +57,8 @@ struct HopConfig {
     kem_x25519_seed: String,
     kem_mlkem_d: String,
     kem_mlkem_z: String,
+    /// Optional SHA3-256 hex commitment from the signed roster (64 hex chars).
+    kem_commitment: Option<String>,
 }
 
 fn parse_hex32(s: &str) -> Result<[u8; 32], String> {
@@ -104,9 +107,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let d = parse_hex32(&hop.kem_mlkem_d)?;
         let z = parse_hex32(&hop.kem_mlkem_z)?;
         let (_sec, pk) = RelayKemSecret::generate_deterministic(x, d, z);
+        let kem_commitment = hop
+            .kem_commitment
+            .as_deref()
+            .map(parse_hex32)
+            .transpose()
+            .map_err(|e| format!("kem_commitment: {e}"))?
+            .map(KemPublicCommitment);
         hops.push(ClientHop {
             id,
             kem_public: pk,
+            kem_commitment,
             addr: None,
         });
     }

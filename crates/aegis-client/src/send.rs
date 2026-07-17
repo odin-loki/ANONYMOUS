@@ -8,6 +8,7 @@ use aegis_crypto::fragment::{fragment_with_random_id, SPHINX_FRAGMENT_COUNT};
 use aegis_crypto::kem::RelayKemPublic;
 use aegis_crypto::sphinx::{build, PathHop, SphinxPacket};
 use aegis_relay::{send_sphinx_packet, LinkBridgeConfig};
+use aegis_topology::types::{KemPublicCommitment, RelayRecord};
 use rand_core::{CryptoRngCore, RngCore};
 use thiserror::Error;
 
@@ -19,8 +20,42 @@ use crate::session::{PacedSession, PacedSessionConfig};
 pub struct ClientHop {
     pub id: [u8; 32],
     pub kem_public: RelayKemPublic,
+    /// Roster KEM commitment; when present, [`build_packet`] verifies it matches `kem_public`.
+    pub kem_commitment: Option<KemPublicCommitment>,
     /// Listen address of this hop (required for the first hop only).
     pub addr: Option<SocketAddr>,
+}
+
+impl ClientHop {
+    /// Hop without roster binding (dev / legacy paths).
+    pub fn new(id: [u8; 32], kem_public: RelayKemPublic, addr: Option<SocketAddr>) -> Self {
+        Self {
+            id,
+            kem_public,
+            kem_commitment: None,
+            addr,
+        }
+    }
+
+    /// Attach a roster KEM commitment for binding verification at build time.
+    pub fn with_commitment(mut self, commitment: KemPublicCommitment) -> Self {
+        self.kem_commitment = Some(commitment);
+        self
+    }
+
+    /// Build from an admitted roster record and the relay's live KEM public key.
+    pub fn from_relay_record(
+        record: &RelayRecord,
+        kem_public: RelayKemPublic,
+        addr: Option<SocketAddr>,
+    ) -> Self {
+        Self {
+            id: *record.id.as_bytes(),
+            kem_public,
+            kem_commitment: Some(record.kem_public_commitment),
+            addr,
+        }
+    }
 }
 
 /// Link key for the client → first-hop connection.
@@ -42,6 +77,11 @@ pub enum SendError {
     Net(#[from] aegis_relay::NetError),
     #[error("paced session closed")]
     SessionClosed,
+    #[error("KEM public key does not match roster commitment for hop {hop_id:02x}{hop_id_tail:02x}…")]
+    KemBindingMismatch {
+        hop_id: u8,
+        hop_id_tail: u8,
+    },
 }
 
 /// Build a Sphinx packet along `hops` carrying `payload`.
@@ -52,6 +92,9 @@ pub fn build_packet<R: RngCore + CryptoRngCore>(
 ) -> Result<SphinxPacket, SendError> {
     if hops.len() < 2 {
         return Err(SendError::PathTooShort);
+    }
+    for hop in hops {
+        verify_kem_binding(hop)?;
     }
     let path: Vec<PathHop> = hops
         .iter()
@@ -138,14 +181,53 @@ pub fn hops_from_keys(
     publics: &[RelayKemPublic],
     addrs: &HashMap<[u8; 32], SocketAddr>,
 ) -> Vec<ClientHop> {
+    hops_from_keys_with_commitments(ids, publics, None, addrs)
+}
+
+/// Like [`hops_from_keys`], with optional per-hop roster KEM commitments.
+pub fn hops_from_keys_with_commitments(
+    ids: &[[u8; 32]],
+    publics: &[RelayKemPublic],
+    commitments: Option<&[KemPublicCommitment]>,
+    addrs: &HashMap<[u8; 32], SocketAddr>,
+) -> Vec<ClientHop> {
     ids.iter()
         .zip(publics.iter())
-        .map(|(id, pk)| ClientHop {
+        .enumerate()
+        .map(|(i, (id, pk))| ClientHop {
             id: *id,
             kem_public: pk.clone(),
+            kem_commitment: commitments.and_then(|c| c.get(i).copied()),
             addr: addrs.get(id).copied(),
         })
         .collect()
+}
+
+/// Build hops from admitted roster records and live KEM public keys (same order).
+pub fn hops_from_records(
+    records: &[RelayRecord],
+    publics: &[RelayKemPublic],
+    addrs: &HashMap<[u8; 32], SocketAddr>,
+) -> Vec<ClientHop> {
+    records
+        .iter()
+        .zip(publics.iter())
+        .map(|(record, pk)| {
+            ClientHop::from_relay_record(record, pk.clone(), addrs.get(record.id.as_bytes()).copied())
+        })
+        .collect()
+}
+
+fn verify_kem_binding(hop: &ClientHop) -> Result<(), SendError> {
+    if let Some(expected) = hop.kem_commitment {
+        if expected != KemPublicCommitment::from_public(&hop.kem_public) {
+            return Err(SendError::KemBindingMismatch {
+                hop_id: hop.id[0],
+                hop_id_tail: hop.id[1],
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Test helper: fragment a packet and return fragment cells plus expected tick count.

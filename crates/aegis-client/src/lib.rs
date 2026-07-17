@@ -29,8 +29,8 @@ pub use padding::{
     HardCapStats, RoundOutput,
 };
 pub use send::{
-    build_packet, send_payload, send_payload_paced, send_payload_paced_default, hops_from_keys,
-    ClientHop, ClientLink, SendError,
+    build_packet, hops_from_keys, hops_from_keys_with_commitments, hops_from_records,
+    send_payload, send_payload_paced, send_payload_paced_default, ClientHop, ClientLink, SendError,
 };
 pub use session::{PacedSession, PacedSessionConfig};
 pub use tcp_transport::TcpCellTransport;

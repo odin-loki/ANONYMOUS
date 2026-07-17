@@ -45,70 +45,108 @@ and §13 open items, and is intentionally honest about what remains open.
 Open item "Real-trace shapeability" status: [O -> T for this benign client-send
 capture; still [O] for operational C2/telemetry — see honest limits below].
 
-### Capture method (fallback used)
-Multi-process orchestration (`sim/scripts/capture_multiprocess_trace.py`: four
-`aegis-node` OS processes + repeated `aegis-client` invocations) was attempted
-first but failed mid-run (~send 23/48) with client exit 101 after relay peer
-routing errors. **Fallback:** in-process real-socket capture via
+### Capture method
+**In-process (first pass):** real-socket capture via
 `crates/aegis-node/tests/trace_capture.rs` (`capture_burst_trace_to_csv`), which
 reuses the same loopback `TcpListener`/`TcpStream` path as `tcp_testnet.rs` but
-drives a bursty 48-packet schedule over ~75 s. This is a genuine non-synthetic
-trace of the real Sphinx-build/fragment/seal/send code path; it is **not** a
-true multi-machine deployment capture.
+drives a bursty 48-packet schedule over ~72 s. Single Tokio runtime; dynamically
+bound ports; peer table built in-memory.
 
-### Vantage point
-**Client-send wall-clock timestamps** recorded immediately before each
-`send_payload()` call (ingress of the first TCP hop). Columns also record
-`payload_bytes` (32–256 B varying) and `cell_count` (= 18 =
-`SPHINX_FRAGMENT_COUNT` per Sphinx packet). This is the simplest reliable
-observation point; relay-side timestamps were not instrumented.
+**Multi-process (Phase-8 residual, now working on Windows):** four separate
+`aegis-node` OS processes + 48 `aegis-client --raw` invocations orchestrated by
+`sim/scripts/capture_multiprocess_trace.py` (or the Rust gate
+`crates/aegis-node/tests/multiprocess_trace_capture.rs`). Output:
+`sim/data/real_multiprocess_trace.csv`.
+
+#### What failed before (multi-process)
+1. **`cargo run` per client send** — on Windows each invocation re-linked/locked
+   the binary; mid-run failures (client exit 101 / 4294967295) around send 3–23
+   were orchestration flakes, not Sphinx/crypto bugs.
+2. **Static ports (`19200–19203`)** — stale processes after aborted runs caused
+   bind conflicts; peer tables pointed at wrong addresses.
+3. **Default paced session (`cover_secs=2`, `tau=0.35`)** — each send opened a
+   new TCP session, ran cover, then closed; 48× ~7 s ≈ 7 min and increased
+   connection churn. Trace capture now uses `--raw` (unpaced one-shot sends).
+4. **Misdiagnosed “peer routing errors”** — exit relay logs
+   `no peer for next_hop RelayId([random…])` for **cover egress**, not client
+   Sphinx forwards; client sends still succeed. Real peer tables (link keys
+   `link_key(i)` for hop *i*↔*i+1*) were already correct.
+
+#### Fixes applied
+- Build once; invoke `target/debug/aegis-node(.exe)` and `aegis-client(.exe)`
+  directly.
+- OS-assigned loopback ports written to temp configs; TCP readiness probe before
+  sends.
+- `--raw` client sends; `taskkill /T /F` process-tree cleanup on Windows.
+- Rust `Command`-based integration test as a reliable regeneration path when
+  Python is unavailable.
+
+Both captures are genuine non-synthetic traces of the real Sphinx-build/fragment/
+seal/send code path over TCP; neither is a multi-machine WAN deployment.
+
+### Vantage point — in-process vs multi-process
+| Aspect | In-process (`real_testnet_trace.csv`) | Multi-process (`real_multiprocess_trace.csv`) |
+|--------|---------------------------------------|-----------------------------------------------|
+| Timestamp locus | Immediately before in-test `send_payload()` | Orchestrator wall-clock immediately before spawning `aegis-client` |
+| Process model | Single Tokio runtime, shared address space | 4 relay processes + 1 client process per send |
+| Pacing | Unpaced (`send_payload`) | Unpaced (`--raw`) |
+| Typical duration | ~71.9 s | ~66.1 s |
+| Extra overhead | Minimal (in-process await) | Process spawn + TCP connect per send (~100 ms) |
+
+The multi-process vantage timestamps **slightly earlier** than in-process
+(client not yet connected); bursty gap schedule is identical (seed 42). Shape
+metrics should agree within noise — and do (see below).
+
+Columns for both: `payload_bytes` (32–256 B varying) and `cell_count` (= 18 =
+`SPHINX_FRAGMENT_COUNT` per Sphinx packet). Relay-side timestamps were not
+instrumented.
 
 ### Artifacts
-- `sim/data/real_testnet_trace.csv` — 48 timestamped send events
-- `sim/data/real_testnet_trace.analysis.json` — machine-readable report
-- `sim/scripts/analyze_real_trace.py` — loads trace → `load_trace_counts` →
-  `shapeability_report`, compares to `synthetic_c2_like_counts`
-- `sim/tests/test_real_trace.py` — regression gate on the committed trace
-- `sim/scripts/capture_multiprocess_trace.py` — best-effort multi-process
-  re-capture (not used for the committed trace)
-- `crates/aegis-node/tests/trace_capture.rs` — in-process capture test that
-  writes the CSV
+- `sim/data/real_testnet_trace.csv` — 48 events, in-process capture
+- `sim/data/real_multiprocess_trace.csv` — 48 events, multi-process capture
+- `sim/data/real_testnet_trace.analysis.json` — in-process shapeability report
+- `sim/data/real_multiprocess_trace.analysis.json` — mp vs ip comparison
+- `sim/scripts/analyze_real_trace.py` — in-process trace → shapeability
+- `sim/scripts/analyze_multiprocess_trace.py` — mp vs ip comparison
+- `sim/scripts/capture_multiprocess_trace.py` — Python orchestrator (fixed)
+- `sim/tests/test_real_trace.py` — regression gate on in-process trace
+- `sim/tests/test_multiprocess_trace.py` — mp trace + comparison gate
+- `crates/aegis-node/tests/trace_capture.rs` — in-process capture test
+- `crates/aegis-node/tests/multiprocess_trace_capture.rs` — multi-process gate
 
 ### Trace shape (rough)
-| Quantity | Value |
-|----------|-------|
-| Events | 48 Sphinx packets |
-| Duration | ~71.9 s |
-| 1 s slot bins | 72 slots, mean 0.67 events/slot, max 4/slot |
-| Mean payload | ~154 B |
-| Total wire cells (client→ingress) | 864 (= 48 × 18) |
-| Pattern | Bursty clusters (50–180 ms gaps) + idle gaps (0.8–3.5 s) |
+| Quantity | In-process | Multi-process |
+|----------|------------|---------------|
+| Events | 48 | 48 |
+| Duration | ~71.9 s | ~66.1 s |
+| 1 s slot bins | 72; mean 0.67; max 4 | 67; mean 0.72; max 5 |
+| Total wire cells (client→ingress) | 864 | 864 |
+| Pattern | Bursty clusters + idle gaps | Same schedule (seed 42) |
 
 ### `shapeability_report` findings (1 s slots, budget_slots=5, hi=6)
-| Metric | Real testnet trace | `synthetic_c2_like_counts` stand-in (n=40000, seed=103) |
-|--------|-------------------|--------------------------------------------------------|
-| CV | **1.39** | 1.25 |
-| Hurst | NaN (series too short; need ≥128 slots) | 0.75 |
-| min_multiple | **1.1** | 2.6 |
-| tier | feasible | feasible |
+| Metric | In-process | Multi-process | `synthetic_c2_like` (n=40000, seed=103) |
+|--------|------------|---------------|----------------------------------------|
+| CV | **1.39** | **1.48** | 1.25 |
+| Hurst | NaN (series too short) | NaN | 0.75 |
+| min_multiple | **1.1** | **1.2** | 2.6 |
+| tier | feasible | feasible | feasible |
+
+Multi-process vs in-process: CV ratio ≈ **1.07**, same tier, min_multiple Δ ≈ 0.1.
+The small CV bump is consistent with orchestrator vantage (timestamps slightly
+earlier → clusters can spill into adjacent 1 s slots, max 5/slot vs 4).
 
 ### Comparison — did the synthetic model match reality?
 **Partially, with a cost mismatch in the other direction from CV.** Per-slot CV on
-the real burst is *slightly higher* than the synthetic stand-in (ratio ≈ 1.11),
-because the committed capture includes tight 4-packet clusters (up to 4
-events/slot) that the diurnal-smoothed synthetic series does not reproduce at
-this short horizon. However:
-- **Shaping cost is still much lower on the real trace** (min_multiple 1.1 vs 2.6).
-  The synthetic C2-like generator's diurnal × Pareto × lognormal layering
-  produces heavier *tail deferral* under `hard_cap` than this 48-packet burst
-  schedule, even when CV is similar or lower on the synthetic side.
-- **Hurst cannot be estimated** on the 72-slot real series; the synthetic stand-in
-  reports LRD-ish H≈0.75 — unverified on real traffic at this horizon.
-- This capture is **benign client traffic**, not adversarial C2/telemetry; do not
-  cite these numbers as operational C2 evidence.
+both real captures is *slightly higher* than the synthetic stand-in (ratio ≈ 1.07–1.11),
+because the committed captures include tight 4-packet clusters that the
+diurnal-smoothed synthetic series does not reproduce at this short horizon.
+However:
+- **Shaping cost is still much lower on real traces** (min_multiple 1.1–1.2 vs 2.6).
+- **Hurst cannot be estimated** on the ~67–72-slot real series.
+- These captures are **benign client traffic**, not adversarial C2/telemetry.
 
-Record for evidence ledger (§12): benign real-client-send trace, 4-hop in-process
-testnet, CV≈1.39, min_multiple=1.1, tier=feasible [T].
+Record for evidence ledger (§12): benign real-client-send traces, 4-hop testnet,
+in-process CV≈1.39 / multi-process CV≈1.48, min_multiple 1.1–1.2, tier=feasible [T].
 
 ### Rust instrumentation note
 No relay/client timestamp logging was added. A minimal `Debug` impl for
@@ -119,11 +157,12 @@ because concurrent work left the crate non-compiling (`Cell` lacks `Debug`).
 
 ### Future work
 - Re-capture from relay-observed forward timestamps (instrument `RelayStats`).
-- Multi-process re-run once peer-routing in standalone `aegis-node` configs is
-  debugged (in-process path uses dynamically bound ports + consistent peer table).
 - Longer horizon (≥128 slots) for Hurst; adversarial/malicious-like emission
   patterns; constant-rate emitter output (post-shaping wire view) vs raw client
   sends.
+- Paced multi-process capture (`--tau-secs 0.05 --cover-secs 0.1`) once
+  post-send cover egress peer selection is fixed (exit relay cover logs still show
+  spurious `no peer for next_hop` for random RelayIds — benign for `--raw` sends).
 
 --------------------------------------------------------------------------------
 2. OPEN ITEMS -- STATUS AFTER THIS PASS (do not oversell any of these)
@@ -135,11 +174,11 @@ because concurrent work left the crate non-compiling (`Cell` lacks `Debug`).
   for relay recompromise, which is future work (candidate: combine with the
   Izaac/GRIA anomaly detection mentioned for Phase 7).
 - "Real-trace shapeability (measure CV/tail on actual C2/telemetry, not
-  synthetic)." [O -> T for benign in-process testnet client-send capture;
-  still [O] for operational C2/telemetry] First genuine trace committed at
-  `sim/data/real_testnet_trace.csv`; see §4 above. Synthetic stand-in CV was
-  close but slightly lower (1.25 vs 1.39 real); synthetic overstated shaping
-  cost (min_multiple 2.6 vs 1.1).
+  synthetic)." [O -> T for benign testnet client-send capture (in-process and
+  multi-process); still [O] for operational C2/telemetry] Traces at
+  `sim/data/real_testnet_trace.csv` and `sim/data/real_multiprocess_trace.csv`;
+  see §4. Synthetic stand-in CV was close but slightly lower (1.25 vs 1.39–1.48
+  real); synthetic overstated shaping cost (min_multiple 2.6 vs 1.1–1.2).
 - "Combined active(n-1)+intersection over long horizons on Mode 1." [O, NOT
   ADDRESSED this pass] — would need a combined attack simulation (compose
   `active_confirm` and `intersection` against the same synthetic population

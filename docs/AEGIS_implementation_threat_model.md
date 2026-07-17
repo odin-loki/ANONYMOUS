@@ -227,7 +227,7 @@ Simulations backing numeric claims:
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
 | Unseen relay gets NEUTRAL 0.5 — immediately eligible for reputation-filtered paths/guards at min 0.3. | `reputation::score` L53–55 | **Partial** — relays with **no** ledger entry still default to NEUTRAL (backward compat / test-only `admit()`). Signed admissions seed `PROBATIONARY` (0.1) via `admit_new_relay`. | **Low–medium** (was High) |
-| `AnomalyDetector` not wired to admission or path selection. | `anomaly.rs` | **Open gap** — spec Izaac/GRIA stand-in only. | Medium |
+| `AnomalyDetector` not wired to admission; path/guard **selection APIs** accept [`RelayPruningPolicy`](../../crates/aegis-trust/src/policy.rs) via `*_pruned` helpers (callers must feed metrics). | `anomaly.rs`, `aegis-topology::{path,guards}` | **Partial** — demotion wired into topology selection; admission + live relay metric feed still open. | Medium |
 | `core_gates_hold_under(BrokenEnclave)` vacuously true — no TEE dependency yet. | `tee::core_gates_hold_under` | **Mitigated** (honestly documented). | — |
 
 ---
@@ -435,7 +435,7 @@ Relay ──peel──► sphinx::process ──delay──► forward (GPA sees
 4. Link-layer **mutual auth** or Noise handshake derived from roster keys.
 5. Export **coarse-grained** metrics only via [`RelayHandle::coarse_stats`]; keep [`RelayHandle::debug_stats`] in-process. ~~Avoid per-error-type telemetry visible to external GPA.~~ **Done (2026-07-17):** `RelayCoarseStats` + documented `debug_stats` boundary.
 6. Constant-time replay cache or epoch-shortening under load (see crypto review).
-7. Wire `AnomalyDetector` to admission/pruning decisions.
+7. ~~Wire `AnomalyDetector` to admission/pruning decisions.~~ **Partial (2026-07-17):** `RelayPruningPolicy` demotes on anomaly; `aegis-topology` `*_pruned` path/guard selection APIs call `is_eligible`. Residual: relays must feed metrics into the policy; admission still unwired.
 8. Relay-side timestamp instrumentation for shapeability at **post-shaping** vantage (Phase 8 notes §4 future work).
 
 ---

@@ -29,11 +29,7 @@ fn sample_hops(n: usize) -> Vec<ClientHop> {
             let (_sec, pk) = RelayKemSecret::generate(&mut rng);
             let mut id = [0u8; 32];
             id[0] = i as u8;
-            ClientHop {
-                id,
-                kem_public: pk,
-                addr: None,
-            }
+            ClientHop::new(id, pk, None)
         })
         .collect()
 }

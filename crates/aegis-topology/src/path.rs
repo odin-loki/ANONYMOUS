@@ -6,9 +6,12 @@ use aegis_trust::reputation::ReputationLedger;
 use rand::Rng;
 use rand_core::OsRng;
 
+use aegis_trust::policy::RelayPruningPolicy;
+
 use crate::error::TopologyError;
 use crate::guards::GuardSelector;
 use crate::layers::Topology;
+use crate::pruning::path_satisfies_pruning_policy;
 use crate::roster::RelayRoster;
 use crate::types::{JurisdictionId, RelayId};
 
@@ -173,13 +176,65 @@ pub fn select_diverse_reputation_path(
     })
 }
 
+/// Like [`select_path_reputation_weighted`] but also rejects any hop that fails
+/// [`RelayPruningPolicy::is_eligible`] at `min_reputation` (anomaly demotion).
+pub fn select_path_reputation_weighted_pruned(
+    topology: &Topology,
+    roster: &RelayRoster,
+    guards: Option<&GuardSelector>,
+    policy: &RelayPruningPolicy,
+    min_reputation: f64,
+    max_attempts: usize,
+) -> Result<Vec<RelayId>, TopologyError> {
+    for _ in 0..max_attempts {
+        let path = select_path(topology, guards)?;
+        for id in &path {
+            roster
+                .get(*id)
+                .ok_or(TopologyError::RelayNotFound { relay: *id })?;
+        }
+        if path_satisfies_pruning_policy(&path, policy, min_reputation) {
+            return Ok(path);
+        }
+    }
+    Err(TopologyError::ReputationPathExhausted {
+        attempts: max_attempts,
+    })
+}
+
+/// Like [`select_diverse_reputation_path`] but also applies
+/// [`RelayPruningPolicy::is_eligible`] on every hop.
+pub fn select_diverse_reputation_path_pruned(
+    topology: &Topology,
+    roster: &RelayRoster,
+    guards: Option<&GuardSelector>,
+    jurisdiction: &JurisdictionPolicy,
+    policy: &RelayPruningPolicy,
+    min_reputation: f64,
+    max_attempts: usize,
+) -> Result<Vec<RelayId>, TopologyError> {
+    for _ in 0..max_attempts {
+        let path = select_path(topology, guards)?;
+        if !path_satisfies_pruning_policy(&path, policy, min_reputation) {
+            continue;
+        }
+        if path_satisfies_jurisdiction(&path, roster, jurisdiction)? {
+            return Ok(path);
+        }
+    }
+    Err(TopologyError::ReputationPathExhausted {
+        attempts: max_attempts,
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use aegis_trust::policy::{RelayPruningPolicy, DEFAULT_PATH_REPUTATION_FLOOR};
     use aegis_trust::reputation::ReputationLedger;
 
     use super::*;
     use crate::layers::build_topology;
-    use crate::types::{test_relay_record, TopologyConfig};
+    use crate::types::{test_relay_record, RelayId, TopologyConfig};
 
     fn sample_roster(n: u64, jurisdictions: &[&str]) -> RelayRoster {
         let mut roster = RelayRoster::new();
@@ -222,5 +277,74 @@ mod tests {
         let topo = build_topology(&roster, 1, &TopologyConfig::high_threat(), 0).unwrap();
         let path = select_path(&topo, None).unwrap();
         assert_eq!(path.len(), 4);
+    }
+
+    fn demote_via_anomaly(relay: RelayId) -> RelayPruningPolicy {
+        let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+        for _ in 0..100 {
+            policy.observe_metric(*relay.as_bytes(), 10.0);
+        }
+        policy.observe_metric(*relay.as_bytes(), 1000.0);
+        assert!(
+            !policy.is_eligible(*relay.as_bytes(), DEFAULT_PATH_REPUTATION_FLOOR),
+            "anomaly demotion must push relay below path floor"
+        );
+        policy
+    }
+
+    #[test]
+    fn pruned_path_excludes_anomaly_demoted_relay() {
+        let roster = sample_roster(24, &["US", "DE", "FR", "UK", "JP", "CA"]);
+        let topo = build_topology(&roster, 1, &TopologyConfig::high_threat(), 0).unwrap();
+        let bad = RelayId::from_u64(1);
+        let policy = demote_via_anomaly(bad);
+
+        for _ in 0..200 {
+            let path = select_path_reputation_weighted_pruned(
+                &topo,
+                &roster,
+                None,
+                &policy,
+                DEFAULT_PATH_REPUTATION_FLOOR,
+                50,
+            )
+            .unwrap();
+            assert!(
+                !path.contains(&bad),
+                "demoted relay must never appear on pruned path"
+            );
+        }
+    }
+
+    #[test]
+    fn pruned_path_exhausts_when_only_demoted_relays_remain() {
+        let mut roster = RelayRoster::new();
+        let jurisdictions = ["US", "DE", "FR", "UK"];
+        for i in 0..4 {
+            roster.admit(test_relay_record(i, jurisdictions[i as usize]));
+        }
+        let topo = build_topology(&roster, 0, &TopologyConfig::high_threat(), 0).unwrap();
+        let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+        for id in topo.layers.iter().flatten() {
+            for _ in 0..100 {
+                policy.observe_metric(*id.as_bytes(), 10.0);
+            }
+            policy.observe_metric(*id.as_bytes(), 1000.0);
+            assert!(!policy.is_eligible(*id.as_bytes(), DEFAULT_PATH_REPUTATION_FLOOR));
+        }
+
+        let err = select_path_reputation_weighted_pruned(
+            &topo,
+            &roster,
+            None,
+            &policy,
+            DEFAULT_PATH_REPUTATION_FLOOR,
+            20,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            TopologyError::ReputationPathExhausted { attempts: 20 }
+        ));
     }
 }

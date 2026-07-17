@@ -1,0 +1,45 @@
+{
+  "multiprocess": {
+    "trace_file": "C:\\Users\\odinl\\OneDrive\\Desktop\\ANONYMOUS\\sim\\data\\real_multiprocess_trace.csv",
+    "meta": {
+      "path": "C:\\Users\\odinl\\OneDrive\\Desktop\\ANONYMOUS\\sim\\data\\real_multiprocess_trace.csv",
+      "vantage": "orchestrator_wall_clock_at_client_invoke",
+      "capture": "multiprocess_tcp_testnet path_len=4 n_sends=48 ports=[54047, 54048, 54049, 54050] relay_ids=['0100000000000000000000000000000000000000000000000000000000000000', '0200000000000000000000000000000000000000000000000000000000000000', '0300000000000000000000000000000000000000000000000000000000000000', '0400000000000000000000000000000000000000000000000000000000000000']"
+    },
+    "n_events": 48,
+    "duration_seconds": 66.08585691452026,
+    "n_slots": 67,
+    "events_per_slot_mean": 0.7164179104477612,
+    "events_per_slot_max": 5.0,
+    "shapeability": {
+      "cv": 1.4828299707707837,
+      "hurst": null,
+      "min_multiple": 1.2,
+      "tier": "feasible"
+    }
+  },
+  "in_process": {
+    "trace_file": "C:\\Users\\odinl\\OneDrive\\Desktop\\ANONYMOUS\\sim\\data\\real_testnet_trace.csv",
+    "meta": {
+      "path": "C:\\Users\\odinl\\OneDrive\\Desktop\\ANONYMOUS\\sim\\data\\real_testnet_trace.csv",
+      "vantage": "client_send_wall_clock",
+      "capture": "in_process_tcp_testnet path_len=4 n_sends=48"
+    },
+    "n_events": 48,
+    "duration_seconds": 71.88525104522705,
+    "n_slots": 72,
+    "events_per_slot_mean": 0.6666666666666666,
+    "events_per_slot_max": 4.0,
+    "shapeability": {
+      "cv": 1.3919410907054177,
+      "hurst": null,
+      "min_multiple": 1.1,
+      "tier": "feasible"
+    }
+  },
+  "comparison": {
+    "cv_ratio_multiprocess_over_in_process": 1.0652964990201594,
+    "min_multiple_delta": 0.09999999999999987,
+    "same_tier": true
+  }
+}
