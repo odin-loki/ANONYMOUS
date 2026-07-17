@@ -20,8 +20,9 @@ fuzz_target!(|data: &[u8]| {
         data.len()
     ));
     if std::fs::write(&path, data).is_ok() {
-        let _ = RelayRoster::load_from_file(&path);
-        let _ = RelayRoster::load_from_file_verified(&path, None);
+        // Exercise unverified deserialize + optional verified path (None = skip verify).
+        let _ = RelayRoster::load_from_file_unverified(&path);
+        let _ = RelayRoster::load_from_file_with_policy(&path, None, true);
         let _ = std::fs::remove_file(&path);
     }
 });

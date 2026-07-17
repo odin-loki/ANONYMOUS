@@ -3,10 +3,11 @@
 use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_relay::{PeerInfo, RelayConfig, RelayId, LinkBridgeConfig};
+use aegis_topology::{RelayRoster, RosterError, ThresholdConsortium};
 use rand_core::{CryptoRngCore, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -23,6 +24,8 @@ pub enum ConfigError {
     Hex(&'static str),
     #[error("missing kem seeds — generate with `aegis-node --config <path>` after first run persists them")]
     MissingKem,
+    #[error("roster: {0}")]
+    Roster(#[from] RosterError),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -45,6 +48,31 @@ pub struct NodeConfigFile {
     /// Optional post-forward timestamp trace (relay vantage, off by default).
     #[serde(default)]
     pub trace: TraceConfig,
+    /// Optional permissioned relay roster loaded from JSON (spec §4.9).
+    #[serde(default)]
+    pub roster: Option<RosterFileConfig>,
+}
+
+/// Disk roster + consortium authority keys for signature re-verify on load.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RosterFileConfig {
+    /// Path to persisted roster JSON.
+    pub path: String,
+    /// Hex-encoded Ed25519 consortium verifying keys (32 bytes each).
+    #[serde(default)]
+    pub authority_pubkeys: Vec<String>,
+    /// M-of-N threshold over `authority_pubkeys` (default 1).
+    #[serde(default = "default_roster_threshold")]
+    pub threshold: usize,
+    /// Lab/test only: allow loading without re-verifying signatures when no keys
+    /// are configured. Ignored when `authority_pubkeys` is non-empty (keys always
+    /// force verification).
+    #[serde(default)]
+    pub allow_unverified_roster: bool,
+}
+
+fn default_roster_threshold() -> usize {
+    1
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -164,6 +192,8 @@ pub struct NodeRuntimeConfig {
     pub link_bridge_config: LinkBridgeConfig,
     pub exit: ExitConfig,
     pub trace: TraceConfig,
+    /// Verified (or explicitly lab-unverified) roster when `[roster]` is configured.
+    pub roster: Option<RelayRoster>,
 }
 
 impl NodeConfigFile {
@@ -225,6 +255,11 @@ impl NodeConfigFile {
             let link_key_bytes = parse_hex32(&peer.link_key)?;
             peer_table.insert(id, PeerInfo::new(addr, link_key_bytes));
         }
+        let roster = self
+            .roster
+            .as_ref()
+            .map(load_roster_from_config)
+            .transpose()?;
         Ok(NodeRuntimeConfig {
             relay_id,
             listen,
@@ -239,8 +274,28 @@ impl NodeConfigFile {
             },
             exit: self.exit,
             trace: self.trace,
+            roster,
         })
     }
+}
+
+/// Load a roster JSON file using production verification policy.
+pub fn load_roster_from_config(cfg: &RosterFileConfig) -> Result<RelayRoster, ConfigError> {
+    let path = PathBuf::from(&cfg.path);
+    let consortium = if cfg.authority_pubkeys.is_empty() {
+        None
+    } else {
+        let mut keys = Vec::with_capacity(cfg.authority_pubkeys.len());
+        for hex in &cfg.authority_pubkeys {
+            keys.push(parse_hex32(hex)?);
+        }
+        Some(ThresholdConsortium::from_raw_pubkeys(cfg.threshold, &keys)?)
+    };
+    Ok(RelayRoster::load_from_file_with_policy(
+        &path,
+        consortium.as_ref(),
+        cfg.allow_unverified_roster,
+    )?)
 }
 
 pub fn parse_hex32(s: &str) -> Result<[u8; 32], ConfigError> {
@@ -271,4 +326,84 @@ fn hex_nibble(b: u8) -> Result<u8, ConfigError> {
 
 pub fn hex_encode(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aegis_topology::{
+        test_relay_record, ConsortiumKey, RelayRoster, RosterAdmissionPolicy, RosterError,
+    };
+    use aegis_trust::reputation::ReputationLedger;
+    use rand_core::OsRng;
+
+    #[test]
+    fn roster_config_requires_keys_or_lab_flag() {
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-node-roster-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("roster.json");
+        RelayRoster::new().save_to_file(&path).unwrap();
+
+        let cfg = RosterFileConfig {
+            path: path.to_string_lossy().into(),
+            authority_pubkeys: vec![],
+            threshold: 1,
+            allow_unverified_roster: false,
+        };
+        let err = load_roster_from_config(&cfg).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Roster(RosterError::UnverifiedRosterNotAllowed)
+        ));
+
+        let lab = RosterFileConfig {
+            allow_unverified_roster: true,
+            ..cfg
+        };
+        assert!(load_roster_from_config(&lab).is_ok());
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn roster_config_verifies_with_authority_key() {
+        let mut rng = OsRng;
+        let authority = ConsortiumKey::generate(&mut rng);
+        let pk = authority.verifying_key();
+
+        let mut roster =
+            RelayRoster::with_admission_policy(RosterAdmissionPolicy::permissive_for_tests());
+        let mut ledger = ReputationLedger::new(0.9).unwrap();
+        roster
+            .admit_signed(
+                authority.sign_record(&test_relay_record(3, "DE")),
+                &pk,
+                &mut ledger,
+            )
+            .unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-node-roster-ok-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("roster.json");
+        roster.save_to_file(&path).unwrap();
+
+        let cfg = RosterFileConfig {
+            path: path.to_string_lossy().into(),
+            authority_pubkeys: vec![hex_encode(&pk.to_bytes())],
+            threshold: 1,
+            allow_unverified_roster: false,
+        };
+        let loaded = load_roster_from_config(&cfg).expect("verified");
+        assert_eq!(loaded.len(), 1);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
 }

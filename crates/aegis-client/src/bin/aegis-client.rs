@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use aegis_client::driver::config_with_tau_secs;
+use aegis_client::roster_load::{load_roster_from_config, RosterFileConfig};
 use aegis_client::send::{BuildPacketOptions, ClientHop, ClientLink};
 use aegis_client::session::{PacedSession, PacedSessionConfig};
 use aegis_crypto::kem::RelayKemSecret;
@@ -57,6 +58,9 @@ struct ClientConfigFile {
     ingress_link_key: String,
     payload: Option<String>,
     hops: Vec<HopConfig>,
+    /// Optional permissioned roster; when set, loaded with consortium re-verify.
+    #[serde(default)]
+    roster: Option<RosterFileConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,6 +101,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let text = fs::read_to_string(&cli.config)?;
     let file: ClientConfigFile = toml::from_str(&text)?;
+
+    if let Some(ref roster_cfg) = file.roster {
+        let roster = load_roster_from_config(roster_cfg)?;
+        eprintln!(
+            "loaded roster from {} ({} relays)",
+            roster_cfg.path,
+            roster.len()
+        );
+    }
 
     let payload = if cli.stdin {
         let mut buf = Vec::new();

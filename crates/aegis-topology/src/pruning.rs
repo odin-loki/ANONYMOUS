@@ -1,11 +1,22 @@
-//! Thin helpers wiring [`aegis_trust::policy::RelayPruningPolicy`] into path checks.
-//!
-//! Reputation filtering already lives in [`crate::path`]; this module adds the
-//! anomaly-pruning eligibility hook without touching roster/admission types.
+//! Thin helpers wiring [`aegis_trust::policy::RelayPruningPolicy`] into path and
+//! admission checks.
 
 use aegis_trust::policy::RelayPruningPolicy;
 
 use crate::types::RelayId;
+
+/// Returns `true` when a **new** relay admission may proceed: the candidate passes
+/// [`RelayPruningPolicy::is_eligible`] at `min_reputation` (anomaly demotion).
+///
+/// Unseen relays default to NEUTRAL (0.5) in the policy ledger and pass; relays
+/// demoted below the floor by peer-metric anomaly observation do not.
+pub fn relay_admission_satisfies_pruning_policy(
+    relay: RelayId,
+    policy: &RelayPruningPolicy,
+    min_reputation: f64,
+) -> bool {
+    policy.is_eligible(*relay.as_bytes(), min_reputation)
+}
 
 /// Returns `true` when `relay` passes [`RelayPruningPolicy::is_eligible`] at
 /// `min_reputation`.
@@ -32,6 +43,7 @@ pub fn path_satisfies_pruning_policy(
 mod tests {
     use aegis_trust::policy::{RelayPruningPolicy, DEFAULT_PATH_REPUTATION_FLOOR};
 
+    use super::relay_admission_satisfies_pruning_policy;
     use crate::guards::{GuardConfig, GuardSelector};
     use crate::layers::build_topology;
     use crate::path::select_path_reputation_weighted_pruned;
@@ -43,6 +55,21 @@ mod tests {
             roster.admit(test_relay_record(i + 1, "US"));
         }
         roster
+    }
+
+    #[test]
+    fn admission_gate_blocks_demoted_relay() {
+        let relay = RelayId::from_u64(99);
+        let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+        for _ in 0..100 {
+            policy.observe_metric(*relay.as_bytes(), 10.0);
+        }
+        policy.observe_metric(*relay.as_bytes(), 1000.0);
+        assert!(!relay_admission_satisfies_pruning_policy(
+            relay,
+            &policy,
+            DEFAULT_PATH_REPUTATION_FLOOR
+        ));
     }
 
     #[test]

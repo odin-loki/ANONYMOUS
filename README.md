@@ -82,10 +82,11 @@ Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing 
    example of the config shape). `crates/aegis-node/tests/trace_capture.rs` (run with
    `-- --ignored`) reproduces the Phase-8 benign and malicious real trace captures.
 
-   **Security profiling status (2026-07-17):** High call-site gaps are mitigated or
-   downgraded; actionable Medium wiring is in place (paced session, M-of-N + KEM
-   binding, link FS + roster-id handshake binding, cover on wire, peer-health→pruning,
-   exit sink, post-shaping traces, bound pruned paths, CI fuzz/deny).
+   **Security profiling status (2026-07-17): done** for actionable call-site gaps.
+   Mitigations include paced session, M-of-N + KEM binding, link FS + roster-id
+   handshake binding, cover on wire, peer-health→pruning, anomaly-gated
+   `admit_*_pruned`, verified roster load policy (`[roster]` on node/client),
+   exit sink, post-shaping traces, bound pruned paths, CI fuzz/deny.
 
    Accepted residuals (ops / research, not unfinished wiring): real TEE attestation;
    consortium key ceremony; full Noise / roster-key-derived link auth; constant-time

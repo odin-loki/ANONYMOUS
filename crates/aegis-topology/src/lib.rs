@@ -32,7 +32,10 @@ pub use path::{
     select_path, select_path_reputation_weighted, select_path_reputation_weighted_pruned,
     JurisdictionPolicy,
 };
-pub use pruning::{path_satisfies_pruning_policy, relay_satisfies_pruning_policy};
+pub use pruning::{
+    path_satisfies_pruning_policy, relay_admission_satisfies_pruning_policy,
+    relay_satisfies_pruning_policy,
+};
 pub use roster::{
     AuthorityAdmissionSignature, ConsortiumKey, RelayRoster, RosterAdmissionPolicy,
     SignedRelayRecord, ThresholdConsortium, ThresholdSignedRelayRecord,

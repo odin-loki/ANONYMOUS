@@ -1,6 +1,6 @@
 # AEGIS — Implementation-Level Threat Model
 
-**Date:** 2026-07-12  
+**Date:** 2026-07-12 (mitigation sync **2026-07-17**)  
 **Scope:** Maps the paper threat model in `docs/AEGIS_SPEC_v3_consolidated.md` §2–§9 onto the **actual Rust/Python code** in this workspace.  
 **Adversary baseline:** Nation-state global passive adversary (GPA) + active fraction `f` of compromised mixes, for a **permissioned consortium** mixnet.  
 **Cross-references:** `docs/AEGIS_crypto_constant_time_review.md` (crypto side channels), `docs/AEGIS_phase8_hardening_notes.md` (real-trace / adaptive-adversary quantification). This document does **not** repeat those findings.
@@ -69,7 +69,7 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| Bounded replay cache with FIFO eviction. | `replay::ReplayCache::with_capacity` | **Mitigated** for memory; **open** replay-window risk if evicted before epoch end (documented in module docs). | Medium |
+| Bounded replay cache with generation advance under flood. | `replay::ReplayCache::with_capacity`, `advance_epoch` | **Partial (2026-07-17)** — proactive generation advance at 85% fill shortens window under load; epoch rollover remains primary defense. Residual: CT `HashSet` lookup. | **Low–medium** (was Medium) |
 | `process()` on arbitrary bytes returns errors without panic (proptest/fuzz gate). | `sphinx::process`, `tests/parser_fuzz_properties.rs` | **Mitigated**. | — |
 | Large fixed packets (8504 B Sphinx + 18 fragments) — CPU/memory per flood packet. | `fragment`, `sphinx` | **Partial** — no explicit rate limit in crate. | Low |
 
@@ -149,13 +149,13 @@ Simulations backing numeric claims:
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
 | Tampered signed record rejected on verify. | `roster::tests::tampered_record_fails_verification` | **Mitigated**. | — |
-| Roster JSON load without authority key skips re-verify. | `roster::load_from_file` | **Open gap** — `load_from_file_verified` exists but optional. | Medium |
+| ~~Roster JSON load without authority key skips re-verify.~~ | `roster::load_from_file_with_policy` | **Mitigated (2026-07-17)** — production path requires consortium keys and re-verifies; unverified load only via explicit `allow_unverified_roster` / `load_from_file_unverified` (lab/test). Keys present always force verify. Residual: callers must wire the policy API (node/client `[roster]` does). | Low |
 
 ### Repudiation
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| Single consortium signing key — no M-of-N admission votes yet. | `roster::ConsortiumKey` module docs | **Mitigated (2026-07-17)** — `ThresholdConsortium` + `ThresholdSignedRelayRecord::verify_threshold` require M distinct authority signatures; `admit_signed` remains 1-of-1 convenience. Residual: authority key ceremony / PKI out of band. | Low |
+| ~~Single consortium signing key~~ — M-of-N threshold admission via [`ThresholdConsortium`](../../crates/aegis-topology/src/roster.rs). | `roster::ThresholdConsortium`, `admit_threshold_signed` | **Mitigated (2026-07-17)** — `ThresholdSignedRelayRecord::verify_threshold` requires M distinct authority signatures; `admit_signed` remains 1-of-1 convenience. Residual: authority key ceremony / PKI out of band. | Low |
 
 ### Information disclosure
 
@@ -171,7 +171,7 @@ Simulations backing numeric claims:
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
 | `select_diverse_path` / reputation paths exhaust after `max_attempts`. | `path.rs:98–109, 127–148` | **Partial** — returns error; caller must handle. | Low |
-| No cap on roster size or admission rate. | `roster::admit_signed` | **Mitigated** — `RosterAdmissionPolicy` default 5 admissions / 24h; returns `AdmissionRateLimitExceeded`. Sybil sim: attacker capped to 5 Sybils/window vs 500 pre-fix. | — |
+| ~~Unbounded signed admission rate~~ — capped by [`RosterAdmissionPolicy`](../../crates/aegis-topology/src/roster.rs) (default 5/24h). | `roster::admit_signed`, `admit_threshold_signed` | **Mitigated** — returns `AdmissionRateLimitExceeded`. Sybil sim: attacker capped to 5 Sybils/window vs 500 pre-fix. | — |
 
 ### Elevation of privilege
 
@@ -179,7 +179,7 @@ Simulations backing numeric claims:
 |---------|----------|--------|-----|
 | Compromised consortium key ⇒ arbitrary signed admissions. | `roster::ThresholdConsortium`, `admit_threshold_signed` | **Mitigated** — rate limit slows flood; M-of-N requires compromising ≥M distinct authorities. Residual: small M or correlated authority compromise. | **Low–medium** (was High) |
 | Reputation floor 0.3 does not block new Sybils (default NEUTRAL 0.5). | `aegis-trust::reputation` + `guards::new_reputation_weighted` | **Mitigated** — `admit_new_relay` seeds `PROBATIONARY` (0.1) at signed admission; Sybil sim rep-filtered path capture 0.0% vs ~45% pre-fix at 50% flood. | — |
-| Sybil flood raises guard capture to `1-(1-c)^g` with `c` = layer-1 Sybil fraction — matches formula but **breaks** vetted `c≈1%` assumption. | `guards::guard_exposure_plateau`, `tests/sybil_admission.rs` | Quantified — paper ~3% plateau holds only with honest vetted pool. | **High** |
+| Sybil flood raises guard capture to `1-(1-c)^g` with `c` = layer-1 Sybil fraction — matches formula but **breaks** vetted `c≈1%` assumption when the honest pool fails. **Separate from admission mitigations** (rate limit 5/24h, probation 0.1, M-of-N threshold, rep-filtered paths): those block **fresh** Sybils, but unfiltered `primary_guard()` still tracks layer-1 Sybil share at majority flood. | `guards::guard_exposure_plateau`, `tests/sybil_admission.rs` | Quantified research — paper ~3% plateau holds only with honest vetted pool; admission controls do not restore plateau under 50%+ layer-1 Sybil fraction. | **High** |
 
 **Sybil simulation summary:** See §Simulation results below.
 
@@ -227,7 +227,7 @@ Simulations backing numeric claims:
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
 | Unseen relay gets NEUTRAL 0.5 — immediately eligible for reputation-filtered paths/guards at min 0.3. | `reputation::score` L53–55 | **Partial** — relays with **no** ledger entry still default to NEUTRAL (backward compat / test-only `admit()`). Signed admissions seed `PROBATIONARY` (0.1) via `admit_new_relay`. | **Low–medium** (was High) |
-| `AnomalyDetector` not wired to admission; path/guard **selection APIs** accept [`RelayPruningPolicy`](../../crates/aegis-trust/src/policy.rs) via `*_pruned` helpers; [`PeerHealthTracker`](../../crates/aegis-relay/src/peer_health.rs) records outbound link outcomes and feeds failure rates via [`feed_peer_metric`](../../crates/aegis-trust/src/policy.rs) (`aegis-node` drains every 30s). | `anomaly.rs`, `aegis-topology::{path,guards}`, `aegis-relay::{peer_health,net}` | **Partial** — local peer-metric feed wired; admission still open; no cross-relay health gossip. | Medium |
+| `AnomalyDetector` → path/guard selection and **new admission** via [`RelayPruningPolicy`](../../crates/aegis-trust/src/policy.rs) `*_pruned` APIs (`admit_signed_pruned` / `admit_threshold_signed_pruned`); [`PeerHealthTracker`](../../crates/aegis-relay/src/peer_health.rs) feeds failure rates via [`feed_peer_metric`](../../crates/aegis-trust/src/policy.rs) (`aegis-node` drains every 30s). | `anomaly.rs`, `aegis-topology::{path,guards,roster}`, `aegis-relay::{peer_health,net}` | **Partial** — admission gating Done via `admit_*_pruned`; residual: callers must use pruned APIs (legacy `admit_*` unwired); no peer-health gossip. | Medium |
 | `core_gates_hold_under(BrokenEnclave)` vacuously true — no TEE dependency yet. | `tee::core_gates_hold_under` | **Mitigated** (honestly documented). | — |
 
 ---
@@ -301,7 +301,7 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| **`send_payload` sends immediately** — no emitter shaping; GPA at client TCP ingress sees true burst cadence. | `send.rs:61–70`, used by `trace_capture.rs` | **Open gap** — Mode 1 guarantee requires `ConstantRateEmitter` + `Transport`. | **High** |
+| **`send_payload` / CLI `--raw` bypass emitter** — unpaced burst at client TCP ingress; GPA sees true cadence. | `send.rs:154–183`, CLI `--raw`, `trace_capture.rs` | **Partial (2026-07-17)** — default CLI and [`PacedSession`](../../crates/aegis-client/src/session.rs) use continuous `ConstantRateEmitter` + post-send cover; raw API retained for adversarial trace capture only. Residual: one-time TCP/handshake per session; ρ not auto-enforced. | **Medium** (High if misusing raw API) |
 | Hard-cap padder emits exactly Q slots per round externally. | `padding::HardCapPadder::round` | **Mitigated** when used. | — |
 | Dummy cells use CSPRNG padding. | `emitter::encode_dummy_cell` | **Mitigated**. | — |
 
@@ -316,7 +316,7 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| Malicious client can ignore emitter and flood ingress. | `send_payload` vs `driver::run_emitter_loop` | **Open gap** — enforcement is deployment/wiring, not crypto. | **High** |
+| Malicious/custom client can bypass paced APIs and flood ingress. | `send_payload` vs [`PacedSession`](../../crates/aegis-client/src/session.rs) / CLI default | **Partial (2026-07-17)** — shipped default path wires emitter; bypass is a **deployment residual** for adversarial or mis-integrated clients, not an unfinished product default. | **Medium** (High for deliberate raw integration) |
 
 ---
 
@@ -384,7 +384,7 @@ Simulations backing numeric claims:
 
 ### B. Malicious flood trace (`capture_malicious_burst_trace_to_csv`)
 
-**Methodology:** 80 packets, 2 ms inter-send gap, raw `send_payload` (no emitter); compare `shapeability_report` to benign `real_testnet_trace.csv`. See `sim/data/real_testnet_malicious_trace.analysis.json` after capture.
+**Methodology:** 80 packets, 2 ms inter-send gap, raw `send_payload` (no emitter) — **trace-only path**, not default CLI [`PacedSession`](../../crates/aegis-client/src/session.rs); compare `shapeability_report` to benign `real_testnet_trace.csv`. See `sim/data/real_testnet_malicious_trace.analysis.json` after capture.
 
 **Measured results** (`real_testnet_malicious_trace.csv`, 80 sends, 2 ms requested gap):
 
@@ -398,7 +398,7 @@ Simulations backing numeric claims:
 | Client send_ok | **100%** | 100% | — |
 | Ingress forwarded | 80/80 | 48/48 | — |
 
-**Behavior:** Raw `send_payload` bypasses `ConstantRateEmitter` and bulk negotiator/cover-flow — the flood is **not shaped**. Relays **accept all packets** at this load (no client errors, no ingress drops); degradation manifests as **queueing/mixing delay** (not captured in client-send CSV). **Side-channel:** sustained high `events_per_slot_max` (12 vs 4) is directly observable to a GPA at client ingress; relay processing latency under load vs idle is a **future leakage** if metrics or timing are visible (see `RelayStats`).
+**Behavior:** Raw `send_payload` (and CLI `--raw`) bypass `ConstantRateEmitter` and bulk negotiator/cover-flow — the flood is **not shaped**. Default paced CLI would emit τ-shaped cells + dummy cover instead. Relays **accept all packets** at this load (no client errors, no ingress drops); degradation manifests as **queueing/mixing delay** (not captured in client-send CSV). **Side-channel (raw path only):** sustained high `events_per_slot_max` (12 vs 4) is directly observable to a GPA at client ingress; relay processing latency under load vs idle is a residual if metrics or timing are visible (see `RelayCoarseStats`; post-shaping traces in Future work §8).
 
 ---
 
@@ -408,8 +408,8 @@ Simulations backing numeric claims:
 ConsortiumKey(s) ──M-of-N sign──► RelayRoster (+ KEM commitment) ──filters──► Topology ──feeds──► GuardSelector / select_path
                               ▲                           │
                               │                           └── ReputationLedger (optional floor)
-Client ──should use──► ConstantRateEmitter ──► Transport ──► mix
-         bypass risk ──► send_payload ──────────────────────► ingress (OBSERVABLE)
+Client ──default──► PacedSession / ConstantRateEmitter ──► Transport ──► mix
+         trace/raw ──► send_payload / CLI --raw ─────────────► ingress (OBSERVABLE if misused)
 Relay ──peel──► sphinx::process ──delay──► forward (GPA sees timing)
 ```
 
@@ -420,6 +420,7 @@ Relay ──peel──► sphinx::process ──delay──► forward (GPA sees
 - Hybrid PQ KEM + Sphinx integrity/replay handling (`aegis-crypto`)
 - Stable guards + plateau formula (`guards::guard_exposure_plateau`)
 - Hard-cap padding semantics (`aegis-client::padding`)
+- Default client egress via [`PacedSession`](../../crates/aegis-client/src/session.rs) / CLI (τ-shaped emission + post-send cover); `--raw` for trace capture only
 - Permissioned admission **when** `admit_threshold_signed` (or 1-of-1 `admit_signed`) used with configured consortium authorities
 - Roster↔KEM binding via signed `kem_public_commitment` (`RelayRecord::binds_kem_public`)
 - TEE-not-required path documented (`aegis-trust::tee`)
@@ -435,7 +436,7 @@ Relay ──peel──► sphinx::process ──delay──► forward (GPA sees
 4. Link-layer **mutual auth** or Noise handshake derived from roster keys. **Partial (2026-07-17):** ephemeral X25519 + PSK MAC with roster `RelayId` binding (`LinkHandshakeBinding`, `LinkBridgeConfig::identity_binding`). Residual: full Noise / roster-key-derived auth; optional KEM commitment in MAC not wired from node config; ingress still shared-key.
 5. Export **coarse-grained** metrics only via [`RelayHandle::coarse_stats`]; keep [`RelayHandle::debug_stats`] in-process. ~~Avoid per-error-type telemetry visible to external GPA.~~ **Done (2026-07-17):** `RelayCoarseStats` + documented `debug_stats` boundary.
 6. Constant-time replay cache or epoch-shortening under load (see crypto review). **Partial (2026-07-17):** epoch/generation advance under flood. Residual: CT `HashSet` lookup still open.
-7. ~~Wire `AnomalyDetector` to admission/pruning decisions.~~ **Partial (2026-07-17):** `RelayPruningPolicy` demotes on anomaly; `aegis-topology` `*_pruned` path/guard selection APIs call `is_eligible`; [`build_bound_path_pruned`](../../crates/aegis-topology/src/path.rs) composes pruned selection with roster record lookup for production client paths; [`PeerHealthTracker`](../../crates/aegis-relay/src/peer_health.rs) records outbound send/handshake outcomes on the link bridge and [`drain_into_policy`](../../crates/aegis-relay/src/peer_health.rs) feeds failure rates via [`feed_peer_metric`](../../crates/aegis-trust/src/policy.rs) (`aegis-node` periodic drain). Residual: admission still unwired; observations are local-only (no peer-health gossip); inbound handshake failures not keyed to peer id.
+7. ~~Wire `AnomalyDetector` to admission/pruning decisions.~~ **Partial (2026-07-17):** `RelayPruningPolicy` demotes on anomaly; path/guard `*_pruned` selection + [`build_bound_path_pruned`](../../crates/aegis-topology/src/path.rs) use `is_eligible`; admission gating **Done** via [`RelayRoster::admit_signed_pruned`](../../crates/aegis-topology/src/roster.rs) / [`admit_threshold_signed_pruned`](../../crates/aegis-topology/src/roster.rs) (reject new admissions when candidate fails `is_eligible`; seed reputation on policy ledger). [`PeerHealthTracker`](../../crates/aegis-relay/src/peer_health.rs) / [`drain_into_policy`](../../crates/aegis-relay/src/peer_health.rs) feed metrics (`aegis-node` every 30s). `aegis-node` has no live roster-admission path — production callers must use `admit_*_pruned`. Residual: callers must use pruned APIs (legacy `admit_*` for tests/dev); no peer-health gossip; inbound handshake failures not keyed to peer id.
 8. ~~Relay-side timestamp instrumentation for shapeability at **post-shaping** vantage (Phase 8 notes §4 future work).~~ **Done (2026-07-17):** optional `trace.path` in `aegis-node` TOML → [`RelayForwardTrace`](../../crates/aegis-relay/src/trace.rs) appends `(unix_secs_f64, cell_count, event_type)` after forward/cover/exit on the link bridge. Sample at `sim/data/relay_forward_trace_sample.csv`; loader in `sim/aegis_sim/traffic.py`. Residual: full paced multi-process re-capture not yet committed; mix relays should keep trace off.
 
 ---

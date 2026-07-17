@@ -4,17 +4,24 @@
 //! [`RelayRecord`], including a SHA3-256 commitment to the relay's hybrid KEM public key.
 //! A single [`ConsortiumKey`] remains available as a 1-of-1 dev/convenience path via
 //! [`SignedRelayRecord`] and [`ThresholdConsortium::single`]. Signed rosters persist to JSON.
+//!
+//! **Production callers** that observe peer health should use [`RelayRoster::admit_signed_pruned`]
+//! / [`RelayRoster::admit_threshold_signed_pruned`] so anomaly-demoted relays cannot re-enter.
+//! Legacy [`RelayRoster::admit_signed`] / [`admit_threshold_signed`] remain for tests and
+//! tooling; `aegis-node` currently has no live roster-admission path.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use aegis_trust::policy::RelayPruningPolicy;
 use aegis_trust::reputation::ReputationLedger;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 
 use crate::error::RosterError;
+use crate::pruning::relay_admission_satisfies_pruning_policy;
 use crate::types::{RelayId, RelayRecord};
 
 /// Consortium admission authority: signs relay admissions.
@@ -202,6 +209,16 @@ impl ThresholdConsortium {
         Self::new(1, vec![authority]).expect("single authority is valid 1-of-1")
     }
 
+    /// Build from raw 32-byte Ed25519 verifying keys (e.g. hex-decoded from TOML).
+    pub fn from_raw_pubkeys(threshold: usize, pubkeys: &[[u8; 32]]) -> Result<Self, RosterError> {
+        let mut authorities = Vec::with_capacity(pubkeys.len());
+        for pk in pubkeys {
+            let vk = VerifyingKey::from_bytes(pk).map_err(|_| RosterError::InvalidAuthorityPubkey)?;
+            authorities.push(vk);
+        }
+        Self::new(threshold, authorities)
+    }
+
     /// All configured verifying keys (stable insertion order).
     pub fn authorities(&self) -> &[VerifyingKey] {
         &self.authorities
@@ -365,6 +382,29 @@ impl RelayRoster {
         signed: ThresholdSignedRelayRecord,
         ledger: &mut ReputationLedger,
     ) -> Result<(), RosterError> {
+        self.admit_verified_inner(signed, ledger)
+    }
+
+    fn admit_verified_pruned(
+        &mut self,
+        signed: ThresholdSignedRelayRecord,
+        policy: &mut RelayPruningPolicy,
+        min_reputation: f64,
+    ) -> Result<(), RosterError> {
+        let id = signed.record.id;
+        if !self.relays.contains_key(&id)
+            && !relay_admission_satisfies_pruning_policy(id, policy, min_reputation)
+        {
+            return Err(RosterError::AnomalyBlockedAdmission { relay: id });
+        }
+        self.admit_verified_inner(signed, policy.ledger_mut())
+    }
+
+    fn admit_verified_inner(
+        &mut self,
+        signed: ThresholdSignedRelayRecord,
+        ledger: &mut ReputationLedger,
+    ) -> Result<(), RosterError> {
         let id = signed.record.id;
         let is_new = !self.relays.contains_key(&id);
 
@@ -406,6 +446,10 @@ impl RelayRoster {
     /// New relays are seeded at [`ReputationScore::PROBATIONARY`] on `ledger` and
     /// count toward the roster's admission rate limit. Re-admitting an existing
     /// relay id updates the record but does not re-seed reputation or consume quota.
+    ///
+    /// For production deployments that observe peer health, prefer
+    /// [`Self::admit_threshold_signed_pruned`] so anomaly-demoted relays cannot
+    /// re-enter the roster.
     pub fn admit_threshold_signed(
         &mut self,
         signed: ThresholdSignedRelayRecord,
@@ -414,6 +458,20 @@ impl RelayRoster {
     ) -> Result<(), RosterError> {
         signed.verify_threshold(consortium)?;
         self.admit_verified(signed, ledger)
+    }
+
+    /// Like [`Self::admit_threshold_signed`] but rejects **new** admissions when
+    /// `relay` fails [`RelayPruningPolicy::is_eligible`] at `min_reputation`
+    /// (anomaly demotion). Seeds reputation on the policy's shared ledger.
+    pub fn admit_threshold_signed_pruned(
+        &mut self,
+        signed: ThresholdSignedRelayRecord,
+        consortium: &ThresholdConsortium,
+        policy: &mut RelayPruningPolicy,
+        min_reputation: f64,
+    ) -> Result<(), RosterError> {
+        signed.verify_threshold(consortium)?;
+        self.admit_verified_pruned(signed, policy, min_reputation)
     }
 
     /// Admit a relay after verifying a single consortium authority signature (1-of-1).
@@ -428,6 +486,20 @@ impl RelayRoster {
         signed.verify(authority_pubkey)?;
         let consortium = ThresholdConsortium::single(*authority_pubkey);
         self.admit_threshold_signed(signed.into_threshold(), &consortium, ledger)
+    }
+
+    /// Like [`Self::admit_signed`] but applies anomaly admission gating via
+    /// [`Self::admit_threshold_signed_pruned`].
+    pub fn admit_signed_pruned(
+        &mut self,
+        signed: SignedRelayRecord,
+        authority_pubkey: &VerifyingKey,
+        policy: &mut RelayPruningPolicy,
+        min_reputation: f64,
+    ) -> Result<(), RosterError> {
+        signed.verify(authority_pubkey)?;
+        let consortium = ThresholdConsortium::single(*authority_pubkey);
+        self.admit_threshold_signed_pruned(signed.into_threshold(), &consortium, policy, min_reputation)
     }
 
     /// Remove a relay; returns `true` if it was present.
@@ -507,22 +579,72 @@ impl RelayRoster {
         std::fs::write(path, json)
     }
 
-    /// Load a roster from JSON, re-verifying signed admissions when an authority key is supplied.
+    /// **Test/dev only.** Load roster JSON without re-verifying admission signatures.
+    ///
+    /// Production callers must use [`Self::load_from_file_with_policy`] (or
+    /// [`Self::load_from_file_with_consortium`]) so signatures are checked against
+    /// configured consortium authorities. Prefer an explicit
+    /// `allow_unverified_roster = true` config flag for lab loads.
     pub fn load_from_file(path: &Path) -> std::io::Result<Self> {
-        Self::load_from_file_verified(path, None)
+        Self::load_from_file_unverified(path)
     }
 
-    /// Load from JSON and optionally re-verify every signed admission against a 1-of-1 authority.
+    /// **Test/dev / lab only.** Deserialize roster JSON without signature re-verify.
+    pub fn load_from_file_unverified(path: &Path) -> std::io::Result<Self> {
+        Self::load_persisted(path, None)
+    }
+
+    /// Production load: re-verify every admission against `consortium`.
+    pub fn load_from_file_with_consortium(
+        path: &Path,
+        consortium: &ThresholdConsortium,
+    ) -> std::io::Result<Self> {
+        Self::load_persisted(path, Some(consortium))
+    }
+
+    /// Load roster according to deployment policy.
+    ///
+    /// - When `consortium` is present, **always** re-verify admissions (never skip
+    ///   just because a lab flag is set).
+    /// - When `consortium` is absent, load without re-verify only if
+    ///   `allow_unverified` is true; otherwise return
+    ///   [`RosterError::UnverifiedRosterNotAllowed`].
+    pub fn load_from_file_with_policy(
+        path: &Path,
+        consortium: Option<&ThresholdConsortium>,
+        allow_unverified: bool,
+    ) -> Result<Self, RosterError> {
+        match consortium {
+            Some(c) => Ok(Self::load_from_file_with_consortium(path, c)?),
+            None if allow_unverified => Ok(Self::load_from_file_unverified(path)?),
+            None => Err(RosterError::UnverifiedRosterNotAllowed),
+        }
+    }
+
+    /// Load from JSON and re-verify every signed admission against a 1-of-1 authority.
+    ///
+    /// Pass `None` only for test/dev paths that intentionally skip re-verify;
+    /// production should use [`Self::load_from_file_with_policy`].
     pub fn load_from_file_verified(
         path: &Path,
         authority_pubkey: Option<&VerifyingKey>,
     ) -> std::io::Result<Self> {
         let consortium = authority_pubkey.map(|pk| ThresholdConsortium::single(*pk));
-        Self::load_from_file_verified_threshold(path, consortium.as_ref())
+        Self::load_persisted(path, consortium.as_ref())
     }
 
     /// Load from JSON and optionally re-verify every threshold admission.
+    ///
+    /// Pass `None` only for test/dev paths that intentionally skip re-verify;
+    /// production should use [`Self::load_from_file_with_policy`].
     pub fn load_from_file_verified_threshold(
+        path: &Path,
+        consortium: Option<&ThresholdConsortium>,
+    ) -> std::io::Result<Self> {
+        Self::load_persisted(path, consortium)
+    }
+
+    fn load_persisted(
         path: &Path,
         consortium: Option<&ThresholdConsortium>,
     ) -> std::io::Result<Self> {
@@ -553,7 +675,8 @@ impl RelayRoster {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{test_relay_record, test_kem_public_for_id, JurisdictionId, KemPublicCommitment};
+    use crate::types::{test_relay_record, test_kem_public_for_id, JurisdictionId, KemPublicCommitment, RelayId};
+    use aegis_trust::policy::{RelayPruningPolicy, DEFAULT_PATH_REPUTATION_FLOOR};
     use rand::rngs::OsRng;
 
     fn sample_record(id: u64, jurisdiction: &str) -> RelayRecord {
@@ -914,5 +1037,169 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn load_policy_rejects_unverified_without_opt_in() {
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-roster-policy-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("roster.json");
+        RelayRoster::new().save_to_file(&path).expect("save empty");
+
+        let err = RelayRoster::load_from_file_with_policy(&path, None, false).unwrap_err();
+        assert!(matches!(err, RosterError::UnverifiedRosterNotAllowed));
+
+        let loaded = RelayRoster::load_from_file_with_policy(&path, None, true).expect("lab load");
+        assert!(loaded.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn load_policy_verifies_when_consortium_configured_even_if_unverified_flag_set() {
+        let mut rng = OsRng;
+        let authority = ConsortiumKey::generate(&mut rng);
+        let pk = authority.verifying_key();
+        let consortium = ThresholdConsortium::single(pk);
+        let signed = authority.sign_record(&sample_record(8, "CA"));
+
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-roster-policy-verify-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("roster.json");
+
+        let mut roster = RelayRoster::new();
+        let mut ledger = test_ledger();
+        roster.admit_signed(signed, &pk, &mut ledger).expect("admit");
+        roster.save_to_file(&path).expect("save");
+
+        // Flag must not disable verification when keys are present.
+        let loaded =
+            RelayRoster::load_from_file_with_policy(&path, Some(&consortium), true).expect("load");
+        assert_eq!(loaded.len(), 1);
+
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("parse");
+        value["entries"][0]["threshold_admission"]["signatures"][0]["signature"][0] =
+            serde_json::json!(255);
+        std::fs::write(&path, value.to_string()).expect("write tampered");
+
+        let err = RelayRoster::load_from_file_with_policy(&path, Some(&consortium), true)
+            .unwrap_err();
+        assert!(matches!(err, RosterError::Io(_)));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    fn demote_via_anomaly(relay: RelayId, policy: &mut RelayPruningPolicy) {
+        for _ in 0..100 {
+            policy.observe_metric(*relay.as_bytes(), 10.0);
+        }
+        policy.observe_metric(*relay.as_bytes(), 1000.0);
+        assert!(
+            !policy.is_eligible(*relay.as_bytes(), DEFAULT_PATH_REPUTATION_FLOOR),
+            "test setup: relay must be demoted below floor"
+        );
+    }
+
+    #[test]
+    fn pruned_admission_blocks_new_anomaly_demoted_relay() {
+        let mut rng = OsRng;
+        let authority = ConsortiumKey::generate(&mut rng);
+        let pk = authority.verifying_key();
+        let record = sample_record(77, "US");
+        let relay_id = record.id;
+        let signed = authority.sign_record(&record);
+
+        let mut roster = RelayRoster::with_admission_policy(RosterAdmissionPolicy::permissive_for_tests());
+        let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+        demote_via_anomaly(relay_id, &mut policy);
+
+        let err = roster
+            .admit_signed_pruned(signed, &pk, &mut policy, DEFAULT_PATH_REPUTATION_FLOOR)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            RosterError::AnomalyBlockedAdmission { relay } if relay == relay_id
+        ));
+        assert!(!roster.is_admitted(relay_id));
+    }
+
+    #[test]
+    fn pruned_admission_allows_unseen_relay() {
+        let mut rng = OsRng;
+        let authority = ConsortiumKey::generate(&mut rng);
+        let pk = authority.verifying_key();
+        let record = sample_record(78, "DE");
+        let signed = authority.sign_record(&record);
+
+        let mut roster = RelayRoster::new();
+        let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+
+        roster
+            .admit_signed_pruned(signed, &pk, &mut policy, DEFAULT_PATH_REPUTATION_FLOOR)
+            .expect("unseen relay should pass pruning gate");
+        assert!(roster.is_admitted(record.id));
+        assert_eq!(
+            policy.ledger().score(*record.id.as_bytes()).0,
+            aegis_trust::reputation::ReputationScore::PROBATIONARY.0
+        );
+    }
+
+    #[test]
+    fn pruned_admission_blocks_re_entry_after_remove_when_demoted() {
+        let mut rng = OsRng;
+        let authority = ConsortiumKey::generate(&mut rng);
+        let pk = authority.verifying_key();
+        let record = sample_record(79, "FR");
+        let relay_id = record.id;
+        let signed = authority.sign_record(&record);
+
+        let mut roster = RelayRoster::new();
+        let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+
+        roster
+            .admit_signed_pruned(signed.clone(), &pk, &mut policy, DEFAULT_PATH_REPUTATION_FLOOR)
+            .expect("initial admit");
+        demote_via_anomaly(relay_id, &mut policy);
+        assert!(roster.remove(relay_id));
+
+        let err = roster
+            .admit_signed_pruned(signed, &pk, &mut policy, DEFAULT_PATH_REPUTATION_FLOOR)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            RosterError::AnomalyBlockedAdmission { relay } if relay == relay_id
+        ));
+    }
+
+    #[test]
+    fn pruned_admission_allows_record_update_when_already_on_roster() {
+        let mut rng = OsRng;
+        let authority = ConsortiumKey::generate(&mut rng);
+        let pk = authority.verifying_key();
+        let record = sample_record(80, "UK");
+        let relay_id = record.id;
+        let signed = authority.sign_record(&record);
+
+        let mut roster = RelayRoster::new();
+        let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+
+        roster
+            .admit_signed_pruned(signed.clone(), &pk, &mut policy, DEFAULT_PATH_REPUTATION_FLOOR)
+            .expect("initial admit");
+        demote_via_anomaly(relay_id, &mut policy);
+
+        roster
+            .admit_signed_pruned(signed, &pk, &mut policy, DEFAULT_PATH_REPUTATION_FLOOR)
+            .expect("re-admit same id updates record even when demoted");
+        assert!(roster.is_admitted(relay_id));
     }
 }

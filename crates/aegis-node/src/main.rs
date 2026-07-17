@@ -41,6 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let runtime = file.into_runtime()?;
 
+    if let Some(ref roster) = runtime.roster {
+        eprintln!("loaded roster ({} relays)", roster.len());
+    }
+
     eprintln!(
         "starting relay {:?} on {}",
         runtime.relay_id.as_bytes()[0],

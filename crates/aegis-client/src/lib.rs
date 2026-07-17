@@ -15,6 +15,7 @@
 pub mod driver;
 pub mod emitter;
 pub mod padding;
+pub mod roster_load;
 pub mod send;
 pub mod session;
 pub mod tcp_transport;
@@ -34,6 +35,7 @@ pub use send::{
     send_payload_paced, send_payload_paced_default, BuildPacketOptions, ClientHop, ClientLink,
     SendError,
 };
+pub use roster_load::{load_roster_from_config, RosterFileConfig, RosterLoadError};
 pub use session::{PacedSession, PacedSessionConfig};
 pub use tcp_transport::TcpCellTransport;
 pub use transport::{ObserverRecord, OutboundCell, Transport};

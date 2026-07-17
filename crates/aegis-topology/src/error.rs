@@ -69,4 +69,16 @@ pub enum RosterError {
 
     #[error("admission signature from unknown consortium authority")]
     UnknownAuthority,
+
+    #[error("relay {relay:?} blocked from admission: anomaly demotion below reputation floor")]
+    AnomalyBlockedAdmission { relay: RelayId },
+
+    #[error(
+        "roster load requires consortium authority keys for signature re-verify, \
+         or allow_unverified_roster=true (lab/test only)"
+    )]
+    UnverifiedRosterNotAllowed,
+
+    #[error("invalid consortium authority public key bytes")]
+    InvalidAuthorityPubkey,
 }
