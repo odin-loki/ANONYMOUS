@@ -7,7 +7,7 @@ use aegis_crypto::fragment::{
     FRAGMENT_PAYLOAD_LEN, LAST_FRAGMENT_DATA_LEN, SPHINX_FRAGMENT_COUNT,
 };
 use aegis_client::emitter::{ConstantRateEmitter, EmitterConfig};
-use aegis_client::send::build_packet;
+use aegis_client::send::{build_packet_with_options, BuildPacketOptions};
 use aegis_client::transport::{OutboundCell, Transport};
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_crypto::sphinx::MAX_HOPS;
@@ -111,7 +111,13 @@ fn dummy_cover_emitted_when_cell_queue_drains_early() {
 fn sphinx_fragments_are_fixed_width_and_last_slot_padded() {
     let hops = sample_hops(3);
     let mut rng = OsRng;
-    let packet = build_packet(&hops, b"padded-fragment-check", &mut rng).unwrap();
+    let packet = build_packet_with_options(
+        &hops,
+        b"padded-fragment-check",
+        &mut rng,
+        BuildPacketOptions::legacy_dev(),
+    )
+    .unwrap();
     let (cells, _) = aegis_crypto::fragment::fragment_with_random_id(&packet, &mut rng);
 
     assert_eq!(cells.len(), SPHINX_FRAGMENT_COUNT);
@@ -135,7 +141,13 @@ fn sphinx_fragments_are_fixed_width_and_last_slot_padded() {
 fn max_hops_packet_fragments_reassemble() {
     let hops = sample_hops(MAX_HOPS);
     let mut rng = OsRng;
-    let packet = build_packet(&hops, &[0xFE; 128], &mut rng).unwrap();
+    let packet = build_packet_with_options(
+        &hops,
+        &[0xFE; 128],
+        &mut rng,
+        BuildPacketOptions::legacy_dev(),
+    )
+    .unwrap();
     let (cells, _) = aegis_crypto::fragment::fragment_with_random_id(&packet, &mut rng);
     let recovered = aegis_crypto::fragment::reassemble(&cells).unwrap();
     assert_eq!(recovered, packet);

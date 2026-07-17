@@ -2,12 +2,15 @@
 //!
 //! ## KEM seed storage (threat model: `docs/AEGIS_implementation_threat_model.md` §7)
 //!
-//! Production default: first-run generation writes hex seeds to a **separate file**
-//! (default `kem.seeds` beside the node config) with mode `0600` on Unix; the TOML
-//! holds only `[kem] file = "..."`. Inline seeds in the main config require explicit
-//! `[kem] allow_plaintext_kem = true` (lab/test). There is no disk encryption or
-//! OS keychain integration yet — file permissions and separation reduce casual
-//! disclosure only.
+//! Production default: first-run generation writes seeds to a **separate file**
+//! (default `kem.seeds` beside the node config); the TOML holds only
+//! `[kem] file = "..."`. Inline seeds in the main config require explicit
+//! `[kem] allow_plaintext_kem = true` (lab/test).
+//!
+//! - **Unix:** plaintext TOML in the seed file with mode `0600`.
+//! - **Windows** (feature `kem-dpapi`, default): DPAPI user-scope wrap
+//!   (`CryptProtectData`) with magic [`crate::kem_seed_protect::KEM_SEED_DPAPI_MAGIC`];
+//!   legacy plaintext `kem.seeds` still loads. Not a full OS keychain UX.
 
 use std::collections::HashMap;
 use std::fs;
@@ -17,8 +20,9 @@ use std::path::{Path, PathBuf};
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_negotiator::SecurityDial;
 use aegis_relay::{
-    BulkCoverConfig, LinkBridgeConfig, PeerInfo, RelayConfig, RelayId, DEFAULT_COVER_ROUND_SECS,
-    DEFAULT_COVER_TARGET_FLOW_COUNT,
+    BulkCoverConfig, IngressRateLimitConfig, LinkBridgeConfig, PeerInfo, RelayConfig, RelayId,
+    DEFAULT_COVER_ROUND_SECS, DEFAULT_COVER_TARGET_FLOW_COUNT, DEFAULT_INGRESS_BURST,
+    DEFAULT_INGRESS_MAX_CELLS_PER_SEC,
 };
 use aegis_topology::{RelayRoster, RosterError, ThresholdConsortium};
 use aegis_trust::{
@@ -48,6 +52,8 @@ pub enum ConfigError {
     Roster(#[from] RosterError),
     #[error("reputation: {0}")]
     Reputation(#[from] ReputationError),
+    #[error("kem seed protect: {0}")]
+    KemProtect(String),
 }
 
 /// Default KEM seed filename when `[kem] file` is omitted (beside the node config).
@@ -299,6 +305,16 @@ pub struct LinkNetConfig {
     /// Bind handshake MACs to the peer roster relay id (recommended).
     #[serde(default = "default_identity_binding")]
     pub identity_binding: bool,
+    /// Sustained inbound cell/frame accept rate (cells/sec). Default ≈ 1/τ (Mode-1).
+    /// Set to `0.0` to disable per-connection ingress rate limiting.
+    #[serde(default = "default_max_cells_per_sec")]
+    pub max_cells_per_sec: f64,
+    /// Token-bucket burst (cells) above the sustained rate.
+    #[serde(default = "default_ingress_burst")]
+    pub burst: u32,
+    /// Optional aggregate cap across all inbound connections (cells/sec).
+    #[serde(default)]
+    pub global_max_cells_per_sec: Option<f64>,
 }
 
 impl Default for LinkNetConfig {
@@ -307,6 +323,9 @@ impl Default for LinkNetConfig {
             read_timeout_secs: default_link_read_timeout_secs(),
             max_inbound_connections: default_max_inbound_connections(),
             identity_binding: default_identity_binding(),
+            max_cells_per_sec: default_max_cells_per_sec(),
+            burst: default_ingress_burst(),
+            global_max_cells_per_sec: None,
         }
     }
 }
@@ -321,6 +340,14 @@ fn default_link_read_timeout_secs() -> u64 {
 
 fn default_max_inbound_connections() -> usize {
     aegis_relay::DEFAULT_MAX_INBOUND_CONNECTIONS
+}
+
+fn default_max_cells_per_sec() -> f64 {
+    DEFAULT_INGRESS_MAX_CELLS_PER_SEC
+}
+
+fn default_ingress_burst() -> u32 {
+    DEFAULT_INGRESS_BURST
 }
 
 fn default_mu() -> f64 {
@@ -411,8 +438,12 @@ pub fn resolve_kem_seeds(config_path: &Path, kem: &KemFileConfig) -> Result<KemS
     if !seed_path.is_file() {
         return Err(ConfigError::MissingKem);
     }
-    let text = fs::read_to_string(&seed_path)?;
-    Ok(toml::from_str(&text)?)
+    let raw = fs::read(&seed_path)?;
+    let plain = crate::kem_seed_protect::unprotect_seed_bytes(&raw)
+        .map_err(ConfigError::KemProtect)?;
+    let text = std::str::from_utf8(&plain)
+        .map_err(|_| ConfigError::KemProtect("kem seed plaintext is not UTF-8".into()))?;
+    Ok(toml::from_str(text)?)
 }
 
 fn generate_kem_seeds(rng: &mut (impl RngCore + CryptoRngCore)) -> KemSeeds {
@@ -429,10 +460,16 @@ fn generate_kem_seeds(rng: &mut (impl RngCore + CryptoRngCore)) -> KemSeeds {
     }
 }
 
-/// Write KEM seeds to `path` with mode `0600` on Unix (best-effort on Windows).
+/// Write KEM seeds to `path`.
+///
+/// On Windows with `kem-dpapi` (default), stores DPAPI-protected bytes with a
+/// clear magic header. On Unix / without the feature, stores plaintext TOML
+/// with mode `0600` (best-effort create/truncate on Windows).
 pub fn persist_kem_seeds_file(path: &Path, seeds: &KemSeeds) -> Result<(), ConfigError> {
     let text = toml::to_string(seeds)?;
-    write_restricted_file(path, text.as_bytes())
+    let stored = crate::kem_seed_protect::protect_seed_bytes(text.as_bytes())
+        .map_err(ConfigError::KemProtect)?;
+    write_restricted_file(path, &stored)
 }
 
 fn write_restricted_file(path: &Path, contents: &[u8]) -> Result<(), ConfigError> {
@@ -465,6 +502,15 @@ fn write_restricted_file(path: &Path, contents: &[u8]) -> Result<(), ConfigError
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IngressConfig {
     pub link_key: String,
+    /// Optional override of `[link].max_cells_per_sec` for this node's ingress policy.
+    #[serde(default)]
+    pub max_cells_per_sec: Option<f64>,
+    /// Optional override of `[link].burst`.
+    #[serde(default)]
+    pub burst: Option<u32>,
+    /// Optional override of `[link].global_max_cells_per_sec`.
+    #[serde(default)]
+    pub global_max_cells_per_sec: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -612,10 +658,26 @@ impl NodeConfigFile {
             let z = parse_hex32(&kem.mlkem_z)?;
             RelayKemSecret::generate_deterministic(x, d, z).0
         };
-        let ingress_link_key = self
-            .ingress
-            .map(|i| parse_hex32(&i.link_key))
-            .transpose()?;
+        let mut ingress_rate_limit = IngressRateLimitConfig {
+            max_cells_per_sec: self.link.max_cells_per_sec,
+            burst: self.link.burst,
+            global_max_cells_per_sec: self.link.global_max_cells_per_sec,
+        };
+        let ingress_link_key = match self.ingress {
+            Some(i) => {
+                if let Some(rate) = i.max_cells_per_sec {
+                    ingress_rate_limit.max_cells_per_sec = rate;
+                }
+                if let Some(burst) = i.burst {
+                    ingress_rate_limit.burst = burst;
+                }
+                if i.global_max_cells_per_sec.is_some() {
+                    ingress_rate_limit.global_max_cells_per_sec = i.global_max_cells_per_sec;
+                }
+                Some(parse_hex32(&i.link_key)?)
+            }
+            None => None,
+        };
         let local_kem_commitment = self
             .kem_commitment
             .as_deref()
@@ -652,6 +714,8 @@ impl NodeConfigFile {
                 read_timeout: std::time::Duration::from_secs(self.link.read_timeout_secs),
                 max_inbound_connections: self.link.max_inbound_connections,
                 identity_binding: self.link.identity_binding,
+                ingress_rate_limit,
+                ingress_rate_limit_stats: None,
             },
             exit: self.exit,
             trace: self.trace,
@@ -1094,5 +1158,133 @@ mlkem_z = "{}"
 
         let _ = std::fs::remove_file(&seed_path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn kem_legacy_plaintext_seed_file_still_loads() {
+        let dir = test_config_dir("legacy-plain-file");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("node.toml");
+        let seed_path = dir.join(DEFAULT_KEM_SEED_FILENAME);
+        let seeds = fixed_seeds();
+        // Intentionally write raw TOML (no DPAPI magic) — pre-DPAPI format.
+        std::fs::write(&seed_path, toml::to_string(&seeds).unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            minimal_node_toml(&format!(
+                "[kem]\nfile = \"{DEFAULT_KEM_SEED_FILENAME}\"\n"
+            )),
+        )
+        .unwrap();
+
+        let file = NodeConfigFile::load(&config_path).unwrap();
+        let loaded = resolve_kem_seeds(&config_path, file.kem.as_ref().unwrap()).unwrap();
+        assert_eq!(loaded, seeds);
+        assert!(!crate::kem_seed_protect::is_dpapi_protected(
+            &std::fs::read(&seed_path).unwrap()
+        ));
+        file.into_runtime(&config_path).unwrap();
+
+        let _ = std::fs::remove_file(&seed_path);
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn kem_persist_roundtrip_via_protect_layer() {
+        let dir = test_config_dir("persist-roundtrip");
+        let _ = std::fs::create_dir_all(&dir);
+        let seed_path = dir.join("kem.seeds");
+        let seeds = fixed_seeds();
+        persist_kem_seeds_file(&seed_path, &seeds).unwrap();
+        let raw = std::fs::read(&seed_path).unwrap();
+        #[cfg(all(windows, feature = "kem-dpapi"))]
+        {
+            assert!(crate::kem_seed_protect::is_dpapi_protected(&raw));
+        }
+        #[cfg(not(all(windows, feature = "kem-dpapi")))]
+        {
+            assert!(!crate::kem_seed_protect::is_dpapi_protected(&raw));
+        }
+        let kem = KemFileConfig {
+            file: Some("kem.seeds".into()),
+            ..KemFileConfig::default()
+        };
+        let config_path = dir.join("node.toml");
+        assert_eq!(resolve_kem_seeds(&config_path, &kem).unwrap(), seeds);
+
+        let _ = std::fs::remove_file(&seed_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[cfg(all(windows, feature = "kem-dpapi"))]
+    #[test]
+    fn kem_first_run_writes_dpapi_protected_file_on_windows() {
+        let dir = test_config_dir("win-dpapi-default");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("node.toml");
+        std::fs::write(&config_path, minimal_node_toml("")).unwrap();
+
+        let mut file = NodeConfigFile::load(&config_path).unwrap();
+        NodeConfigFile::load_or_init_kem(&config_path, &mut file, &mut OsRng).unwrap();
+
+        let seed_path = dir.join(DEFAULT_KEM_SEED_FILENAME);
+        let raw = std::fs::read(&seed_path).unwrap();
+        assert!(
+            crate::kem_seed_protect::is_dpapi_protected(&raw),
+            "first-run should write DPAPI-protected kem.seeds"
+        );
+        assert!(resolve_kem_seeds(&config_path, file.kem.as_ref().unwrap()).is_ok());
+
+        let _ = std::fs::remove_file(&seed_path);
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn link_and_ingress_toml_wire_ingress_rate_limit() {
+        let dir = test_config_dir("ingress-rate");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("node.toml");
+        let seeds = fixed_seeds();
+        let seed_path = dir.join(DEFAULT_KEM_SEED_FILENAME);
+        persist_kem_seeds_file(&seed_path, &seeds).unwrap();
+        let toml = format!(
+            r#"relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[kem]
+file = "{}"
+
+[link]
+max_cells_per_sec = 5.0
+burst = 8
+global_max_cells_per_sec = 20.0
+
+[ingress]
+link_key = "c000000000000000000000000000000000000000000000000000000000000000"
+max_cells_per_sec = 3.0
+burst = 2
+"#,
+            DEFAULT_KEM_SEED_FILENAME
+        );
+        std::fs::write(&config_path, toml).unwrap();
+        let file = NodeConfigFile::load(&config_path).unwrap();
+        let runtime = file.into_runtime(&config_path).unwrap();
+        let rl = &runtime.link_bridge_config.ingress_rate_limit;
+        assert!((rl.max_cells_per_sec - 3.0).abs() < 1e-9, "ingress overrides link");
+        assert_eq!(rl.burst, 2);
+        assert_eq!(rl.global_max_cells_per_sec, Some(20.0));
+
+        let _ = std::fs::remove_file(&seed_path);
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn link_rate_limit_defaults_match_mode1_tau() {
+        let cfg = LinkNetConfig::default();
+        assert!((cfg.max_cells_per_sec - DEFAULT_INGRESS_MAX_CELLS_PER_SEC).abs() < 1e-9);
+        assert_eq!(cfg.burst, DEFAULT_INGRESS_BURST);
     }
 }

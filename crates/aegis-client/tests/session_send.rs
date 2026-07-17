@@ -16,6 +16,7 @@ use aegis_crypto::cell::{Cell, Command, CELL_LEN};
 use aegis_crypto::fragment::SPHINX_FRAGMENT_COUNT;
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_crypto::link::LINK_FRAME_LEN;
+use aegis_topology::types::KemPublicCommitment;
 use aegis_relay::{run_responder_handshake, LinkBridgeConfig};
 use rand_core::OsRng;
 use tokio::io::AsyncReadExt;
@@ -29,7 +30,8 @@ fn sample_hops(n: usize) -> Vec<ClientHop> {
             let (_sec, pk) = RelayKemSecret::generate(&mut rng);
             let mut id = [0u8; 32];
             id[0] = i as u8;
-            ClientHop::new(id, pk, None)
+            ClientHop::new(id, pk.clone(), None)
+                .with_commitment(KemPublicCommitment::from_public(&pk))
         })
         .collect()
 }

@@ -12,10 +12,13 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use aegis_client::send::{send_payload, ClientHop, ClientLink};
+use aegis_client::send::{send_payload_with_options, BuildPacketOptions, ClientHop, ClientLink};
 use aegis_crypto::fragment::SPHINX_FRAGMENT_COUNT;
 use aegis_crypto::kem::RelayKemSecret;
-use aegis_relay::{spawn_link_bridge, LinkBridgeConfig, PeerInfo, RelayConfig, RelayId, RelayNode};
+use aegis_relay::{
+    spawn_link_bridge_with_listener, InboundListen, LinkBridgeConfig, PeerInfo, RelayConfig,
+    RelayId, RelayNode,
+};
 use rand_core::{OsRng, RngCore};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -97,11 +100,13 @@ impl TcpTestnet {
         }
 
         let mut listen_addrs = Vec::with_capacity(path_len);
+        let mut listeners = Vec::with_capacity(path_len);
         for _ in 0..path_len {
             let listener = TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("bind loopback");
             listen_addrs.push(listener.local_addr().expect("local_addr"));
+            listeners.push(Some(listener));
         }
 
         let client_ingress_key = link_key_byte(0xC0);
@@ -139,8 +144,9 @@ impl TcpTestnet {
                 .spawn(inbound_rx, outbound_tx, Some(cover_tx), OsRng)
                 .expect("spawn relay");
 
-            let net_tasks = spawn_link_bridge(
-                listen_addrs[i],
+            let listener = listeners[i].take().expect("listener");
+            let net_tasks = spawn_link_bridge_with_listener(
+                InboundListen::Listener(listener),
                 id,
                 None,
                 peer_table,
@@ -151,7 +157,7 @@ impl TcpTestnet {
                 None,
                 None,
                 OsRng,
-                LinkBridgeConfig::default(),
+                LinkBridgeConfig::default().without_ingress_rate_limit(),
                 None,
             );
 
@@ -213,11 +219,12 @@ async fn capture_burst_trace_to_csv() {
         payload[payload_len - 1] = (i as u8).wrapping_add(0x5A);
 
         let ts = wall_secs();
-        send_payload(
+        send_payload_with_options(
             &testnet.hops,
             &testnet.client_link,
             &payload,
             &mut rng,
+            BuildPacketOptions::legacy_dev(),
         )
         .await
         .expect("client send over TcpStream");
@@ -292,11 +299,12 @@ async fn capture_malicious_burst_trace_to_csv() {
         payload[payload_len - 1] = (i as u8).wrapping_add(0x0F);
 
         let ts = wall_secs();
-        let ok = send_payload(
+        let ok = send_payload_with_options(
             &testnet.hops,
             &testnet.client_link,
             &payload,
             &mut rng,
+            BuildPacketOptions::legacy_dev(),
         )
         .await
         .is_ok();

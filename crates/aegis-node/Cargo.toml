@@ -15,6 +15,12 @@ workspace = true
 name = "aegis-node"
 path = "src/main.rs"
 
+[features]
+default = ["kem-dpapi"]
+# Windows: protect external kem.seeds with DPAPI (CryptProtectData, user scope).
+# No-op on non-Windows. Disable for lab plaintext seed files on Windows.
+kem-dpapi = ["dep:windows-dpapi"]
+
 [dependencies]
 aegis-relay = { path = "../aegis-relay" }
 aegis-crypto = { path = "../aegis-crypto" }
@@ -28,6 +34,9 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 thiserror.workspace = true
 rand_core = { workspace = true, features = ["getrandom"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-dpapi = { version = "0.2", optional = true }
 
 [dev-dependencies]
 aegis_node = { path = ".", package = "aegis-node" }

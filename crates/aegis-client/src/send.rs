@@ -20,7 +20,7 @@ use crate::session::{PacedSession, PacedSessionConfig};
 pub struct ClientHop {
     pub id: [u8; 32],
     pub kem_public: RelayKemPublic,
-    /// Roster KEM commitment; when present, [`build_packet`] verifies it matches `kem_public`.
+    /// Roster KEM commitment; when present, [`build_packet_require_bindings`] verifies it matches `kem_public`.
     pub kem_commitment: Option<KemPublicCommitment>,
     /// Listen address of this hop (required for the first hop only).
     pub addr: Option<SocketAddr>,
@@ -98,22 +98,43 @@ pub enum SendError {
 }
 
 /// Options for [`build_packet_with_options`].
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct BuildPacketOptions {
     /// When true, every hop must carry a roster KEM commitment before encapsulation.
     pub require_kem_binding: bool,
 }
 
+impl Default for BuildPacketOptions {
+    fn default() -> Self {
+        Self {
+            require_kem_binding: true,
+        }
+    }
+}
+
+impl BuildPacketOptions {
+    /// Loose binding policy for lab fixtures and trace capture only.
+    pub const fn legacy_dev() -> Self {
+        Self {
+            require_kem_binding: false,
+        }
+    }
+}
+
 /// Build a Sphinx packet along `hops` carrying `payload`.
 ///
-/// When a hop carries a roster commitment, verifies it matches `kem_public`.
-/// Use [`build_packet_require_bindings`] for production paths built from roster records.
+/// **Deprecated:** prefer [`build_packet_require_bindings`] for production paths built
+/// from roster records. For lab fixtures without roster commitments, use
+/// [`build_packet_with_options`] with [`BuildPacketOptions::legacy_dev`].
+#[deprecated(
+    note = "use build_packet_require_bindings for production; build_packet_with_options(..., BuildPacketOptions::legacy_dev()) for lab fixtures only"
+)]
 pub fn build_packet<R: RngCore + CryptoRngCore>(
     hops: &[ClientHop],
     payload: &[u8],
     rng: &mut R,
 ) -> Result<SphinxPacket, SendError> {
-    build_packet_with_options(hops, payload, rng, BuildPacketOptions::default())
+    build_packet_require_bindings(hops, payload, rng)
 }
 
 /// Like [`build_packet`] but requires a roster KEM commitment on every hop.
@@ -169,7 +190,7 @@ pub async fn send_payload<R: RngCore + CryptoRngCore>(
     rng: &mut R,
 ) -> Result<SphinxPacket, SendError> {
     #[allow(deprecated)]
-    send_payload_with_options(hops, link, payload, rng, BuildPacketOptions::default()).await
+    send_payload_with_options(hops, link, payload, rng, BuildPacketOptions::legacy_dev()).await
 }
 
 /// Like [`send_payload`] with explicit roster binding policy.

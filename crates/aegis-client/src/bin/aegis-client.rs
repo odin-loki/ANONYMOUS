@@ -169,9 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let require_kem_binding = if cli.no_require_kem_binding {
         false
     } else {
-        cli.require_kem_binding.unwrap_or_else(|| {
-            file.hops.iter().any(|hop| hop.kem_commitment.is_some())
-        })
+        cli.require_kem_binding.unwrap_or(true)
     };
     let packet_options = BuildPacketOptions {
         require_kem_binding,

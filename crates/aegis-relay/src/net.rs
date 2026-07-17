@@ -18,11 +18,19 @@
 //! The responder learns which PSK matched during the handshake confirm MAC (tries
 //! ingress key then each peer-table key). The resulting session key is cached for
 //! the lifetime of the connection.
+//!
+//! ## Ingress rate limiting
+//!
+//! After handshake, each inbound connection applies a token-bucket cell/frame rate
+//! limit (default ≈ Mode-1 `1/τ` cells/s with a small burst). Excess frames are
+//! **dropped silently** (connection stays open); see [`IngressRateLimitStats`].
+//! Optional aggregate cap: [`IngressRateLimitConfig::global_max_cells_per_sec`].
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aegis_crypto::cell::{Cell, Command};
 use aegis_crypto::fragment::{fragment_with_random_id, SphinxReassembler, SPHINX_FRAGMENT_COUNT};
@@ -56,13 +64,81 @@ pub const DEFAULT_LINK_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default cap on concurrent inbound TCP connections per listener.
 pub const DEFAULT_MAX_INBOUND_CONNECTIONS: usize = 256;
 
-/// Tunables for the TCP link bridge (read timeout, connection cap).
+/// Mode-1 spec worked-example slot period τ (seconds).
+pub const MODE1_TAU_SECS: f64 = 0.35;
+
+/// Default sustained ingress accept rate: ~1/τ cells/s (Mode-1 pacing).
+pub const DEFAULT_INGRESS_MAX_CELLS_PER_SEC: f64 = 1.0 / MODE1_TAU_SECS;
+
+/// Small burst above sustained rate so τ-paced clients tolerate minor jitter.
+pub const DEFAULT_INGRESS_BURST: u32 = 4;
+
+/// Per-connection (and optional global) ingress frame rate limit for the link bridge.
+///
+/// Excess frames after AEAD framing are **dropped silently** (TCP stays open); see
+/// [`IngressRateLimitStats::dropped_frames`]. Set `max_cells_per_sec` to `0.0` to disable
+/// per-connection limiting; omit `global_max_cells_per_sec` to disable aggregate cap.
+#[derive(Clone, Debug)]
+pub struct IngressRateLimitConfig {
+    /// Sustained accept rate (cells/sec). `0.0` disables per-connection limiting.
+    pub max_cells_per_sec: f64,
+    /// Token-bucket burst (cells).
+    pub burst: u32,
+    /// Optional aggregate cap across all inbound connections (cells/sec).
+    pub global_max_cells_per_sec: Option<f64>,
+}
+
+impl Default for IngressRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            max_cells_per_sec: DEFAULT_INGRESS_MAX_CELLS_PER_SEC,
+            burst: DEFAULT_INGRESS_BURST,
+            global_max_cells_per_sec: None,
+        }
+    }
+}
+
+impl IngressRateLimitConfig {
+    /// Disable ingress rate limiting (integration tests / lab floods).
+    pub const fn disabled() -> Self {
+        Self {
+            max_cells_per_sec: 0.0,
+            burst: 0,
+            global_max_cells_per_sec: None,
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.max_cells_per_sec > 0.0 || self.global_max_cells_per_sec.is_some_and(|r| r > 0.0)
+    }
+}
+
+/// Coarse counter for silently dropped ingress frames (link bridge only).
+#[derive(Debug, Default)]
+pub struct IngressRateLimitStats {
+    dropped_frames: AtomicU64,
+}
+
+impl IngressRateLimitStats {
+    pub fn dropped_frames(&self) -> u64 {
+        self.dropped_frames.load(Ordering::Relaxed)
+    }
+
+    fn record_drop(&self) {
+        self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Tunables for the TCP link bridge (read timeout, connection cap, ingress rate limit).
 #[derive(Clone, Debug)]
 pub struct LinkBridgeConfig {
     pub read_timeout: Duration,
     pub max_inbound_connections: usize,
     /// When true, bind the peer roster relay id into handshake MAC inputs.
     pub identity_binding: bool,
+    pub ingress_rate_limit: IngressRateLimitConfig,
+    /// Optional shared counter for rate-limited frame drops (tests / ops).
+    pub ingress_rate_limit_stats: Option<Arc<IngressRateLimitStats>>,
 }
 
 impl Default for LinkBridgeConfig {
@@ -71,7 +147,109 @@ impl Default for LinkBridgeConfig {
             read_timeout: DEFAULT_LINK_READ_TIMEOUT,
             max_inbound_connections: DEFAULT_MAX_INBOUND_CONNECTIONS,
             identity_binding: true,
+            ingress_rate_limit: IngressRateLimitConfig::default(),
+            ingress_rate_limit_stats: None,
         }
+    }
+}
+
+impl LinkBridgeConfig {
+    /// Disable ingress rate limiting while keeping other defaults.
+    pub fn without_ingress_rate_limit(mut self) -> Self {
+        self.ingress_rate_limit = IngressRateLimitConfig::disabled();
+        self
+    }
+}
+
+#[derive(Debug)]
+struct TokenBucket {
+    rate: f64,
+    capacity: f64,
+    tokens: f64,
+    last_refill: Instant,
+}
+
+impl TokenBucket {
+    fn new(rate: f64, burst: u32) -> Self {
+        let capacity = burst.max(1) as f64;
+        Self {
+            rate,
+            capacity,
+            tokens: capacity,
+            last_refill: Instant::now(),
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.rate > 0.0
+    }
+
+    fn try_consume(&mut self, n: u32) -> bool {
+        if !self.is_enabled() {
+            return true;
+        }
+        self.refill();
+        let need = n as f64;
+        if self.tokens >= need {
+            self.tokens -= need;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn refill(&mut self) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        if elapsed > 0.0 {
+            self.tokens = (self.tokens + elapsed * self.rate).min(self.capacity);
+            self.last_refill = now;
+        }
+    }
+}
+
+struct InboundRateLimitState {
+    local: TokenBucket,
+    global: Option<Arc<Mutex<TokenBucket>>>,
+    stats: Arc<IngressRateLimitStats>,
+    config: IngressRateLimitConfig,
+}
+
+impl InboundRateLimitState {
+    fn new(
+        config: &IngressRateLimitConfig,
+        stats: Arc<IngressRateLimitStats>,
+        global: Option<Arc<Mutex<TokenBucket>>>,
+    ) -> Self {
+        let local = if config.max_cells_per_sec > 0.0 {
+            TokenBucket::new(config.max_cells_per_sec, config.burst)
+        } else {
+            TokenBucket::new(0.0, 0)
+        };
+        Self {
+            local,
+            global,
+            stats,
+            config: config.clone(),
+        }
+    }
+
+    async fn allow_frame(&mut self) -> bool {
+        if !self.config.is_active() {
+            return true;
+        }
+        if self.config.max_cells_per_sec > 0.0 && !self.local.try_consume(1) {
+            self.stats.record_drop();
+            return false;
+        }
+        if let Some(global) = &self.global {
+            let mut bucket = global.lock().await;
+            if !bucket.try_consume(1) {
+                self.stats.record_drop();
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -163,9 +341,43 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
     bridge_config: LinkBridgeConfig,
     peer_health: Option<Arc<PeerHealthTracker>>,
 ) -> (JoinHandle<()>, JoinHandle<()>) {
+    spawn_link_bridge_with_listener(
+        InboundListen::Bind(listen_addr),
+        local_relay_id,
+        local_kem_commitment,
+        peer_table,
+        ingress_link_key,
+        inbound_tx,
+        outbound_rx,
+        cover_rx,
+        exit_tx,
+        forward_trace,
+        rng,
+        bridge_config,
+        peer_health,
+    )
+}
+
+/// Like [`spawn_link_bridge`] but accepts an already-bound [`TcpListener`]
+/// (avoids Windows probe-bind / rebind races in integration tests).
+pub fn spawn_link_bridge_with_listener<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
+    listen: InboundListen,
+    local_relay_id: RelayId,
+    local_kem_commitment: Option<[u8; 32]>,
+    peer_table: HashMap<RelayId, PeerInfo>,
+    ingress_link_key: Option<[u8; 32]>,
+    inbound_tx: mpsc::Sender<SphinxPacket>,
+    outbound_rx: mpsc::Receiver<ForwardedPacket>,
+    cover_rx: Option<mpsc::Receiver<Vec<Cell>>>,
+    exit_tx: Option<ExitSink>,
+    forward_trace: Option<RelayForwardTrace>,
+    rng: R,
+    bridge_config: LinkBridgeConfig,
+    peer_health: Option<Arc<PeerHealthTracker>>,
+) -> (JoinHandle<()>, JoinHandle<()>) {
     let rng = Arc::new(Mutex::new(rng));
     let listener = spawn_inbound_listener(
-        listen_addr,
+        listen,
         local_relay_id,
         local_kem_commitment,
         peer_table.clone(),
@@ -194,6 +406,14 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
         peer_health,
     );
     (listener, dispatcher)
+}
+
+/// How the inbound link-bridge listener is obtained.
+pub enum InboundListen {
+    /// Bind a fresh `TcpListener` on this address.
+    Bind(SocketAddr),
+    /// Use an already-bound listener (tests / supervised sockets).
+    Listener(TcpListener),
 }
 
 fn record_peer_outcome(
@@ -489,7 +709,7 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
 }
 
 fn spawn_inbound_listener(
-    listen_addr: SocketAddr,
+    listen: InboundListen,
     local_relay_id: RelayId,
     local_kem_commitment: Option<[u8; 32]>,
     peer_table: HashMap<RelayId, PeerInfo>,
@@ -499,13 +719,30 @@ fn spawn_inbound_listener(
     peer_health: Option<Arc<PeerHealthTracker>>,
 ) -> JoinHandle<()> {
     let connection_slots = Arc::new(Semaphore::new(bridge_config.max_inbound_connections));
+    let rate_stats = bridge_config
+        .ingress_rate_limit_stats
+        .clone()
+        .unwrap_or_else(|| Arc::new(IngressRateLimitStats::default()));
+    let rate_limit_config = bridge_config.ingress_rate_limit.clone();
+    let global_rate_bucket = rate_limit_config
+        .global_max_cells_per_sec
+        .filter(|&rate| rate > 0.0)
+        .map(|rate| {
+            Arc::new(Mutex::new(TokenBucket::new(
+                rate,
+                rate_limit_config.burst,
+            )))
+        });
     tokio::spawn(async move {
-        let listener = match TcpListener::bind(listen_addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("aegis-relay net: bind {listen_addr}: {e}");
-                return;
-            }
+        let listener = match listen {
+            InboundListen::Listener(l) => l,
+            InboundListen::Bind(listen_addr) => match TcpListener::bind(listen_addr).await {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("aegis-relay net: bind {listen_addr}: {e}");
+                    return;
+                }
+            },
         };
         loop {
             let Ok((stream, _remote)) = listener.accept().await else {
@@ -529,6 +766,9 @@ fn spawn_inbound_listener(
             let cfg = bridge_config.clone();
             let local_id = local_relay_id;
             let health = peer_health.clone();
+            let rate_stats = Arc::clone(&rate_stats);
+            let rate_limit_config = rate_limit_config.clone();
+            let global_rate_bucket = global_rate_bucket.clone();
             tokio::spawn(async move {
                 let _permit = permit;
                 if let Err(e) = run_inbound_connection(
@@ -540,6 +780,9 @@ fn spawn_inbound_listener(
                     inbound_tx,
                     &cfg,
                     health.as_deref(),
+                    rate_limit_config,
+                    rate_stats,
+                    global_rate_bucket,
                 )
                 .await
                 {
@@ -559,6 +802,9 @@ async fn run_inbound_connection(
     inbound_tx: mpsc::Sender<SphinxPacket>,
     bridge_config: &LinkBridgeConfig,
     peer_health: Option<&PeerHealthTracker>,
+    rate_limit_config: IngressRateLimitConfig,
+    rate_stats: Arc<IngressRateLimitStats>,
+    global_rate_bucket: Option<Arc<Mutex<TokenBucket>>>,
 ) -> Result<(), NetError> {
     let mut rng = rand_core::OsRng;
     let session_key = run_responder_handshake(
@@ -575,9 +821,15 @@ async fn run_inbound_connection(
 
     let mut frame = [0u8; LINK_FRAME_LEN];
     let mut reassembler = SphinxReassembler::new();
+    let mut rate_limit =
+        InboundRateLimitState::new(&rate_limit_config, rate_stats, global_rate_bucket);
 
     loop {
         read_exact_timeout(&mut stream, &mut frame, bridge_config.read_timeout).await?;
+        if !rate_limit.allow_frame().await {
+            // Excess cells: drop silently (TCP stays open). Coarse counter only.
+            continue;
+        }
         let cell = session_key.open(&frame)?;
         // Mode-1 cover / loop cells share the link with Sphinx fragments; discard
         // them here so continuous dummy cover does not poison reassembly.
@@ -1269,7 +1521,7 @@ mod tests {
         let relay_id = test_relay_id(0xCF);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let cfg = LinkBridgeConfig::default();
+        let cfg = LinkBridgeConfig::default().without_ingress_rate_limit();
         let (inbound_tx, mut inbound_rx) = mpsc::channel(4);
 
         let server_cfg = cfg.clone();
@@ -1283,6 +1535,9 @@ mod tests {
                 Some(psk),
                 inbound_tx,
                 &server_cfg,
+                None,
+                server_cfg.ingress_rate_limit.clone(),
+                Arc::new(IngressRateLimitStats::default()),
                 None,
             )
             .await
@@ -1563,5 +1818,183 @@ mod tests {
         drop(outbound_tx);
         tokio::time::sleep(Duration::from_millis(50)).await;
         dispatcher_task.abort();
+    }
+
+    #[tokio::test]
+    async fn paced_ingress_cells_accepted_under_default_limit() {
+        let psk = test_psk(0xD1);
+        let relay_id = test_relay_id(0xD1);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stats = Arc::new(IngressRateLimitStats::default());
+        let cfg = LinkBridgeConfig {
+            ingress_rate_limit: IngressRateLimitConfig {
+                // Comfortably above Mode-1 1/τ ≈ 2.86 cells/s.
+                max_cells_per_sec: 10.0,
+                burst: 4,
+                global_max_cells_per_sec: None,
+            },
+            ingress_rate_limit_stats: Some(Arc::clone(&stats)),
+            ..Default::default()
+        };
+        let (inbound_tx, _inbound_rx) = mpsc::channel(8);
+        let server_cfg = cfg.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let _ = run_inbound_connection(
+                stream,
+                relay_id,
+                None,
+                HashMap::new(),
+                Some(psk),
+                inbound_tx,
+                &server_cfg,
+                None,
+                server_cfg.ingress_rate_limit.clone(),
+                server_cfg
+                    .ingress_rate_limit_stats
+                    .clone()
+                    .unwrap_or_default(),
+                None,
+            )
+            .await;
+        });
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let mut rng = OsRng;
+        let session_key =
+            run_initiator_handshake(&mut stream, &psk, relay_id, None, &mut rng, &cfg)
+                .await
+                .unwrap();
+        // One cell every 200ms ≈ 5 cells/s — under the 10/s limit.
+        for i in 0..6u8 {
+            let mut cell = Cell::zeroed();
+            cell.0[0] = Command::Drop as u8;
+            cell.0[1] = i;
+            let frame = session_key.seal(&cell, &mut rng).unwrap();
+            write_all_timeout(&mut stream, &frame, cfg.read_timeout)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        drop(stream);
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        assert_eq!(
+            stats.dropped_frames(),
+            0,
+            "τ-paced traffic must pass comfortably"
+        );
+    }
+
+    #[tokio::test]
+    async fn sustained_high_rate_ingress_drops_excess_frames() {
+        let psk = test_psk(0xD2);
+        let relay_id = test_relay_id(0xD2);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stats = Arc::new(IngressRateLimitStats::default());
+        let cfg = LinkBridgeConfig {
+            ingress_rate_limit: IngressRateLimitConfig {
+                max_cells_per_sec: 5.0,
+                burst: 2,
+                global_max_cells_per_sec: None,
+            },
+            ingress_rate_limit_stats: Some(Arc::clone(&stats)),
+            ..Default::default()
+        };
+        let (inbound_tx, _inbound_rx) = mpsc::channel(8);
+        let server_cfg = cfg.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let _ = run_inbound_connection(
+                stream,
+                relay_id,
+                None,
+                HashMap::new(),
+                Some(psk),
+                inbound_tx,
+                &server_cfg,
+                None,
+                server_cfg.ingress_rate_limit.clone(),
+                server_cfg
+                    .ingress_rate_limit_stats
+                    .clone()
+                    .unwrap_or_default(),
+                None,
+            )
+            .await;
+        });
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let mut rng = OsRng;
+        let session_key =
+            run_initiator_handshake(&mut stream, &psk, relay_id, None, &mut rng, &cfg)
+                .await
+                .unwrap();
+        // Flood 40 cells immediately — burst=2 then drop the rest.
+        for i in 0..40u8 {
+            let mut cell = Cell::zeroed();
+            cell.0[0] = Command::Drop as u8;
+            cell.0[1] = i;
+            let frame = session_key.seal(&cell, &mut rng).unwrap();
+            write_all_timeout(&mut stream, &frame, cfg.read_timeout)
+                .await
+                .unwrap();
+        }
+        stream.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(stream);
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+        assert!(
+            stats.dropped_frames() >= 30,
+            "sustained flood should drop most frames, got {}",
+            stats.dropped_frames()
+        );
+    }
+
+    #[test]
+    fn default_ingress_rate_aligned_with_mode1_tau() {
+        let cfg = IngressRateLimitConfig::default();
+        assert!((cfg.max_cells_per_sec - (1.0 / MODE1_TAU_SECS)).abs() < 1e-9);
+        assert_eq!(cfg.burst, DEFAULT_INGRESS_BURST);
+        assert!(cfg.is_active());
+        assert!(!IngressRateLimitConfig::disabled().is_active());
+    }
+
+    #[tokio::test]
+    async fn spawn_bridge_accepts_ingress_psk_handshake() {
+        let psk = test_psk(0xC0);
+        let relay_id = test_relay_id(0x01);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (inbound_tx, mut inbound_rx) = mpsc::channel(4);
+        let cfg = LinkBridgeConfig::default().without_ingress_rate_limit();
+
+        let _tasks = spawn_link_bridge_with_listener(
+            InboundListen::Listener(listener),
+            relay_id,
+            None,
+            HashMap::new(),
+            Some(psk),
+            inbound_tx,
+            mpsc::channel(1).1,
+            None,
+            None,
+            None,
+            OsRng,
+            cfg.clone(),
+            None,
+        );
+
+        let mut rng = OsRng;
+        let mut session = LinkSession::connect(addr, &psk, relay_id, None, &mut rng, &cfg)
+            .await
+            .expect("ingress handshake via spawn_link_bridge_with_listener");
+        let mut cell = Cell::zeroed();
+        cell.0[0] = Command::Drop as u8;
+        session.send_cell(&cell, &mut rng).await.unwrap();
+        session.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(inbound_rx.try_recv().is_err(), "Drop must not reassemble");
     }
 }

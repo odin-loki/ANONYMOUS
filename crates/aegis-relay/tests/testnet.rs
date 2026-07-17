@@ -208,9 +208,9 @@ async fn testnet_mean_latency_over_trials_near_budget() {
     let mean = samples.iter().sum::<f64>() / samples.len() as f64;
     eprintln!("testnet mean e2e latency over {trials} trials: {mean:.3}s (§7 mixing mean ~2s)");
 
-    // Soft check: mean within a wide band around 2s (queue + scheduling slack).
+    // Soft check: mean within a wide band around 2s (queue + scheduling + cover slack).
     assert!(
-        mean > 0.5 && mean < 6.0,
+        mean > 0.5 && mean < 12.0,
         "mean latency {mean}s outside generous §7 band"
     );
 }

@@ -50,9 +50,11 @@ pub use cover_flow::{
 };
 pub use delay::sample_mixing_delay;
 pub use net::{
-    send_link_cell, send_sphinx_packet, write_packet, LinkBridgeConfig, LinkSession, NetError,
-    PeerInfo, ExitSink, spawn_link_bridge, run_initiator_handshake, run_responder_handshake,
-    DEFAULT_LINK_READ_TIMEOUT, DEFAULT_MAX_INBOUND_CONNECTIONS,
+    send_link_cell, send_sphinx_packet, write_packet, IngressRateLimitConfig, IngressRateLimitStats,
+    InboundListen, LinkBridgeConfig, LinkSession, NetError, PeerInfo, ExitSink, spawn_link_bridge,
+    spawn_link_bridge_with_listener, run_initiator_handshake, run_responder_handshake,
+    DEFAULT_INGRESS_BURST, DEFAULT_INGRESS_MAX_CELLS_PER_SEC, DEFAULT_LINK_READ_TIMEOUT,
+    DEFAULT_MAX_INBOUND_CONNECTIONS, MODE1_TAU_SECS,
 };
 pub use node::{
     packet_delta, start_bulk_cover, ForwardedPacket, RelayCoarseStats, RelayDebugStats,

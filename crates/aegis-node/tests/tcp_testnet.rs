@@ -6,12 +6,13 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use aegis_client::send::{send_payload, ClientHop, ClientLink};
+use aegis_client::send::{send_payload_with_options, BuildPacketOptions, ClientHop, ClientLink};
+use aegis_topology::types::KemPublicCommitment;
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_crypto::sphinx::{build, PathHop, SphinxPacket};
 use aegis_relay::{
-    load_trace_timestamps, packet_delta, spawn_link_bridge, LinkBridgeConfig, PeerInfo,
-    RelayConfig, RelayForwardTrace, RelayId, RelayNode,
+    load_trace_timestamps, packet_delta, spawn_link_bridge_with_listener, InboundListen,
+    LinkBridgeConfig, PeerInfo, RelayConfig, RelayForwardTrace, RelayId, RelayNode,
 };
 use rand_core::OsRng;
 use tokio::net::TcpListener;
@@ -66,15 +67,22 @@ impl TcpTestnet {
             ids.push(make_id(i));
         }
 
+        // Bind once and hand listeners to the bridge (no Windows rebind race).
         let mut listen_addrs = Vec::with_capacity(path_len);
+        let mut listeners = Vec::with_capacity(path_len);
         for _ in 0..path_len {
             let listener = TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("bind loopback");
             listen_addrs.push(listener.local_addr().expect("local_addr"));
+            listeners.push(Some(listener));
         }
 
         let client_ingress_key = link_key_byte(0xC0);
+        let commitments: Vec<[u8; 32]> = publics
+            .iter()
+            .map(|pk| KemPublicCommitment::from_public(pk).0)
+            .collect();
         let mut relays = Vec::with_capacity(path_len);
 
         for i in 0..path_len {
@@ -85,14 +93,16 @@ impl TcpTestnet {
                 let upstream_id = ids[i - 1];
                 peer_table.insert(
                     upstream_id,
-                    PeerInfo::new(listen_addrs[i - 1], link_key_byte(i as u8)),
+                    PeerInfo::new(listen_addrs[i - 1], link_key_byte(i as u8))
+                        .with_kem_commitment(commitments[i - 1]),
                 );
             }
             if i + 1 < path_len {
                 let downstream_id = ids[i + 1];
                 peer_table.insert(
                     downstream_id,
-                    PeerInfo::new(listen_addrs[i + 1], link_key_byte((i + 1) as u8)),
+                    PeerInfo::new(listen_addrs[i + 1], link_key_byte((i + 1) as u8))
+                        .with_kem_commitment(commitments[i + 1]),
                 );
             }
 
@@ -117,10 +127,11 @@ impl TcpTestnet {
                 None
             };
 
-            let net_tasks = spawn_link_bridge(
-                listen_addrs[i],
+            let listener = listeners[i].take().expect("listener");
+            let net_tasks = spawn_link_bridge_with_listener(
+                InboundListen::Listener(listener),
                 id,
-                None,
+                Some(commitments[i]),
                 peer_table,
                 ingress,
                 inbound_tx,
@@ -133,7 +144,8 @@ impl TcpTestnet {
                     None
                 },
                 OsRng,
-                LinkBridgeConfig::default(),
+                // Raw integration floods; production defaults rate-limit ingress.
+                LinkBridgeConfig::default().without_ingress_rate_limit(),
                 None,
             );
 
@@ -152,7 +164,7 @@ impl TcpTestnet {
             .map(|(i, (id, pk))| ClientHop {
                 id: id.0,
                 kem_public: pk.clone(),
-                kem_commitment: None,
+                kem_commitment: Some(KemPublicCommitment::from_public(pk)),
                 addr: if i == 0 {
                     Some(listen_addrs[0])
                 } else {
@@ -165,7 +177,7 @@ impl TcpTestnet {
             first_hop_addr: listen_addrs[0],
             first_hop_relay_id: hops[0].id,
             link_key_bytes: client_ingress_key,
-            kem_commitment: None,
+            kem_commitment: hops[0].kem_commitment.map(|c| c.0),
         };
 
         Self {
@@ -221,7 +233,13 @@ async fn tcp_testnet_routes_sphinx_over_real_sockets() {
     let testnet = TcpTestnet::build(PATH_LEN, Some(exit_tx), None).await;
 
     let mut rng = OsRng;
-    send_payload(&testnet.hops, &testnet.client_link, PAYLOAD, &mut rng)
+    send_payload_with_options(
+        &testnet.hops,
+        &testnet.client_link,
+        PAYLOAD,
+        &mut rng,
+        BuildPacketOptions::default(),
+    )
         .await
         .expect("client send over TcpStream");
 
@@ -266,12 +284,18 @@ async fn tcp_testnet_exit_sink_file_receives_payload() {
 
     let testnet = TcpTestnet::build(PATH_LEN, Some(exit_tx), None).await;
     let mut rng = OsRng;
-    send_payload(&testnet.hops, &testnet.client_link, PAYLOAD, &mut rng)
+    send_payload_with_options(
+        &testnet.hops,
+        &testnet.client_link,
+        PAYLOAD,
+        &mut rng,
+        BuildPacketOptions::default(),
+    )
         .await
         .expect("client send");
 
     let mut log = String::new();
-    for _ in 0..50 {
+    for _ in 0..100 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if let Ok(text) = fs::read_to_string(&exit_path) {
             if !text.is_empty() {
@@ -300,11 +324,12 @@ async fn tcp_testnet_relay_forward_trace_records_events() {
     let trace = RelayForwardTrace::spawn(&trace_path).expect("spawn trace");
 
     let testnet = TcpTestnet::build(PATH_LEN, None, Some(trace.clone())).await;
-    send_payload(
+    send_payload_with_options(
         &testnet.hops,
         &testnet.client_link,
         PAYLOAD,
         &mut OsRng,
+        BuildPacketOptions::default(),
     )
     .await
     .expect("send");
@@ -367,7 +392,13 @@ async fn tcp_path_build_matches_direct_peel() {
         .collect();
     let mut rng = OsRng;
     let packet = build(&path, PAYLOAD, &mut rng).unwrap();
-    send_payload(&testnet.hops, &testnet.client_link, PAYLOAD, &mut rng)
+    send_payload_with_options(
+        &testnet.hops,
+        &testnet.client_link,
+        PAYLOAD,
+        &mut rng,
+        BuildPacketOptions::default(),
+    )
         .await
         .unwrap();
 

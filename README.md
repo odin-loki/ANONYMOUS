@@ -83,17 +83,21 @@ Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing 
    `-- --ignored`) reproduces the Phase-8 benign and malicious real trace captures.
 
    **Security profiling status (2026-07-17): done** for actionable call-site gaps.
-   Mitigations include paced session + ρ≤0.7, M-of-N + KEM-derived `RelayId`,
-   CT replay membership scan, signed reputation ledger snapshots, link FS +
-   roster-id/KEM handshake binding, required L2 bulk cover, peer-health→EWMA,
-   anomaly-gated admission, verified roster load, external KEM seeds, exit sink,
-   post-shaping traces, deprecated raw `send_payload`, CI fuzz/deny.
+   Mitigations include paced session + ρ≤0.7, ingress token-bucket rate limit,
+   M-of-N + KEM-derived `RelayId`, CT replay scan, signed reputation snapshots,
+   link FS + roster-id/KEM handshake binding, required L2 bulk cover,
+   peer-health→EWMA, anomaly-gated admission, verified roster load, external
+   KEM seeds (Windows DPAPI-protected by default), exit sink, post-shaping
+   traces, deprecated raw `send_payload`, default-required KEM bindings, CI
+   fuzz/deny.
 
    Accepted residuals (ops / research, not unfinished wiring): real TEE attestation;
-   consortium key ceremony; full Noise / roster-key-derived link auth; OS keychain
-   KEM encryption; cover-burst timing indistinguishability; cross-relay health
-   gossip / reputation consensus; ZK anonymous reputation; adversarial clients
-   that ignore paced APIs. See `docs/AEGIS_implementation_threat_model.md`.
+   consortium key ceremony; full Noise / roster-key-derived link auth; Unix
+   keychain KEM encryption; cover-burst timing indistinguishability; cross-relay
+   health gossip / reputation consensus; ZK anonymous reputation; multi-connection
+   ingress floods up to connection cap; Sybil plateau under majority flood;
+   g=1 vs g=3 guard exposure. See **Profiling complete** in
+   `docs/AEGIS_implementation_threat_model.md`.
 
 ## Honest boundaries (do not oversell — see spec §8, §9)
 - Strong guarantees are for **internal** (client↔client) traffic. Clearnet exit is
