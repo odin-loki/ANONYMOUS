@@ -30,6 +30,14 @@
 //! Real hop links are implemented in [`net`]: fixed-width AEAD frames over
 //! `tokio::net::TcpStream`, with Sphinx fragmentation and per-connection
 //! ephemeral handshake for link-layer forward secrecy.
+//!
+//! ## Bounded queues (drop-newest)
+//!
+//! [`RelayNode::spawn`] and production `aegis-node` use bounded `mpsc` channels of
+//! capacity [`RELAY_CHANNEL_CAPACITY`]. Full queues drop the newest item via
+//! [`try_send_drop_newest`] and increment coarse counters
+//! ([`RelayCoarseStats::queue_dropped`] outbound; [`QueueDropStats`] inbound).
+//! See [`node`] module docs.
 
 pub mod config;
 pub mod cover_flow;
@@ -51,14 +59,14 @@ pub use cover_flow::{
 pub use delay::sample_mixing_delay;
 pub use net::{
     send_link_cell, send_sphinx_packet, write_packet, IngressRateLimitConfig, IngressRateLimitStats,
-    InboundListen, LinkBridgeConfig, LinkSession, NetError, PeerInfo, ExitSink, spawn_link_bridge,
-    spawn_link_bridge_with_listener, run_initiator_handshake, run_responder_handshake,
-    DEFAULT_INGRESS_BURST, DEFAULT_INGRESS_MAX_CELLS_PER_SEC, DEFAULT_LINK_READ_TIMEOUT,
-    DEFAULT_MAX_INBOUND_CONNECTIONS, MODE1_TAU_SECS,
+    InboundListen, LinkBridgeConfig, LinkSession, NetError, PeerInfo, QueueDropStats, ExitSink,
+    spawn_link_bridge, spawn_link_bridge_with_listener, run_initiator_handshake,
+    run_responder_handshake, DEFAULT_INGRESS_BURST, DEFAULT_INGRESS_MAX_CELLS_PER_SEC,
+    DEFAULT_LINK_READ_TIMEOUT, DEFAULT_MAX_INBOUND_CONNECTIONS, MODE1_TAU_SECS,
 };
 pub use node::{
-    packet_delta, start_bulk_cover, ForwardedPacket, RelayCoarseStats, RelayDebugStats,
-    RelayHandle, RelayNode, RelayStoppedError,
+    packet_delta, start_bulk_cover, try_send_drop_newest, ForwardedPacket, RelayCoarseStats,
+    RelayDebugStats, RelayHandle, RelayNode, RelayStoppedError, RELAY_CHANNEL_CAPACITY,
 };
 pub use peer_health::PeerHealthTracker;
 pub use relay_id::RelayId;

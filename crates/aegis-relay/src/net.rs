@@ -25,6 +25,17 @@
 //! limit (default ≈ Mode-1 `1/τ` cells/s with a small burst). Excess frames are
 //! **dropped silently** (connection stays open); see [`IngressRateLimitStats`].
 //! Optional aggregate cap: [`IngressRateLimitConfig::global_max_cells_per_sec`].
+//!
+//! ## Bounded inbound queue (drop-newest)
+//!
+//! Reassembled Sphinx packets are enqueued with [`crate::node::try_send_drop_newest`]
+//! into the relay's bounded inbound `mpsc` (capacity
+//! [`crate::node::RELAY_CHANNEL_CAPACITY`]). When the mix core is slower than
+//! admitted ingress, the **newest** packet is dropped and
+//! [`QueueDropStats::dropped`] increments — the inbound task does not block
+//! forever. Rate-limit drops happen first (pre-reassembly); queue drops are a
+//! second shed for post-reassembly backlog. Per-connection tasks share one
+//! channel, so load shedding is naturally interleaved across peers.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -53,7 +64,7 @@ use tokio::time::timeout;
 use thiserror::Error;
 
 use crate::cover_flow::is_relay_cover_fragment;
-use crate::node::ForwardedPacket;
+use crate::node::{try_send_drop_newest, ForwardedPacket};
 use crate::peer_health::PeerHealthTracker;
 use crate::relay_id::RelayId;
 use crate::trace::RelayForwardTrace;
@@ -129,6 +140,23 @@ impl IngressRateLimitStats {
     }
 }
 
+/// Coarse counter for inbound Sphinx packets dropped when the relay `mpsc` is full
+/// (drop-newest; see module docs).
+#[derive(Debug, Default)]
+pub struct QueueDropStats {
+    dropped: AtomicU64,
+}
+
+impl QueueDropStats {
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+
+    fn counter(&self) -> &AtomicU64 {
+        &self.dropped
+    }
+}
+
 /// Tunables for the TCP link bridge (read timeout, connection cap, ingress rate limit).
 #[derive(Clone, Debug)]
 pub struct LinkBridgeConfig {
@@ -139,6 +167,8 @@ pub struct LinkBridgeConfig {
     pub ingress_rate_limit: IngressRateLimitConfig,
     /// Optional shared counter for rate-limited frame drops (tests / ops).
     pub ingress_rate_limit_stats: Option<Arc<IngressRateLimitStats>>,
+    /// Optional shared counter for inbound queue-full drops (tests / ops).
+    pub queue_drop_stats: Option<Arc<QueueDropStats>>,
 }
 
 impl Default for LinkBridgeConfig {
@@ -149,6 +179,7 @@ impl Default for LinkBridgeConfig {
             identity_binding: true,
             ingress_rate_limit: IngressRateLimitConfig::default(),
             ingress_rate_limit_stats: None,
+            queue_drop_stats: None,
         }
     }
 }
@@ -723,6 +754,10 @@ fn spawn_inbound_listener(
         .ingress_rate_limit_stats
         .clone()
         .unwrap_or_else(|| Arc::new(IngressRateLimitStats::default()));
+    let queue_drop_stats = bridge_config
+        .queue_drop_stats
+        .clone()
+        .unwrap_or_else(|| Arc::new(QueueDropStats::default()));
     let rate_limit_config = bridge_config.ingress_rate_limit.clone();
     let global_rate_bucket = rate_limit_config
         .global_max_cells_per_sec
@@ -767,6 +802,7 @@ fn spawn_inbound_listener(
             let local_id = local_relay_id;
             let health = peer_health.clone();
             let rate_stats = Arc::clone(&rate_stats);
+            let queue_drop_stats = Arc::clone(&queue_drop_stats);
             let rate_limit_config = rate_limit_config.clone();
             let global_rate_bucket = global_rate_bucket.clone();
             tokio::spawn(async move {
@@ -782,6 +818,7 @@ fn spawn_inbound_listener(
                     health.as_deref(),
                     rate_limit_config,
                     rate_stats,
+                    queue_drop_stats,
                     global_rate_bucket,
                 )
                 .await
@@ -804,6 +841,7 @@ async fn run_inbound_connection(
     peer_health: Option<&PeerHealthTracker>,
     rate_limit_config: IngressRateLimitConfig,
     rate_stats: Arc<IngressRateLimitStats>,
+    queue_drop_stats: Arc<QueueDropStats>,
     global_rate_bucket: Option<Arc<Mutex<TokenBucket>>>,
 ) -> Result<(), NetError> {
     let mut rng = rand_core::OsRng;
@@ -840,7 +878,8 @@ async fn run_inbound_connection(
             _ => continue,
         }
         if let Some(packet) = reassembler.push(&cell)? {
-            if inbound_tx.send(packet).await.is_err() {
+            // Drop-newest when the mix inbound queue is full (never block forever).
+            if try_send_drop_newest(&inbound_tx, packet, queue_drop_stats.counter()).is_err() {
                 break;
             }
         }
@@ -1538,6 +1577,7 @@ mod tests {
                 None,
                 server_cfg.ingress_rate_limit.clone(),
                 Arc::new(IngressRateLimitStats::default()),
+                Arc::new(QueueDropStats::default()),
                 None,
             )
             .await
@@ -1855,6 +1895,7 @@ mod tests {
                     .ingress_rate_limit_stats
                     .clone()
                     .unwrap_or_default(),
+                Arc::new(QueueDropStats::default()),
                 None,
             )
             .await;
@@ -1920,6 +1961,7 @@ mod tests {
                     .ingress_rate_limit_stats
                     .clone()
                     .unwrap_or_default(),
+                Arc::new(QueueDropStats::default()),
                 None,
             )
             .await;
@@ -1959,6 +2001,20 @@ mod tests {
         assert_eq!(cfg.burst, DEFAULT_INGRESS_BURST);
         assert!(cfg.is_active());
         assert!(!IngressRateLimitConfig::disabled().is_active());
+    }
+
+    #[test]
+    fn inbound_queue_full_drops_newest_and_counts() {
+        use aegis_crypto::sphinx::SPHINX_PACKET_LEN;
+
+        let (tx, mut rx) = mpsc::channel::<SphinxPacket>(1);
+        let stats = QueueDropStats::default();
+        let mk = || SphinxPacket::from_bytes([0u8; SPHINX_PACKET_LEN]);
+        assert!(try_send_drop_newest(&tx, mk(), stats.counter()).is_ok());
+        assert!(try_send_drop_newest(&tx, mk(), stats.counter()).is_ok());
+        assert_eq!(stats.dropped(), 1, "full inbound must drop newest");
+        assert!(rx.try_recv().is_ok(), "first enqueued packet still delivered");
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]

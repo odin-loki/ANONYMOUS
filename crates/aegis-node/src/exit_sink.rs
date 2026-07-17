@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use aegis_crypto::sphinx::SphinxPacket;
-use aegis_relay::{packet_delta, ExitSink};
+use aegis_relay::{packet_delta, ExitSink, RELAY_CHANNEL_CAPACITY};
 use tokio::sync::mpsc;
 
 /// Where peeled exit payloads are delivered when configured.
@@ -33,7 +33,7 @@ pub fn spawn_exit_sink(settings: ExitSinkSettings) -> Option<ExitSink> {
     if !settings.enabled() {
         return None;
     }
-    let (tx, mut rx) = mpsc::channel::<SphinxPacket>(64);
+    let (tx, mut rx) = mpsc::channel::<SphinxPacket>(RELAY_CHANNEL_CAPACITY);
     let log_payloads = settings.log_payloads;
     let deliver_to = settings.deliver_to;
     tokio::spawn(async move {

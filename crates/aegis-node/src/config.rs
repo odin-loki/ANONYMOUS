@@ -716,6 +716,7 @@ impl NodeConfigFile {
                 identity_binding: self.link.identity_binding,
                 ingress_rate_limit,
                 ingress_rate_limit_stats: None,
+                queue_drop_stats: None,
             },
             exit: self.exit,
             trace: self.trace,

@@ -7,6 +7,7 @@ use std::time::Duration;
 use aegis_node::{exit_sink, NodeConfigFile, ReputationConfig};
 use aegis_relay::{
     spawn_link_bridge, start_bulk_cover, PeerHealthTracker, RelayForwardTrace, RelayNode,
+    RELAY_CHANNEL_CAPACITY,
 };
 use clap::Parser;
 use rand_core::OsRng;
@@ -75,9 +76,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let (inbound_tx, inbound_rx) = mpsc::channel(64);
-    let (outbound_tx, outbound_rx) = mpsc::channel(64);
-    let (cover_tx, cover_rx) = mpsc::channel(64);
+    // Bounded queues: drop-newest under flood (see aegis_relay::node queue policy).
+    let (inbound_tx, inbound_rx) = mpsc::channel(RELAY_CHANNEL_CAPACITY);
+    let (outbound_tx, outbound_rx) = mpsc::channel(RELAY_CHANNEL_CAPACITY);
+    let (cover_tx, cover_rx) = mpsc::channel(RELAY_CHANNEL_CAPACITY);
 
     let relay_id = runtime.relay_id;
     let bulk_cover = runtime.relay_config.bulk_cover.clone();

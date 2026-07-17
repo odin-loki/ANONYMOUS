@@ -1,4 +1,18 @@
 //! Async mix relay node: Sphinx peel, Exp(μ) delay, forward, bulk cover padding.
+//!
+//! ## Bounded queue / backpressure policy
+//!
+//! Production inbound, outbound, and cover paths use bounded `mpsc` channels of
+//! capacity [`RELAY_CHANNEL_CAPACITY`] (64). When a queue is full, senders use
+//! [`try_send_drop_newest`]: the **newest** item is dropped and a coarse counter
+//! is incremented — the sender never blocks forever under flood.
+//!
+//! This complements (does not replace) link-bridge ingress rate limiting in
+//! [`crate::net`]: rate-limit drops frames before reassembly; queue drops apply
+//! after a full Sphinx packet is ready for the mix core (inbound) or after peel
+//! (outbound). Multiple inbound peer tasks share one inbound channel; each
+//! independently `try_send`s, so a slow consumer sheds load fairly across peers
+//! without a single peer blocking the others.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -20,6 +34,28 @@ use crate::cover_flow::{BulkRoundCommand, BulkRoundTracker, CoverFlowConfig};
 use crate::delay::sample_mixing_delay;
 use crate::relay_id::RelayId;
 
+/// Production capacity for relay inbound / outbound / cover `mpsc` channels.
+pub const RELAY_CHANNEL_CAPACITY: usize = 64;
+
+/// Enqueue with drop-newest backpressure: never blocks the sender on a full queue.
+///
+/// On [`mpsc::error::TrySendError::Full`], drops `item` (newest arrival) and
+/// increments `dropped`. Returns `Err(())` only when the channel is closed.
+pub fn try_send_drop_newest<T>(
+    tx: &mpsc::Sender<T>,
+    item: T,
+    dropped: &AtomicU64,
+) -> Result<(), ()> {
+    match tx.try_send(item) {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            dropped.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => Err(()),
+    }
+}
+
 /// A peeled packet ready for routing after the per-hop mixing delay.
 #[derive(Debug, Clone)]
 pub struct ForwardedPacket {
@@ -38,6 +74,8 @@ pub struct RelayCoarseStats {
     pub processed_fail: u64,
     /// Synthetic cover flows emitted on the wire during bulk rounds.
     pub cover_emitted: u64,
+    /// Outbound queue drops under [`try_send_drop_newest`] (full bounded channel).
+    pub queue_dropped: u64,
 }
 
 impl RelayCoarseStats {
@@ -79,6 +117,7 @@ struct RelayStats {
     replay_error_count: AtomicU64,
     other_error_count: AtomicU64,
     forwarded_count: AtomicU64,
+    queue_dropped: AtomicU64,
 }
 
 impl RelayStats {
@@ -92,6 +131,7 @@ impl RelayStats {
             replay_error_count: AtomicU64::new(0),
             other_error_count: AtomicU64::new(0),
             forwarded_count: AtomicU64::new(0),
+            queue_dropped: AtomicU64::new(0),
         }
     }
 
@@ -106,6 +146,7 @@ impl RelayStats {
             processed_ok: forwarded + loop_return + dropped,
             processed_fail: integrity + replay + other,
             cover_emitted: self.cover_flow_count.load(Ordering::Relaxed),
+            queue_dropped: self.queue_dropped.load(Ordering::Relaxed),
         }
     }
 
@@ -367,14 +408,15 @@ async fn process_one_packet<R: RngCore + CryptoRngCore>(
             let delay = sample_mixing_delay(node.config.mu, rng);
             tokio::time::sleep(delay).await;
             stats.forwarded_count.fetch_add(1, Ordering::Relaxed);
-            outbound
-                .send(ForwardedPacket {
+            try_send_drop_newest(
+                outbound,
+                ForwardedPacket {
                     next_hop: RelayId(next_hop),
                     packet,
                     delay_applied: delay,
-                })
-                .await
-                .map_err(|_| ())
+                },
+                &stats.queue_dropped,
+            )
         }
         Ok(Processed::LoopReturned) => {
             stats.loop_return_count.fetch_add(1, Ordering::Relaxed);
@@ -575,6 +617,7 @@ mod tests {
         assert_eq!(coarse.processed_ok, 1);
         assert_eq!(coarse.processed_fail, 0);
         assert_eq!(coarse.cover_emitted, 0);
+        assert_eq!(coarse.queue_dropped, 0);
         // Fine-grained fields remain available via debug_stats only.
         assert_eq!(handle.debug_stats().forwarded_count, 1);
     }
@@ -585,15 +628,89 @@ mod tests {
             processed_ok: 7,
             processed_fail: 3,
             cover_emitted: 0,
+            queue_dropped: 0,
         };
         assert!((stats.failure_rate().unwrap() - 0.3).abs() < f64::EPSILON);
         assert!(RelayCoarseStats {
             processed_ok: 0,
             processed_fail: 0,
             cover_emitted: 0,
+            queue_dropped: 0,
         }
         .failure_rate()
         .is_none());
+    }
+
+    #[tokio::test]
+    async fn outbound_full_drops_newest_without_panic() {
+        use aegis_crypto::sphinx::SPHINX_PACKET_LEN;
+
+        let mut rng = OsRng;
+        let (guard_sec, guard_pk) = RelayKemSecret::generate(&mut rng);
+        let (_exit_sec, exit_pk) = RelayKemSecret::generate(&mut rng);
+        let mut guard_id = [0u8; 32];
+        guard_id[0] = 1;
+        let mut exit_id = [0u8; 32];
+        exit_id[0] = 2;
+        let path = vec![
+            PathHop {
+                id: guard_id,
+                pk: guard_pk,
+            },
+            PathHop {
+                id: exit_id,
+                pk: exit_pk,
+            },
+        ];
+        let (inbound_tx, inbound_rx) = mpsc::channel(8);
+        let (outbound_tx, mut outbound_rx) = mpsc::channel(1);
+        // Occupy the single slot before spawn so the first real forward is drop-newest.
+        outbound_tx
+            .try_send(ForwardedPacket {
+                next_hop: RelayId([0u8; 32]),
+                packet: SphinxPacket::from_bytes([0u8; SPHINX_PACKET_LEN]),
+                delay_applied: Duration::ZERO,
+            })
+            .unwrap();
+
+        let node = RelayNode::new(
+            RelayId(guard_id),
+            guard_sec,
+            RelayConfig::new(1000.0),
+        );
+        let (handle, _task) = node.spawn(inbound_rx, outbound_tx, None, OsRng).unwrap();
+
+        inbound_tx
+            .send(build(&path, b"ok", &mut rng).unwrap())
+            .await
+            .unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while handle.coarse_stats().queue_dropped < 1 {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            handle.coarse_stats().queue_dropped >= 1,
+            "full outbound must count drop-newest"
+        );
+        // Placeholder still present; real forward was dropped.
+        let kept = outbound_rx.try_recv().expect("bounded slot still holds prior item");
+        assert_eq!(kept.next_hop, RelayId([0u8; 32]));
+        assert!(outbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn try_send_drop_newest_counts_and_delivers() {
+        let (tx, mut rx) = mpsc::channel::<u32>(1);
+        let dropped = AtomicU64::new(0);
+        assert!(try_send_drop_newest(&tx, 1, &dropped).is_ok());
+        assert!(try_send_drop_newest(&tx, 2, &dropped).is_ok());
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        assert_eq!(rx.try_recv().unwrap(), 1);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

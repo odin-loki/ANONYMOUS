@@ -63,7 +63,7 @@ All of the above is independently re-verifiable with `cd sim && PYTHONPATH=. pyt
 ## Security profiling
 Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing + a real implementation-level threat model, not just the paper design) lives across:
 - `docs/AEGIS_crypto_constant_time_review.md` — constant-time review + real `cargo-fuzz`/libFuzzer results (via WSL; Windows lacks libFuzzer sanitizer support) for `aegis-crypto`'s attacker-facing parsers, plus `aegis-topology`'s roster/beacon deserialization.
-- `docs/AEGIS_implementation_threat_model.md` — a STRIDE pass grounded in the actual code (not the abstract paper model) across all seven crates, with severity ratings and mitigation status. Its two highest-severity findings (no admission rate limit / fresh Sybils clearing the reputation floor, and the client's default send path bypassing the constant-rate emitter) have since been fixed; see the doc for details and residual risk.
+- `docs/AEGIS_implementation_threat_model.md` — STRIDE pass on the real code; actionable call-site gaps closed (**Profiling complete**). Residuals are research/ops (ZK anonymous reputation, TEE, Noise, etc.); ingress rate-limit + DPAPI are among the done mitigations — see that doc's table.
 - `crates/aegis-topology/tests/sybil_admission.rs` — a real Sybil-admission simulation against the actual roster/reputation code, with measured before/after numbers.
 - `sim/data/real_testnet_malicious_trace.csv` + `sim/scripts/analyze_malicious_trace.py` — a flooding/adversarial trace capture compared against the benign trace and synthetic stand-in.
 - `crates/deny.toml` — supply-chain policy (`cargo deny check`: advisories/licenses/bans/sources), enforced alongside a workspace-wide Clippy security lint set (`unsafe_code = forbid`, warn on `unwrap_used`/`expect_used`/`indexing_slicing`/`arithmetic_side_effects`).
@@ -88,8 +88,8 @@ Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing 
    link FS + roster-id/KEM handshake binding, required L2 bulk cover,
    peer-health→EWMA, anomaly-gated admission, verified roster load, external
    KEM seeds (Windows DPAPI-protected by default), exit sink, post-shaping
-   traces, deprecated raw `send_payload`, default-required KEM bindings, CI
-   fuzz/deny.
+   traces, deprecated raw `send_payload`, default-required KEM bindings,
+   drop-newest bounded queues, CI fuzz/deny.
 
    Accepted residuals (ops / research, not unfinished wiring): real TEE attestation;
    consortium key ceremony; full Noise / roster-key-derived link auth; Unix

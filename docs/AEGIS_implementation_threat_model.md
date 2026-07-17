@@ -14,7 +14,7 @@
 | # | Finding | Crate / location | Severity |
 |---|---------|------------------|----------|
 | 1 | **`send_payload` / legacy paced send go quiet after 18 ticks** — unpaced burst and one-shot paced path expose true cadence at client TCP ingress. **Soft-closed (2026-07-17):** default CLI uses `PacedSession` with continuous dummy cover + connection reuse; `send_payload` / `send_payload_with_options` are `#[deprecated]` (traces/`--raw` only). Residual: deliberate raw integration or `--raw` still unpaced. | `aegis-client::send`, `aegis-client::session`, CLI `--raw` | **Low–medium** (was Medium; High if misusing raw API) |
-| 2 | **~~No admission rate limit~~** — ~~compromised consortium signing key ⇒ unlimited signed Sybil relays; fresh Sybils get NEUTRAL reputation (0.5) and pass the 0.3 floor immediately.~~ **Mitigated (2026-07-12):** probationary admission reputation (0.1) + configurable rate limit (default 5/24h). **Mitigated (2026-07-17):** M-of-N threshold admission (`ThresholdConsortium` / `admit_threshold_signed`). Residual: consortium key ceremony out of band; reputation `update()` wiring. | `aegis-topology::roster`, `aegis-trust::reputation` | **Low–medium** (was High) |
+| 2 | **~~No admission rate limit~~** — ~~compromised consortium signing key ⇒ unlimited signed Sybil relays; fresh Sybils get NEUTRAL reputation (0.5) and pass the 0.3 floor immediately.~~ **Mitigated (2026-07-12):** probationary admission reputation (0.1) + configurable rate limit (default 5/24h). **Mitigated (2026-07-17):** M-of-N threshold admission (`ThresholdConsortium` / `admit_threshold_signed`). Live peer-health drains feed EWMA via `feed_peer_outcomes` (`aegis-node` 30s). Residual: consortium key ceremony out of band. | `aegis-topology::roster`, `aegis-trust::reputation` | **Low–medium** (was High) |
 | 3 | **Hop link PSK + ephemeral handshake (partial roster binding)** — per-TCP X25519 ECDH derives fresh session keys (forward secrecy); static PSK authenticates the handshake via keyed MAC. **`LinkBridgeConfig::identity_binding`** (default true) binds confirm/finish MACs to the peer roster `RelayId` so a stolen PSK for peer A cannot authenticate as peer B. Residual: PSK still in config/TOML; no Noise or roster-key-derived auth; optional KEM commitment wired from node/client config when present; ingress accepts any holder of the shared ingress key who knows the first-hop id. | `aegis-crypto::link`, `aegis-relay::net`, `aegis-node::config` | **Low–medium** (was Medium) |
 | 4 | **Relay error/load counters observable** — fine-grained per-error counters remain available via [`RelayHandle::debug_stats`] for in-process tests only; external surfaces must use [`RelayHandle::coarse_stats`] (aggregated buckets). Residual GPA risk if coarse buckets are scraped at high frequency under flood. | `aegis-relay::node::RelayCoarseStats` | **Low–medium** (was Medium) |
 | 5 | **Replay cache eviction under sustained flood** — **Mitigated (2026-07-17):** CT FIFO membership scan (`ct_contains`); generation/`advance_epoch()` + proactive shorten at 85% fill on large caches. Residual: O(capacity) CPU per check; shortened window under flood is intentional trade-off. | `aegis-crypto::replay` | **Low** (was Medium) |
@@ -119,7 +119,7 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| Inbound/outbound `mpsc` channels (capacity 64 in testnet). | `trace_capture.rs`, `node::spawn` | **Partial** — backpressure blocks senders; no fair queue drop policy documented. | Medium |
+| Inbound/outbound `mpsc` channels (capacity 64). | `node::RELAY_CHANNEL_CAPACITY`, `aegis-node` `main`, `net::run_inbound_connection` | **Mitigated (2026-07-17)** — bounded channels; on full, **drop-newest** via `try_send_drop_newest` (never block forever under flood). Coarse counters: `RelayCoarseStats::queue_dropped` (outbound), `QueueDropStats` (inbound). Complements ingress rate-limit (rate-limit first, then queue shed). Residual: drop-newest is not strict per-peer fair queueing (shared channel; interleaved `try_send` across peer tasks). | **Low** (was Medium) |
 | Malicious/raw clients flood ingress cells unbounded into the mix queue. | `net::run_inbound_connection`, `IngressRateLimitConfig` | **Mitigated (2026-07-17)** — per-connection token bucket (default ≈1/τ cells/s, burst 4; optional global cap via TOML `[link]` / `[ingress]`). Excess frames **dropped silently**; coarse `IngressRateLimitStats::dropped_frames` only. Residual: limit applies after TCP accept/handshake; AEAD open skipped on drop but connection stays open; mis-set limits can drop honest paced clients. | **Low** (was Medium) |
 | Mixing delay serializes packets per relay task — flood increases queue latency. | `node::process_one_packet` L268–269 | **Mitigated** for availability; **leaks** load via timing (see above). | Medium |
 | Single relay task — no worker pool. | `node::spawn` | **Partial** — CPU saturation under flood. | Low |
@@ -228,7 +228,7 @@ Simulations backing numeric claims:
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
 | Unseen relay gets NEUTRAL 0.5 — immediately eligible for reputation-filtered paths/guards at min 0.3. | `reputation::score` L53–55 | **Partial** — relays with **no** ledger entry still default to NEUTRAL (backward compat / test-only `admit()`). Signed admissions seed `PROBATIONARY` (0.1) via `admit_new_relay`. | **Low–medium** (was High) |
-| `AnomalyDetector` → path/guard selection and **new admission** via [`RelayPruningPolicy`](../../crates/aegis-trust/src/policy.rs) `*_pruned` APIs (`admit_signed_pruned` / `admit_threshold_signed_pruned`); [`PeerHealthTracker`](../../crates/aegis-relay/src/peer_health.rs) feeds failure rates and aggregate EWMA updates via [`feed_peer_outcomes`](../../crates/aegis-trust/src/policy.rs) (`aegis-node` drains every 30s); inbound responder handshakes record per-peer outcomes once a roster PSK matches. | `anomaly.rs`, `aegis-topology::{path,guards,roster}`, `aegis-relay::{peer_health,net}` | **Partial** — live link outcomes update the shared ledger; admission gating Done via `admit_*_pruned`; residual: callers must use pruned APIs (legacy `admit_*` unwired); no peer-health gossip; unidentified inbound not attributed. | Medium |
+| `AnomalyDetector` → path/guard selection and **new admission** via [`RelayPruningPolicy`](../../crates/aegis-trust/src/policy.rs) `*_pruned` APIs (`admit_signed_pruned` / `admit_threshold_signed_pruned`); [`PeerHealthTracker`](../../crates/aegis-relay/src/peer_health.rs) feeds failure rates and aggregate EWMA updates via [`feed_peer_outcomes`](../../crates/aegis-trust/src/policy.rs) (`aegis-node` drains every 30s); inbound responder handshakes record per-peer outcomes once a roster PSK matches. | `anomaly.rs`, `aegis-topology::{path,guards,roster}`, `aegis-relay::{peer_health,net}` | **Admission gating Done** via `admit_*_pruned` + live peer-health → ledger. Residual is **ops / research**: callers must use pruned APIs (legacy `admit_*` unwired); peer-health gossip not implemented; unidentified inbound not attributed. | **Low–medium** (was Medium) |
 | `core_gates_hold_under(BrokenEnclave)` vacuously true — no TEE dependency yet. | `tee::core_gates_hold_under` | **Mitigated** (honestly documented). | — |
 
 ---
@@ -354,7 +354,7 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| mpsc(64) channels — same as relay. | `main.rs:47–48` | **Partial**. | Medium |
+| mpsc(64) channels — same as relay. | `main.rs` (`RELAY_CHANNEL_CAPACITY`) | **Mitigated (2026-07-17)** — same drop-newest policy as `aegis-relay` (`try_send_drop_newest` + coarse counters). Residual: shared-channel fairness only. | **Low** (was Medium) |
 | Multi-process testnet had peer routing failures (Phase 8 notes). | `sim/scripts/capture_multiprocess_trace.py` | **Partial (2026-07-17)** — last-hop `[exit]` file sink enabled in mp capture configs; prior “routing” errors were terminal peels without exit. Residual: full paced multi-process re-capture. | Low |
 
 ### Elevation of privilege
@@ -446,22 +446,24 @@ Relay ──peel──► sphinx::process ──delay──► forward (GPA sees
 
 ## Profiling complete (2026-07-17)
 
-Actionable call-site gaps from the implementation-level threat model and crypto constant-time review are **closed**. Remaining items are **accepted research / ops residuals** — not unfinished wiring:
+Actionable call-site gaps from the implementation-level threat model and crypto constant-time review are **closed**. **Done mitigations in this pass include** per-connection ingress token-bucket rate limiting (`IngressRateLimitConfig`) and Windows DPAPI KEM-seed at-rest protection (`kem-dpapi`). Remaining items are **accepted research / ops residuals** — not unfinished wiring:
 
 | Residual | Category | Notes |
 |----------|----------|-------|
 | Real TEE attestation | research | `core_gates_hold_under(BrokenEnclave)` vacuous; interface boundary only |
 | Consortium authority key ceremony / PKI | ops | M-of-N threshold admission in code; ceremony out of band |
 | Full Noise or roster-key-derived link auth | research | Ephemeral X25519 + PSK MAC + roster-id/KEM binding partial |
-| OS keychain / encrypted KEM seed store | ops | Windows DPAPI (`kem-dpapi`) + Unix `0600` plaintext; no full keychain UX |
+| OS keychain / encrypted KEM seed store | ops | **DPAPI done** on Windows (`kem-dpapi`); residual is full keychain UX + Unix plaintext-at-rest behind `0600` |
+| Ingress flood unbounded into mix queue | mitigated | **Ingress rate-limit done** — token bucket ≈1/τ cells/s, silent drop; residual: after handshake, multi-conn caps |
 | Cover-burst timing indistinguishability from real bulk | research | Wire volume padded; inter-cell timing/shape GPA still possible |
-| Cross-relay health gossip / reputation consensus | research | Per-node JSON ledger; no multi-operator consensus |
-| ZK anonymous reputation (hide relay identity) | research | Bulletproofs threshold only; identity not hidden |
+| Cross-relay health gossip / reputation consensus | research | Per-node JSON ledger; no multi-operator consensus; `AnomalyDetector` admission gating Done (ops: use `*_pruned`) |
+| ZK anonymous reputation (hide relay identity) | research | Bulletproofs threshold only; identity not hidden (**Medium** residual — research only) |
 | Adversarial clients ignoring paced APIs | deployment | Default CLI + `PacedSession` shaped; raw API deprecated |
 | Sybil plateau under majority layer-1 flood | research | Admission controls block fresh Sybils; unfiltered `primary_guard()` still tracks Sybil share |
 | g=1 effective guard vs paper g=3 plateau | research | Code uses `primary_guard()` only; exposure ≈ layer-1 Sybil fraction |
 | Replay cache O(capacity) CPU / no `dudect` proof | research | CT FIFO scan mitigates membership leak; cost scales with capacity |
 | MAC-verify branch timing after `ct_eq` | research | Documented in constant-time review; not byte-comparison leak |
+| Strict per-peer fair queues | research/ops | Drop-newest on shared capacity-64 channels is Mitigated; not weighted fair queuing |
 
 Re-verify: `cargo test -p aegis-topology`, `cargo test -p aegis-client -p aegis-crypto`, `cd sim && PYTHONPATH=. pytest -q`.
 
