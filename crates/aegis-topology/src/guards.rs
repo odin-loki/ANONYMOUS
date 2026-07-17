@@ -209,7 +209,7 @@ mod tests {
     use super::*;
     use crate::layers::build_topology;
     use crate::roster::RelayRoster;
-    use crate::types::{test_relay_record, RelayId, TopologyConfig};
+    use crate::types::{test_relay_id, test_relay_record, RelayId, TopologyConfig};
 
     fn sample_roster(n: u64) -> RelayRoster {
         let mut roster = RelayRoster::new();
@@ -231,7 +231,7 @@ mod tests {
     fn reputation_weighted_guard_excludes_sub_floor_relay() {
         let roster = sample_roster(12);
         let topo = build_topology(&roster, 1, &TopologyConfig::high_threat(), 0).unwrap();
-        let bad = RelayId::from_u64(1);
+        let bad = test_relay_id(1);
         let ledger = ledger_with_bad_relay(bad, 20);
         assert!(ledger.score(*bad.as_bytes()).0 < 0.3);
 
@@ -295,7 +295,7 @@ mod tests {
     fn pruned_guard_excludes_anomaly_demoted_relay() {
         let roster = sample_roster(12);
         let topo = build_topology(&roster, 1, &TopologyConfig::high_threat(), 0).unwrap();
-        let bad = RelayId::from_u64(1);
+        let bad = test_relay_id(1);
         let policy = demote_via_anomaly(bad);
 
         for seed in 0..100u64 {

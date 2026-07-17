@@ -294,7 +294,7 @@ mod tests {
 
     use super::*;
     use crate::layers::build_topology;
-    use crate::types::{test_relay_record, RelayId, TopologyConfig};
+    use crate::types::{test_relay_id, test_relay_record, RelayId, TopologyConfig};
 
     fn sample_roster(n: u64, jurisdictions: &[&str]) -> RelayRoster {
         let mut roster = RelayRoster::new();
@@ -317,7 +317,7 @@ mod tests {
     fn reputation_weighted_path_excludes_sub_floor_relay() {
         let roster = sample_roster(24, &["US", "DE", "FR", "UK", "JP", "CA"]);
         let topo = build_topology(&roster, 1, &TopologyConfig::high_threat(), 0).unwrap();
-        let bad = RelayId::from_u64(1);
+        let bad = test_relay_id(1);
         let ledger = ledger_with_bad_relay(bad, 20);
         assert!(ledger.score(*bad.as_bytes()).0 < 0.3);
 
@@ -356,7 +356,7 @@ mod tests {
     fn pruned_path_excludes_anomaly_demoted_relay() {
         let roster = sample_roster(24, &["US", "DE", "FR", "UK", "JP", "CA"]);
         let topo = build_topology(&roster, 1, &TopologyConfig::high_threat(), 0).unwrap();
-        let bad = RelayId::from_u64(1);
+        let bad = test_relay_id(1);
         let policy = demote_via_anomaly(bad);
 
         for _ in 0..200 {
@@ -380,7 +380,7 @@ mod tests {
     fn build_bound_path_pruned_excludes_demoted_and_returns_commitments() {
         let roster = sample_roster(24, &["US", "DE", "FR", "UK", "JP", "CA"]);
         let topo = build_topology(&roster, 1, &TopologyConfig::high_threat(), 0).unwrap();
-        let bad = RelayId::from_u64(1);
+        let bad = test_relay_id(1);
         let policy = demote_via_anomaly(bad);
 
         for _ in 0..200 {

@@ -21,7 +21,11 @@ use aegis_relay::{
     DEFAULT_COVER_TARGET_FLOW_COUNT,
 };
 use aegis_topology::{RelayRoster, RosterError, ThresholdConsortium};
-use aegis_trust::{RelayPruningPolicy, ReputationError, ReputationLedger};
+use aegis_trust::{
+    signing_key_from_hex_seed, verifying_key_from_hex, RelayPruningPolicy, ReputationError,
+    ReputationLedger,
+};
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand_core::{CryptoRngCore, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -42,6 +46,8 @@ pub enum ConfigError {
     IncompleteKem,
     #[error("roster: {0}")]
     Roster(#[from] RosterError),
+    #[error("reputation: {0}")]
+    Reputation(#[from] ReputationError),
 }
 
 /// Default KEM seed filename when `[kem] file` is omitted (beside the node config).
@@ -82,11 +88,35 @@ pub struct NodeConfigFile {
 }
 
 /// TOML `[reputation]` — EWMA ledger persistence for this relay process.
+///
+/// ## Optional operator attestation
+///
+/// In-memory `record_success` / `record_failure` stay unsigned. When keys are
+/// configured, snapshots on disk are Ed25519-signed over a canonical encoding of
+/// decay + scores (anti-repudiation of persisted state only; no cross-node consensus).
+///
+/// - `operator_signing_seed` — 64 hex chars; used to sign on save (also derives VK).
+/// - `operator_signing_key_file` — file containing 64 hex chars of seed (alternative).
+/// - `operator_verifying_key` — 64 hex chars; when set, load verifies signatures and
+///   rejects unsigned/tampered ledgers. If omitted but a signing seed is present,
+///   the derived verifying key is used for load verification.
+///
+/// With no signing/verifying material, behavior matches the legacy unsigned JSON path.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReputationConfig {
     /// JSON ledger file; loaded on startup when present, saved on drain/shutdown.
     #[serde(default)]
     pub ledger_path: Option<String>,
+    /// Optional hex Ed25519 seed (32 bytes) for signing ledger snapshots on save.
+    #[serde(default)]
+    pub operator_signing_seed: Option<String>,
+    /// Optional path to a file containing the hex signing seed (alternative to inline).
+    #[serde(default)]
+    pub operator_signing_key_file: Option<String>,
+    /// Optional hex Ed25519 verifying key; when set (or derived from signing seed),
+    /// ledger load requires a valid operator signature.
+    #[serde(default)]
+    pub operator_verifying_key: Option<String>,
 }
 
 const DEFAULT_REPUTATION_DECAY: f64 = 0.9;
@@ -94,12 +124,43 @@ const DEFAULT_ANOMALY_ALPHA: f64 = 0.2;
 const DEFAULT_ANOMALY_Z: f64 = 3.0;
 
 impl ReputationConfig {
+    /// Resolve optional operator signing / verifying keys from TOML fields.
+    pub fn resolve_operator_keys(&self) -> Result<(Option<SigningKey>, Option<VerifyingKey>), ReputationError> {
+        let signing = if let Some(ref hex) = self.operator_signing_seed {
+            Some(signing_key_from_hex_seed(hex)?)
+        } else if let Some(ref path_str) = self.operator_signing_key_file {
+            let text = fs::read_to_string(path_str)?;
+            Some(signing_key_from_hex_seed(text.trim())?)
+        } else {
+            None
+        };
+
+        let verifying = if let Some(ref hex) = self.operator_verifying_key {
+            Some(verifying_key_from_hex(hex)?)
+        } else {
+            signing.as_ref().map(|sk| sk.verifying_key())
+        };
+
+        Ok((signing, verifying))
+    }
+
     /// Build the relay pruning policy, optionally hydrating the ledger from disk.
     pub fn load_pruning_policy(&self) -> Result<RelayPruningPolicy, ReputationError> {
+        let (_signing, verifying) = self.resolve_operator_keys()?;
         if let Some(ref path_str) = self.ledger_path {
             let path = PathBuf::from(path_str);
             if path.exists() {
-                match ReputationLedger::load_from_file(&path, DEFAULT_REPUTATION_DECAY) {
+                let load_result = match verifying.as_ref() {
+                    Some(vk) => {
+                        ReputationLedger::load_from_file_verified(
+                            &path,
+                            DEFAULT_REPUTATION_DECAY,
+                            vk,
+                        )
+                    }
+                    None => ReputationLedger::load_from_file(&path, DEFAULT_REPUTATION_DECAY),
+                };
+                match load_result {
                     Ok(ledger) => {
                         eprintln!("loaded reputation ledger from {}", path.display());
                         return Ok(RelayPruningPolicy::with_ledger(
@@ -124,12 +185,26 @@ impl ReputationConfig {
     }
 
     /// Persist the shared ledger when `ledger_path` is configured.
+    ///
+    /// Signs the snapshot when `operator_signing_seed` or `operator_signing_key_file`
+    /// is set; otherwise writes unsigned JSON (legacy path).
     pub fn save_ledger(&self, policy: &RelayPruningPolicy) {
         let Some(ref path_str) = self.ledger_path else {
             return;
         };
         let path = PathBuf::from(path_str);
-        if let Err(e) = policy.ledger().save_to_file(&path) {
+        let signing = match self.resolve_operator_keys() {
+            Ok((sk, _)) => sk,
+            Err(e) => {
+                eprintln!("warning: reputation operator key resolve failed ({e})");
+                return;
+            }
+        };
+        let result = match signing.as_ref() {
+            Some(sk) => policy.ledger().save_to_file_signed(&path, sk),
+            None => policy.ledger().save_to_file(&path),
+        };
+        if let Err(e) = result {
             eprintln!("warning: reputation ledger save failed ({e})");
         }
     }
@@ -669,6 +744,31 @@ ledger_path = "data/reputation.json"
             file.reputation.ledger_path.as_deref(),
             Some("data/reputation.json")
         );
+        assert!(file.reputation.operator_signing_seed.is_none());
+        assert!(file.reputation.operator_verifying_key.is_none());
+    }
+
+    #[test]
+    fn reputation_config_parses_operator_keys() {
+        let seed = "aa".repeat(32);
+        let toml = format!(
+            r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[reputation]
+ledger_path = "data/reputation.json"
+operator_signing_seed = "{seed}"
+"#
+        );
+        let file: NodeConfigFile = toml::from_str(&toml).unwrap();
+        let (sk, vk) = file.reputation.resolve_operator_keys().unwrap();
+        assert!(sk.is_some());
+        assert!(vk.is_some());
+        assert_eq!(
+            sk.unwrap().verifying_key().to_bytes(),
+            vk.unwrap().to_bytes()
+        );
     }
 
     #[test]
@@ -682,6 +782,7 @@ ledger_path = "data/reputation.json"
 
         let cfg = ReputationConfig {
             ledger_path: Some(path.to_string_lossy().into()),
+            ..Default::default()
         };
         let mut policy = cfg.load_pruning_policy().unwrap();
         policy.ledger_mut().admit_new_relay([7u8; 32]);
@@ -692,6 +793,50 @@ ledger_path = "data/reputation.json"
 
         let reloaded = cfg.load_pruning_policy().unwrap();
         assert!(reloaded.ledger().score([7u8; 32]).0 > 0.3);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn reputation_config_signed_roundtrip_and_rejects_tamper() {
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-node-rep-signed-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("ledger.json");
+        let seed = "bb".repeat(32);
+
+        let cfg = ReputationConfig {
+            ledger_path: Some(path.to_string_lossy().into()),
+            operator_signing_seed: Some(seed),
+            ..Default::default()
+        };
+        let mut policy = cfg.load_pruning_policy().unwrap();
+        policy.ledger_mut().admit_new_relay([9u8; 32]);
+        for _ in 0..15 {
+            policy.ledger_mut().record_success([9u8; 32]);
+        }
+        cfg.save_ledger(&policy);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("signature"));
+
+        let reloaded = cfg.load_pruning_policy().unwrap();
+        assert!(reloaded.ledger().score([9u8; 32]).0 > 0.3);
+
+        // Tamper scores while keeping the old signature → verified load fails, fresh policy.
+        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        if let Some(scores) = value.get_mut("scores").and_then(|s| s.as_object_mut()) {
+            for (_k, v) in scores.iter_mut() {
+                *v = serde_json::json!(0.01);
+            }
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+        let after_tamper = cfg.load_pruning_policy().unwrap();
+        // Fresh ledger: unseen relay is NEUTRAL 0.5, not the tampered 0.01 and not the prior score.
+        assert!((after_tamper.ledger().score([9u8; 32]).0 - 0.5).abs() < 1e-9);
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);

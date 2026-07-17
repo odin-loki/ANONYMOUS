@@ -3,15 +3,33 @@
 //! This module implements the actual score bookkeeping — real, deterministic,
 //! fully tested. It is deliberately NOT zero-knowledge; see [`crate::zk`] for
 //! where privacy would be layered on top in a future pass.
+//!
+//! ## Persistence and operator attestation
+//!
+//! In-memory [`ReputationLedger::record_success`] / [`ReputationLedger::record_failure`]
+//! stay unsigned (local process bookkeeping). Anti-repudiation applies at the
+//! **persistence boundary**: optional Ed25519 signatures over a canonical encoding
+//! of `(decay, scores)`.
+//!
+//! - **Unsigned path (default):** [`save_to_file`] / [`load_from_file`] with no
+//!   verifying key — same JSON as before (`signature` / `signer_pubkey` omitted).
+//! - **Signed path:** [`save_to_file_signed`] attaches an operator signature;
+//!   [`load_from_file_verified`] rejects missing, malformed, or tampered signatures
+//!   when a verifying key is configured.
+//!
+//! There is no cross-node consensus; each operator attests only their own snapshot.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const LEDGER_FILE_VERSION: u32 = 1;
+/// Domain separator for ledger snapshot signatures.
+const LEDGER_SIG_DOMAIN: &[u8] = b"AEGIS-REPUTATION-LEDGER-v1";
 
 #[derive(Debug, Error)]
 pub enum ReputationError {
@@ -32,6 +50,12 @@ pub enum ReputationError {
     },
     #[error("invalid relay id in ledger file: {0}")]
     InvalidRelayId(String),
+    #[error("ledger signature missing (verifying key configured)")]
+    MissingSignature,
+    #[error("ledger signature invalid or signer mismatch")]
+    InvalidSignature,
+    #[error("invalid operator key material: {0}")]
+    InvalidKey(&'static str),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -39,6 +63,13 @@ struct ReputationLedgerFile {
     version: u32,
     decay: f64,
     scores: HashMap<String, f64>,
+    /// Hex-encoded Ed25519 signature over [`canonical_ledger_bytes`].
+    /// Absent on the unsigned persistence path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
+    /// Hex-encoded Ed25519 verifying key that produced `signature`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    signer_pubkey: Option<String>,
 }
 
 /// A reputation score in `[0.0, 1.0]`; 1.0 = perfect observed behavior so far.
@@ -128,21 +159,53 @@ impl ReputationLedger {
         self.update(relay, outcome);
     }
 
-    /// Persist scores to JSON at `path` (single-node local store; no consensus).
+    /// Persist scores to unsigned JSON at `path` (single-node local store; no consensus).
+    ///
+    /// When no operator signing key is configured, this is the production default.
     pub fn save_to_file(&self, path: &Path) -> Result<(), ReputationError> {
+        self.write_file(path, None)
+    }
+
+    /// Persist scores with an Ed25519 operator attestation over the canonical snapshot.
+    pub fn save_to_file_signed(
+        &self,
+        path: &Path,
+        signing_key: &SigningKey,
+    ) -> Result<(), ReputationError> {
+        self.write_file(path, Some(signing_key))
+    }
+
+    fn write_file(
+        &self,
+        path: &Path,
+        signing_key: Option<&SigningKey>,
+    ) -> Result<(), ReputationError> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent)?;
             }
         }
+        let scores: HashMap<String, f64> = self
+            .scores
+            .iter()
+            .map(|(relay, score)| (hex_encode_relay(relay), *score))
+            .collect();
+        let (signature, signer_pubkey) = if let Some(sk) = signing_key {
+            let msg = canonical_ledger_bytes(LEDGER_FILE_VERSION, self.decay, &scores);
+            let sig = sk.sign(&msg);
+            (
+                Some(hex_encode_bytes(&sig.to_bytes())),
+                Some(hex_encode_bytes(&sk.verifying_key().to_bytes())),
+            )
+        } else {
+            (None, None)
+        };
         let file = ReputationLedgerFile {
             version: LEDGER_FILE_VERSION,
             decay: self.decay,
-            scores: self
-                .scores
-                .iter()
-                .map(|(relay, score)| (hex_encode_relay(relay), *score))
-                .collect(),
+            scores,
+            signature,
+            signer_pubkey,
         };
         let text = serde_json::to_string_pretty(&file)?;
         fs::write(path, text)?;
@@ -150,7 +213,29 @@ impl ReputationLedger {
     }
 
     /// Load a ledger from JSON; rejects files whose `decay` differs from `expected_decay`.
+    ///
+    /// Does **not** verify a signature even if present. Use
+    /// [`Self::load_from_file_verified`] when an operator verifying key is configured.
     pub fn load_from_file(path: &Path, expected_decay: f64) -> Result<Self, ReputationError> {
+        Self::load_from_file_with_verify(path, expected_decay, None)
+    }
+
+    /// Load a ledger and verify the operator Ed25519 signature against `verifying_key`.
+    ///
+    /// Rejects missing signatures, wrong signer pubkeys, and tampered score/decay data.
+    pub fn load_from_file_verified(
+        path: &Path,
+        expected_decay: f64,
+        verifying_key: &VerifyingKey,
+    ) -> Result<Self, ReputationError> {
+        Self::load_from_file_with_verify(path, expected_decay, Some(verifying_key))
+    }
+
+    fn load_from_file_with_verify(
+        path: &Path,
+        expected_decay: f64,
+        verifying_key: Option<&VerifyingKey>,
+    ) -> Result<Self, ReputationError> {
         let text = fs::read_to_string(path)?;
         let file: ReputationLedgerFile = serde_json::from_str(&text)?;
         if file.version != LEDGER_FILE_VERSION {
@@ -161,6 +246,9 @@ impl ReputationLedger {
                 file_decay: file.decay,
                 expected_decay,
             });
+        }
+        if let Some(vk) = verifying_key {
+            verify_ledger_file(&file, vk)?;
         }
         let mut scores = HashMap::with_capacity(file.scores.len());
         for (hex, score) in file.scores {
@@ -184,19 +272,110 @@ impl ReputationLedger {
     }
 }
 
+/// Canonical bytes signed by the operator: domain || version LE || decay bits LE ||
+/// sorted `(relay_id_bytes || score_bits LE)` entries.
+fn canonical_ledger_bytes(version: u32, decay: f64, scores: &HashMap<String, f64>) -> Vec<u8> {
+    let mut pairs: Vec<(String, f64)> = scores.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut out = Vec::with_capacity(
+        LEDGER_SIG_DOMAIN.len() + 4 + 8 + pairs.len().saturating_mul(32 + 8),
+    );
+    out.extend_from_slice(LEDGER_SIG_DOMAIN);
+    out.extend_from_slice(&version.to_le_bytes());
+    out.extend_from_slice(&decay.to_bits().to_le_bytes());
+    for (hex, score) in pairs {
+        // Best-effort: skip malformed keys in canonicalization only when building
+        // from already-validated file content; callers always pass hex relay ids.
+        if let Ok(relay) = parse_hex_relay(&hex) {
+            out.extend_from_slice(&relay);
+            out.extend_from_slice(&score.to_bits().to_le_bytes());
+        }
+    }
+    out
+}
+
+fn verify_ledger_file(
+    file: &ReputationLedgerFile,
+    verifying_key: &VerifyingKey,
+) -> Result<(), ReputationError> {
+    let sig_hex = file
+        .signature
+        .as_deref()
+        .ok_or(ReputationError::MissingSignature)?;
+    let pk_hex = file
+        .signer_pubkey
+        .as_deref()
+        .ok_or(ReputationError::MissingSignature)?;
+    let pk_bytes = parse_hex32(pk_hex).map_err(|_| ReputationError::InvalidSignature)?;
+    if pk_bytes != verifying_key.to_bytes() {
+        return Err(ReputationError::InvalidSignature);
+    }
+    let sig_bytes = parse_hex64(sig_hex).map_err(|_| ReputationError::InvalidSignature)?;
+    let sig = Signature::from_bytes(&sig_bytes);
+    let msg = canonical_ledger_bytes(file.version, file.decay, &file.scores);
+    verifying_key
+        .verify(&msg, &sig)
+        .map_err(|_| ReputationError::InvalidSignature)
+}
+
+/// Build an Ed25519 signing key from a 32-byte seed.
+pub fn signing_key_from_seed(seed: &[u8; 32]) -> SigningKey {
+    SigningKey::from_bytes(seed)
+}
+
+/// Parse a 32-byte hex verifying key.
+pub fn verifying_key_from_hex(hex: &str) -> Result<VerifyingKey, ReputationError> {
+    let bytes = parse_hex32(hex)?;
+    VerifyingKey::from_bytes(&bytes).map_err(|_| ReputationError::InvalidKey("verifying key"))
+}
+
+/// Parse a 32-byte hex seed into a signing key.
+pub fn signing_key_from_hex_seed(hex: &str) -> Result<SigningKey, ReputationError> {
+    let seed = parse_hex32(hex)?;
+    Ok(SigningKey::from_bytes(&seed))
+}
+
 fn hex_encode_relay(relay: &[u8; 32]) -> String {
-    relay.iter().map(|b| format!("{b:02x}")).collect()
+    hex_encode_bytes(relay)
+}
+
+fn hex_encode_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn parse_hex_relay(s: &str) -> Result<[u8; 32], ReputationError> {
+    parse_hex32(s).map_err(|e| match e {
+        ReputationError::InvalidKey(_) => ReputationError::InvalidRelayId(s.to_string()),
+        other => other,
+    })
+}
+
+fn parse_hex32(s: &str) -> Result<[u8; 32], ReputationError> {
     let s = s.trim().trim_start_matches("0x");
     if s.len() != 64 {
-        return Err(ReputationError::InvalidRelayId(s.to_string()));
+        return Err(ReputationError::InvalidKey("expected 64 hex chars"));
     }
     let mut out = [0u8; 32];
     for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
         if chunk.len() != 2 {
-            return Err(ReputationError::InvalidRelayId(s.to_string()));
+            return Err(ReputationError::InvalidKey("odd hex length"));
+        }
+        let hi = hex_nibble(chunk[0])?;
+        let lo = hex_nibble(chunk[1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Ok(out)
+}
+
+fn parse_hex64(s: &str) -> Result<[u8; 64], ReputationError> {
+    let s = s.trim().trim_start_matches("0x");
+    if s.len() != 128 {
+        return Err(ReputationError::InvalidKey("expected 128 hex chars"));
+    }
+    let mut out = [0u8; 64];
+    for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
+        if chunk.len() != 2 {
+            return Err(ReputationError::InvalidKey("odd hex length"));
         }
         let hi = hex_nibble(chunk[0])?;
         let lo = hex_nibble(chunk[1])?;
@@ -210,7 +389,7 @@ fn hex_nibble(b: u8) -> Result<u8, ReputationError> {
         b'0'..=b'9' => Ok(b - b'0'),
         b'a'..=b'f' => Ok(b - b'a' + 10),
         b'A'..=b'F' => Ok(b - b'A' + 10),
-        _ => Err(ReputationError::InvalidRelayId(format!("invalid hex digit {b}"))),
+        _ => Err(ReputationError::InvalidKey("invalid hex digit")),
     }
 }
 
@@ -222,6 +401,15 @@ mod tests {
         let mut id = [0u8; 32];
         id[0] = n;
         id
+    }
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-trust-ledger-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
     }
 
     #[test]
@@ -325,11 +513,7 @@ mod tests {
             ledger.record_success(relay(1));
             ledger.record_failure(relay(2));
         }
-        let dir = std::env::temp_dir().join(format!(
-            "aegis-trust-ledger-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = temp_dir("roundtrip");
         let path = dir.join("ledger.json");
         ledger.save_to_file(&path).unwrap();
         let loaded = ReputationLedger::load_from_file(&path, 0.9).unwrap();
@@ -342,16 +526,14 @@ mod tests {
 
     #[test]
     fn load_rejects_decay_mismatch() {
-        let dir = std::env::temp_dir().join(format!(
-            "aegis-trust-ledger-mismatch-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = temp_dir("mismatch");
         let path = dir.join("ledger.json");
         let file = ReputationLedgerFile {
             version: LEDGER_FILE_VERSION,
             decay: 0.8,
             scores: HashMap::new(),
+            signature: None,
+            signer_pubkey: None,
         };
         std::fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
         let err = ReputationLedger::load_from_file(&path, 0.9).unwrap_err();
@@ -362,6 +544,99 @@ mod tests {
                 expected_decay,
             } if (file_decay - 0.8).abs() < f64::EPSILON && (expected_decay - 0.9).abs() < f64::EPSILON
         ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn signed_save_and_verified_load_roundtrip() {
+        let seed = [0x42u8; 32];
+        let sk = signing_key_from_seed(&seed);
+        let vk = sk.verifying_key();
+
+        let mut ledger = ReputationLedger::new(0.9).unwrap();
+        ledger.admit_new_relay(relay(1));
+        ledger.record_success(relay(1));
+        ledger.record_failure(relay(2));
+
+        let dir = temp_dir("signed");
+        let path = dir.join("ledger.json");
+        ledger.save_to_file_signed(&path, &sk).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("signature"));
+        assert!(text.contains("signer_pubkey"));
+
+        let loaded = ReputationLedger::load_from_file_verified(&path, 0.9, &vk).unwrap();
+        assert_eq!(loaded.score(relay(1)).0, ledger.score(relay(1)).0);
+        assert_eq!(loaded.score(relay(2)).0, ledger.score(relay(2)).0);
+
+        // Unsigned load still works for signed files.
+        let unsigned = ReputationLedger::load_from_file(&path, 0.9).unwrap();
+        assert_eq!(unsigned.score(relay(1)).0, ledger.score(relay(1)).0);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn verified_load_rejects_tampered_scores() {
+        let seed = [0x11u8; 32];
+        let sk = signing_key_from_seed(&seed);
+        let vk = sk.verifying_key();
+
+        let mut ledger = ReputationLedger::new(0.9).unwrap();
+        ledger.record_success(relay(1));
+
+        let dir = temp_dir("tamper");
+        let path = dir.join("ledger.json");
+        ledger.save_to_file_signed(&path, &sk).unwrap();
+
+        let mut file: ReputationLedgerFile =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let key = hex_encode_relay(&relay(1));
+        *file.scores.get_mut(&key).unwrap() = 0.99;
+        std::fs::write(&path, serde_json::to_string_pretty(&file).unwrap()).unwrap();
+
+        let err = ReputationLedger::load_from_file_verified(&path, 0.9, &vk).unwrap_err();
+        assert!(matches!(err, ReputationError::InvalidSignature));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn verified_load_rejects_unsigned_file() {
+        let seed = [0x22u8; 32];
+        let vk = signing_key_from_seed(&seed).verifying_key();
+
+        let ledger = ReputationLedger::new(0.9).unwrap();
+        let dir = temp_dir("unsigned-reject");
+        let path = dir.join("ledger.json");
+        ledger.save_to_file(&path).unwrap();
+
+        let err = ReputationLedger::load_from_file_verified(&path, 0.9, &vk).unwrap_err();
+        assert!(matches!(err, ReputationError::MissingSignature));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn verified_load_rejects_wrong_operator_key() {
+        let sk = signing_key_from_seed(&[0x33u8; 32]);
+        let other_vk = signing_key_from_seed(&[0x44u8; 32]).verifying_key();
+
+        let mut ledger = ReputationLedger::new(0.9).unwrap();
+        ledger.record_failure(relay(9));
+
+        let dir = temp_dir("wrong-key");
+        let path = dir.join("ledger.json");
+        ledger.save_to_file_signed(&path, &sk).unwrap();
+
+        let err = ReputationLedger::load_from_file_verified(&path, 0.9, &other_vk).unwrap_err();
+        assert!(matches!(err, ReputationError::InvalidSignature));
+
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
     }

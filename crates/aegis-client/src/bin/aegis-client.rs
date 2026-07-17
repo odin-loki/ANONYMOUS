@@ -179,6 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut rng = OsRng;
     if cli.raw {
+        #[allow(deprecated)]
         let packet =
             aegis_client::send::send_payload_with_options(&hops, &link, &payload, &mut rng, packet_options)
                 .await?;

@@ -242,15 +242,20 @@ fn canonical_record_bytes(record: &RelayRecord) -> Vec<u8> {
     bytes
 }
 
-/// Rate limit for signed relay admissions on this roster instance.
+/// Rate limit and binding policy for signed relay admissions on this roster instance.
 ///
 /// Timestamps are roster-local bookkeeping (not part of the signed wire format).
 /// Default: 5 new admissions per 24 hours — slows Sybil flooding from compromised
 /// consortium keys while allowing normal consortium churn.
+///
+/// When [`Self::require_kem_derived_id`] is true (default), signed admission requires
+/// `record.id == RelayId::from_kem_commitment(record.kem_public_commitment)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RosterAdmissionPolicy {
     pub max_admissions_per_window: usize,
     pub window: Duration,
+    /// Reject signed admissions whose `RelayId` is not commitment-derived (default true).
+    pub require_kem_derived_id: bool,
 }
 
 impl Default for RosterAdmissionPolicy {
@@ -258,16 +263,19 @@ impl Default for RosterAdmissionPolicy {
         Self {
             max_admissions_per_window: 5,
             window: Duration::from_secs(24 * 60 * 60),
+            require_kem_derived_id: true,
         }
     }
 }
 
 impl RosterAdmissionPolicy {
-    /// No practical limit — for tests that admit large honest pools in one batch.
+    /// No practical rate limit — for tests that admit large honest pools in one batch.
+    /// Still requires KEM-derived ids (use [`crate::types::test_relay_record`]).
     pub fn permissive_for_tests() -> Self {
         Self {
             max_admissions_per_window: usize::MAX,
             window: Duration::from_secs(1),
+            require_kem_derived_id: true,
         }
     }
 }
@@ -348,6 +356,16 @@ impl RelayRoster {
         &self.admission_policy
     }
 
+    /// Replace the admission rate-limit / binding policy (does not clear admitted relays).
+    pub fn set_admission_policy(&mut self, policy: RosterAdmissionPolicy) {
+        self.admission_policy = policy;
+    }
+
+    /// Clear local admission timestamps used for rate limiting (not signed / not persisted).
+    pub fn reset_admission_rate_limit(&mut self) {
+        self.admission_timestamps.clear();
+    }
+
     fn check_admission_rate_limit(&self, now_secs: u64) -> Result<(), RosterError> {
         let max = self.admission_policy.max_admissions_per_window;
         let window_secs = self.admission_policy.window.as_secs();
@@ -410,6 +428,12 @@ impl RelayRoster {
         ledger: &mut ReputationLedger,
     ) -> Result<(), RosterError> {
         let id = signed.record.id;
+        if self.admission_policy.require_kem_derived_id
+            && !signed.record.id_matches_kem_commitment()
+        {
+            return Err(RosterError::RelayIdCommitmentMismatch { relay: id });
+        }
+
         let is_new = !self.relays.contains_key(&id);
 
         if is_new {
@@ -694,7 +718,10 @@ impl RelayRoster {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{test_relay_record, test_kem_public_for_id, JurisdictionId, KemPublicCommitment, RelayId};
+    use crate::types::{
+        test_kem_public_for_id, test_relay_id, test_relay_record, JurisdictionId,
+        KemPublicCommitment, RelayId, RelayRecord,
+    };
     use aegis_trust::policy::{RelayPruningPolicy, DEFAULT_PATH_REPUTATION_FLOOR};
     use rand::rngs::OsRng;
 
@@ -828,6 +855,29 @@ mod tests {
     }
 
     #[test]
+    fn signed_admit_rejects_id_not_derived_from_commitment() {
+        let mut rng = OsRng;
+        let authority = ConsortiumKey::generate(&mut rng);
+        let pk = authority.verifying_key();
+        let kem = test_kem_public_for_id(11);
+        let record = RelayRecord::new(
+            RelayId::from_u64(11),
+            JurisdictionId::new("US"),
+            &kem,
+        );
+        assert!(!record.id_matches_kem_commitment());
+        let signed = authority.sign_record(&record);
+
+        let mut roster = RelayRoster::new();
+        let mut ledger = test_ledger();
+        let err = roster.admit_signed(signed, &pk, &mut ledger).unwrap_err();
+        assert!(matches!(
+            err,
+            RosterError::RelayIdCommitmentMismatch { .. }
+        ));
+    }
+
+    #[test]
     fn tampered_kem_commitment_fails_verification() {
         let mut rng = OsRng;
         let authority = ConsortiumKey::generate(&mut rng);
@@ -904,7 +954,7 @@ mod tests {
 
         assert_eq!(loaded, roster);
         for id in [1, 2, 3] {
-            let relay_id = RelayId::from_u64(id);
+            let relay_id = test_relay_id(id);
             let signed = loaded.get_threshold_signed(relay_id).expect("signed entry");
             signed.verify_threshold(&consortium).expect("reloaded signature still valid");
         }
@@ -953,6 +1003,7 @@ mod tests {
         let policy = RosterAdmissionPolicy {
             max_admissions_per_window: 5,
             window: Duration::from_secs(3600),
+            require_kem_derived_id: true,
         };
         let mut roster = RelayRoster::with_admission_policy(policy);
         let mut ledger = test_ledger();
@@ -980,6 +1031,7 @@ mod tests {
         let policy = RosterAdmissionPolicy {
             max_admissions_per_window: 2,
             window: Duration::from_secs(3600),
+            require_kem_derived_id: true,
         };
         let mut roster = RelayRoster::with_admission_policy(policy);
         let mut ledger = test_ledger();
@@ -1011,6 +1063,7 @@ mod tests {
         let policy = RosterAdmissionPolicy {
             max_admissions_per_window: 1,
             window: Duration::from_secs(3600),
+            require_kem_derived_id: true,
         };
         let mut roster = RelayRoster::with_admission_policy(policy);
         let mut ledger = test_ledger();

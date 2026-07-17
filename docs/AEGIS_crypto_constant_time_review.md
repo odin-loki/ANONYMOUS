@@ -84,9 +84,14 @@ in `kem.rs`, `sphinx.rs`, `link.rs`.
 
 **Verdict:** No constant-time defects found. No fixes required.
 
-### Out-of-scope note (`replay.rs`)
+### Out-of-scope note (`replay.rs`) — **addressed (2026-07-17)**
 
-`ReplayCache::check_and_insert` uses `HashSet::contains(&tag)` (line 65) — **not** constant-time. Replay tags are derived secrets; a motivated local attacker might learn cache membership timing. Mitigation is epoch rotation + sizing; a constant-time set would be future hardening, not addressed in this pass.
+~~`ReplayCache::check_and_insert` uses `HashSet::contains(&tag)` (line 65) — **not** constant-time.~~
+
+**Update:** membership now uses a fixed-length scan over the FIFO window with
+`subtle::ConstantTimeEq` (see `replay.rs` module docs). `HashSet` is retained
+for insert/eviction/generation-drop bookkeeping only. **Residual:** O(capacity)
+CPU per check; final branch on aggregated `Choice`; no `dudect` proof yet.
 
 ### Statistical timing smoke test
 
@@ -181,6 +186,6 @@ Phase-2 gate vectors (`tests/vectors.rs`) remain green after all changes.
 
 1. Linux CI job: `cargo +nightly fuzz run` × 4 targets, 60 s each, with corpus check-in.
 2. `dudect` / `ctgrind` MAC-verification and AEAD-open timing proofs.
-3. Constant-time replay-cache membership (or HMAC-blinded lookup).
+3. ~~Constant-time replay-cache membership (or HMAC-blinded lookup).~~ **Done (2026-07-17):** fixed-capacity CT scan in `ReplayCache::ct_contains`. Residual: O(capacity) cost; `dudect` proof.
 4. Workspace `cargo deny` policy (`deny.toml`).
 5. Optional: seed libFuzzer corpora from passing `proptest` inputs for cross-platform fuzz continuity.

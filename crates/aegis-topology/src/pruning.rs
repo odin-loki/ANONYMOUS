@@ -47,7 +47,7 @@ mod tests {
     use crate::guards::{GuardConfig, GuardSelector};
     use crate::layers::build_topology;
     use crate::path::select_path_reputation_weighted_pruned;
-    use crate::types::{test_relay_record, RelayId, TopologyConfig};
+    use crate::types::{test_relay_id, test_relay_record, RelayId, TopologyConfig};
 
     fn sample_roster(n: u64) -> crate::roster::RelayRoster {
         let mut roster = crate::roster::RelayRoster::new();
@@ -76,7 +76,7 @@ mod tests {
     fn pruned_selection_excludes_anomaly_demoted_relay_end_to_end() {
         let roster = sample_roster(24);
         let topo = build_topology(&roster, 0, &TopologyConfig::high_threat(), 0).unwrap();
-        let target = RelayId::from_u64(1);
+        let target = test_relay_id(1);
 
         let mut policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
         for _ in 0..100 {

@@ -4,6 +4,8 @@
 //! `tcp_testnet.rs`, but drives a bursty multi-packet emission schedule and
 //! writes wall-clock send events to `sim/data/real_testnet_trace.csv`.
 
+#![allow(deprecated)] // intentional raw send_payload for adversarial trace capture
+
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;

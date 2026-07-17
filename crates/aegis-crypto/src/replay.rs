@@ -6,10 +6,10 @@
 //!
 //! ## Capacity and eviction
 //!
-//! The cache is bounded (default [`DEFAULT_REPLAY_CACHE_CAPACITY`]) using a
-//! [`HashSet`] for O(1) membership plus a [`VecDeque`] for FIFO eviction when
-//! full. This is a **DoS backstop** against unbounded memory growth under flood
-//! traffic; it is **not** the primary replay boundary.
+//! The cache is bounded (default [`DEFAULT_REPLAY_CACHE_CAPACITY`]) with a
+//! [`VecDeque`] FIFO window (CT membership scan) plus a [`HashSet`] for O(1)
+//! insert/eviction bookkeeping. This is a **DoS backstop** against unbounded
+//! memory growth under flood traffic; it is **not** the primary replay boundary.
 //!
 //! ### Generation batches (load hardening)
 //!
@@ -29,10 +29,25 @@
 //! per-epoch packet volume and epoch length (hours in the AEGIS design), eviction
 //! never occurs in practice; the cap only bounds worst-case memory.
 //!
-//! **Residual:** `HashSet::contains` is not constant-time; membership timing may
-//! still leak cache state (see `docs/AEGIS_crypto_constant_time_review.md`).
+//! ### Constant-time membership
+//!
+//! Duplicate detection scans exactly [`Self::capacity`] slots on every
+//! [`ReplayCache::check_and_insert`] call, comparing the probe tag to each
+//! active FIFO entry with [`subtle::ConstantTimeEq`] and OR-ing the results.
+//! Inactive pad slots are masked out so hit/miss and probe position do not
+//! short-circuit the loop.
+//!
+//! **Complexity:** O(capacity) per check — ~32×capacity byte comparisons. At the
+//! default 1M capacity this is a deliberate CPU/memory trade-off for timing
+//! resistance on 32-byte mixnet tags. [`HashSet`] remains for O(1) insert,
+//! eviction, and generation-drop bookkeeping only (not used on the check path).
+//!
+//! **Residual:** branch on the aggregated `Choice` after the scan; rigorous
+//! proof needs `dudect` / isolated CPU (see crypto constant-time review).
 
 use std::collections::{HashMap, HashSet, VecDeque};
+
+use subtle::{Choice, ConstantTimeEq};
 
 /// A 32-byte per-packet replay tag (derived from the shared secret in Phase 2).
 pub type ReplayTag = [u8; 32];
@@ -55,6 +70,9 @@ pub const DEFAULT_MAX_GENERATIONS: usize = 4;
 /// Minimum capacity before proactive fill-ratio auto-advance runs (small test
 /// caches keep legacy FIFO-only behavior).
 const MIN_CAPACITY_FOR_PRESSURE_ADVANCE: usize = 1024;
+
+/// Pad tag for inactive scan slots (masked out; never counts as a hit).
+const CT_SCAN_DUMMY: ReplayTag = [0u8; 32];
 
 pub struct ReplayCache {
     seen: HashSet<ReplayTag>,
@@ -101,7 +119,7 @@ impl ReplayCache {
     /// Auto-advances the oldest generation when fill exceeds
     /// [`DEFAULT_AUTO_ADVANCE_FILL_RATIO`] before accepting a new tag.
     pub fn check_and_insert(&mut self, tag: ReplayTag) -> bool {
-        if self.seen.contains(&tag) {
+        if self.ct_contains(&tag) {
             return false;
         }
 
@@ -171,6 +189,24 @@ impl ReplayCache {
         self.generation
     }
 
+    /// Constant-time membership over the active FIFO window.
+    ///
+    /// Always iterates [`Self::capacity`] slots so elapsed time does not depend
+    /// on hit/miss, match index, or current fill level beyond the fixed bound.
+    fn ct_contains(&self, tag: &ReplayTag) -> bool {
+        let mut found = Choice::from(0u8);
+        for i in 0..self.capacity {
+            let active = Choice::from((i < self.order.len()) as u8);
+            let candidate = if i < self.order.len() {
+                &self.order[i].1
+            } else {
+                &CT_SCAN_DUMMY
+            };
+            found |= tag.ct_eq(candidate) & active;
+        }
+        bool::from(found)
+    }
+
     fn insert_tag(&mut self, tag: ReplayTag) {
         if self.active_generations.is_empty() {
             self.active_generations.push_back(self.generation);
@@ -237,6 +273,18 @@ mod tests {
         for i in 0..cap {
             assert!(!cache.check_and_insert(tag(i as u8)));
         }
+    }
+
+    #[test]
+    fn duplicate_is_rejected() {
+        let mut cache = ReplayCache::with_capacity(16);
+        let t = tag(42);
+        assert!(cache.check_and_insert(t), "first insert must succeed");
+        assert!(
+            !cache.check_and_insert(t),
+            "exact duplicate must be rejected"
+        );
+        assert_eq!(cache.len(), 1, "cache must not grow on rejected duplicate");
     }
 
     #[test]

@@ -33,10 +33,11 @@ pub use padding::{
 };
 pub use send::{
     build_packet, build_packet_require_bindings, build_packet_with_options, hops_from_bound_path,
-    hops_from_keys, hops_from_keys_with_commitments, hops_from_records, send_payload,
-    send_payload_paced, send_payload_paced_default, BuildPacketOptions, ClientHop, ClientLink,
-    SendError,
+    hops_from_keys, hops_from_keys_with_commitments, hops_from_records, send_payload_paced,
+    send_payload_paced_default, BuildPacketOptions, ClientHop, ClientLink, SendError,
 };
+#[allow(deprecated)]
+pub use send::{send_payload, send_payload_with_options};
 pub use roster_load::{load_roster_from_config, RosterFileConfig, RosterLoadError};
 pub use session::{PacedSession, PacedSessionConfig};
 pub use tcp_transport::TcpCellTransport;

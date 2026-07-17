@@ -74,6 +74,12 @@ pub enum RosterError {
     AnomalyBlockedAdmission { relay: RelayId },
 
     #[error(
+        "relay id does not match KEM-derived id for commitment \
+         (expected RelayId::from_kem_commitment)"
+    )]
+    RelayIdCommitmentMismatch { relay: RelayId },
+
+    #[error(
         "roster load requires consortium authority keys for signature re-verify, \
          or allow_unverified_roster=true (lab/test only)"
     )]

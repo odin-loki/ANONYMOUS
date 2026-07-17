@@ -156,16 +156,29 @@ pub fn build_packet_with_options<R: RngCore + CryptoRngCore>(
 }
 
 /// Build, fragment, seal, and burst-send a Sphinx packet (unpaced legacy path).
+///
+/// Prefer [`crate::session::PacedSession`] / [`send_payload_paced`] for Mode-1 shaping.
+/// This API remains for adversarial trace capture and CLI `--raw` only.
+#[deprecated(
+    note = "use PacedSession for Mode-1 shaping; send_payload is for traces/--raw only"
+)]
 pub async fn send_payload<R: RngCore + CryptoRngCore>(
     hops: &[ClientHop],
     link: &ClientLink,
     payload: &[u8],
     rng: &mut R,
 ) -> Result<SphinxPacket, SendError> {
+    #[allow(deprecated)]
     send_payload_with_options(hops, link, payload, rng, BuildPacketOptions::default()).await
 }
 
 /// Like [`send_payload`] with explicit roster binding policy.
+///
+/// Prefer [`crate::session::PacedSession`] for production egress; raw burst is
+/// for traces / CLI `--raw` only.
+#[deprecated(
+    note = "use PacedSession for Mode-1 shaping; send_payload is for traces/--raw only"
+)]
 pub async fn send_payload_with_options<R: RngCore + CryptoRngCore>(
     hops: &[ClientHop],
     link: &ClientLink,

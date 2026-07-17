@@ -83,19 +83,17 @@ Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing 
    `-- --ignored`) reproduces the Phase-8 benign and malicious real trace captures.
 
    **Security profiling status (2026-07-17): done** for actionable call-site gaps.
-   Mitigations include paced session + ρ≤0.7 enforcement, M-of-N + KEM binding,
-   link FS + roster-id (+ optional KEM) handshake binding, required L2 bulk cover,
-   peer-health→pruning + EWMA ledger updates, optional `[reputation] ledger_path`,
-   anomaly-gated `admit_*_pruned`, fenced unsigned `admit`, verified roster load,
-   external KEM seed file (plaintext TOML opt-in), exit sink + multi-process last-hop
-   `[exit]`, inbound peer-health keying, post-shaping traces, bound pruned paths,
-   CI fuzz/deny.
+   Mitigations include paced session + ρ≤0.7, M-of-N + KEM-derived `RelayId`,
+   CT replay membership scan, signed reputation ledger snapshots, link FS +
+   roster-id/KEM handshake binding, required L2 bulk cover, peer-health→EWMA,
+   anomaly-gated admission, verified roster load, external KEM seeds, exit sink,
+   post-shaping traces, deprecated raw `send_payload`, CI fuzz/deny.
 
    Accepted residuals (ops / research, not unfinished wiring): real TEE attestation;
    consortium key ceremony; full Noise / roster-key-derived link auth; OS keychain
-   KEM encryption; constant-time replay-cache lookup; cover-burst timing
-   indistinguishability; cross-relay health gossip / reputation consensus; ZK
-   anonymous reputation. See `docs/AEGIS_implementation_threat_model.md`.
+   KEM encryption; cover-burst timing indistinguishability; cross-relay health
+   gossip / reputation consensus; ZK anonymous reputation; adversarial clients
+   that ignore paced APIs. See `docs/AEGIS_implementation_threat_model.md`.
 
 ## Honest boundaries (do not oversell — see spec §8, §9)
 - Strong guarantees are for **internal** (client↔client) traffic. Clearnet exit is

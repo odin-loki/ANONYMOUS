@@ -41,8 +41,8 @@ pub use roster::{
     SignedRelayRecord, ThresholdConsortium, ThresholdSignedRelayRecord,
 };
 pub use types::{
-    test_kem_public_for_id, test_relay_record, JurisdictionId, KemPublicCommitment, RelayId,
-    RelayRecord, TopologyConfig,
+    test_kem_public_for_id, test_relay_id, test_relay_record, JurisdictionId, KemPublicCommitment,
+    RelayId, RelayRecord, TopologyConfig, RELAY_ID_DOMAIN,
 };
 
 #[cfg(test)]
@@ -167,7 +167,7 @@ mod tests {
         for i in 0..4 {
             roster.admit_for_tests(test_relay_record(i, "US"));
         }
-        let path: Vec<_> = (0..4).map(RelayId::from_u64).collect();
+        let path: Vec<_> = (0..4).map(test_relay_id).collect();
         let policy = JurisdictionPolicy::default();
 
         let ok = path_satisfies_jurisdiction(&path, &roster, &policy).unwrap();
@@ -181,7 +181,7 @@ mod tests {
         for (i, j) in jurisdictions.iter().enumerate() {
             roster.admit_for_tests(test_relay_record(i as u64, *j));
         }
-        let path: Vec<_> = (0..4).map(RelayId::from_u64).collect();
+        let path: Vec<_> = (0..4).map(test_relay_id).collect();
         let policy = JurisdictionPolicy::default();
 
         let ok = path_satisfies_jurisdiction(&path, &roster, &policy).unwrap();

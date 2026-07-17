@@ -109,7 +109,7 @@ mod tests {
     use aegis_trust::reputation::ReputationLedger;
 
     use super::*;
-    use crate::types::{test_relay_record, RelayId};
+    use crate::types::{test_relay_id, test_relay_record};
 
     fn sample_roster(n: u64) -> RelayRoster {
         let mut roster = RelayRoster::new();
@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn reputation_filtered_topology_excludes_sub_floor_relay() {
         let roster = sample_roster(12);
-        let bad = RelayId::from_u64(1);
+        let bad = test_relay_id(1);
         let mut ledger = ReputationLedger::new(0.5).unwrap();
         for _ in 0..20 {
             ledger.record_failure(*bad.as_bytes());

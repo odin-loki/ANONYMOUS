@@ -1,5 +1,7 @@
 //! TCP integration gate: multi-hop Sphinx delivery over real loopback sockets.
 
+#![allow(deprecated)] // intentional raw send_payload for unpaced integration gates
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -268,9 +270,17 @@ async fn tcp_testnet_exit_sink_file_receives_payload() {
         .await
         .expect("client send");
 
-    tokio::time::sleep(Duration::from_millis(800)).await;
-
-    let log = fs::read_to_string(&exit_path).expect("exit log");
+    let mut log = String::new();
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Ok(text) = fs::read_to_string(&exit_path) {
+            if !text.is_empty() {
+                log = text;
+                break;
+            }
+        }
+    }
+    assert!(!log.is_empty(), "exit log was not written within timeout");
     let expected_hex: String = PAYLOAD.iter().map(|b| format!("{b:02x}")).collect();
     assert!(
         log.contains(&expected_hex),
@@ -361,11 +371,16 @@ async fn tcp_path_build_matches_direct_peel() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(
-        testnet.relay_handle(PATH_LEN - 1).debug_stats().forwarded_count >= 1
-            || testnet.relay_handle(0).debug_stats().forwarded_count >= 1,
-        "packet should traverse TCP links"
-    );
+    let mut traversed = false;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if testnet.relay_handle(PATH_LEN - 1).debug_stats().forwarded_count >= 1
+            || testnet.relay_handle(0).debug_stats().forwarded_count >= 1
+        {
+            traversed = true;
+            break;
+        }
+    }
+    assert!(traversed, "packet should traverse TCP links");
     let _ = packet;
 }

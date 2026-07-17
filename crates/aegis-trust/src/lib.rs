@@ -31,7 +31,10 @@ pub mod zk;
 
 pub use anomaly::{AnomalyDetector, AnomalyVerdict};
 pub use policy::{feed_peer_metric, feed_peer_outcomes, RelayPruningPolicy, DEFAULT_PATH_REPUTATION_FLOOR};
-pub use reputation::{ReputationError, ReputationLedger, ReputationScore};
+pub use reputation::{
+    signing_key_from_hex_seed, signing_key_from_seed, verifying_key_from_hex, ReputationError,
+    ReputationLedger, ReputationScore,
+};
 pub use tee::{core_gates_hold_under, TeeAssumption};
 pub use zk::{
     BulletproofsProof, BulletproofsReputationProof, PlaintextReputationProof, ZkReputationProof,

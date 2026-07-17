@@ -2,7 +2,7 @@
 
 use aegis_client::send::{build_packet, ClientHop, SendError};
 use aegis_crypto::kem::RelayKemSecret;
-use aegis_topology::types::{KemPublicCommitment, RelayRecord, RelayId, JurisdictionId};
+use aegis_topology::types::{KemPublicCommitment, JurisdictionId, RelayRecord};
 use rand_core::OsRng;
 
 fn sample_hop(id_byte: u8) -> ClientHop {
@@ -17,11 +17,7 @@ fn sample_hop(id_byte: u8) -> ClientHop {
 fn build_packet_succeeds_with_matching_commitment() {
     let mut rng = OsRng;
     let (_sec, pk) = RelayKemSecret::generate(&mut rng);
-    let record = RelayRecord::new(
-        RelayId::from_u64(1),
-        JurisdictionId::new("US"),
-        &pk,
-    );
+    let record = RelayRecord::from_kem_public(JurisdictionId::new("US"), &pk);
     let hop0 = ClientHop::from_relay_record(&record, pk.clone(), None);
     let hop1 = sample_hop(2);
     let result = build_packet(&[hop0, hop1], b"bound-path", &mut rng);
@@ -33,11 +29,7 @@ fn build_packet_rejects_mismatched_commitment() {
     let mut rng = OsRng;
     let (_sec, pk) = RelayKemSecret::generate(&mut rng);
     let (_other_sec, other_pk) = RelayKemSecret::generate(&mut rng);
-    let record = RelayRecord::new(
-        RelayId::from_u64(1),
-        JurisdictionId::new("US"),
-        &other_pk,
-    );
+    let record = RelayRecord::from_kem_public(JurisdictionId::new("US"), &other_pk);
     let hop0 = ClientHop::from_relay_record(&record, pk, None);
     let hop1 = sample_hop(2);
     let err = build_packet(&[hop0, hop1], b"bad-bind", &mut rng).unwrap_err();
@@ -64,16 +56,8 @@ fn build_packet_require_bindings_accepts_roster_hops() {
     let mut rng = OsRng;
     let (_sec0, pk0) = RelayKemSecret::generate(&mut rng);
     let (_sec1, pk1) = RelayKemSecret::generate(&mut rng);
-    let record0 = RelayRecord::new(
-        RelayId::from_u64(1),
-        JurisdictionId::new("US"),
-        &pk0,
-    );
-    let record1 = RelayRecord::new(
-        RelayId::from_u64(2),
-        JurisdictionId::new("DE"),
-        &pk1,
-    );
+    let record0 = RelayRecord::from_kem_public(JurisdictionId::new("US"), &pk0);
+    let record1 = RelayRecord::from_kem_public(JurisdictionId::new("DE"), &pk1);
     let hop0 = ClientHop::from_relay_record(&record0, pk0, None);
     let hop1 = ClientHop::from_relay_record(&record1, pk1, None);
     assert!(
