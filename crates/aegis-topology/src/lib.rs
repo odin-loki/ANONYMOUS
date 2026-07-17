@@ -10,6 +10,7 @@
 //! See `docs/AEGIS_SPEC_v3_consolidated.md` §4.5, §4.6, §4.7, §7 and the Phase gates in §10.
 
 pub mod beacon;
+pub mod ceremony;
 pub mod error;
 pub mod guards;
 pub mod layers;
@@ -22,15 +23,18 @@ pub use beacon::{
     committee_for_round, round_at, Beacon, BeaconError, BeaconParticipant, HashChainBeacon,
     ThresholdBeacon, ThresholdBeaconCommittee,
 };
+pub use ceremony::{run_ceremony, CeremonyConfig, CeremonyOutput};
 pub use error::{RosterError, TopologyError};
-pub use guards::{guard_exposure_plateau, GuardConfig, GuardSelector};
+pub use guards::{
+    guard_exposure_plateau, GuardConfig, GuardPinMode, GuardSelector, GUARD_SET_SIZE,
+};
 pub use layers::{build_topology, build_topology_reputation_filtered, Topology};
 pub use path::{
-    build_bound_path_diverse_pruned, build_bound_path_pruned, path_compromise_probability,
-    path_satisfies_jurisdiction, path_satisfies_reputation, relay_records_for_path,
-    select_diverse_path, select_diverse_reputation_path, select_diverse_reputation_path_pruned,
-    select_path, select_path_reputation_weighted, select_path_reputation_weighted_pruned,
-    JurisdictionPolicy,
+    build_bound_path_diverse_pruned, build_bound_path_pruned, build_bound_path_pruned_with_guards,
+    path_compromise_probability, path_satisfies_jurisdiction, path_satisfies_reputation,
+    relay_records_for_path, select_diverse_path, select_diverse_reputation_path,
+    select_diverse_reputation_path_pruned, select_path, select_path_indexed,
+    select_path_reputation_weighted, select_path_reputation_weighted_pruned, JurisdictionPolicy,
 };
 pub use pruning::{
     path_satisfies_pruning_policy, relay_admission_satisfies_pruning_policy,
@@ -128,12 +132,31 @@ mod tests {
         let roster = sample_roster(24, &["US", "DE", "FR", "UK", "JP", "CA"]);
         let topo = build_topology(&roster, 5, &TopologyConfig::high_threat(), 0).unwrap();
         let guards = GuardSelector::new(&topo, &GuardConfig::default(), 123).unwrap();
-        let primary = guards.primary_guard();
+        assert_eq!(guards.guard_set().len(), GUARD_SET_SIZE as usize);
+        let (primary, backups) = guards.primary_and_backups();
+        assert_eq!(primary, guards.primary_guard());
+        assert_eq!(backups.len(), GUARD_SET_SIZE as usize - 1);
 
         for _ in 0..50 {
             let path = select_path(&topo, Some(&guards)).unwrap();
-            assert_eq!(path[0], primary, "layer 1 must be stable guard");
+            assert_eq!(path[0], primary, "sticky primary pins layer 1");
             assert_eq!(path.len(), 4);
+        }
+    }
+
+    #[test]
+    fn path_selection_rotate_cycles_guard_set() {
+        let roster = sample_roster(24, &["US", "DE", "FR", "UK", "JP", "CA"]);
+        let topo = build_topology(&roster, 5, &TopologyConfig::high_threat(), 0).unwrap();
+        let config = GuardConfig {
+            guard_count: GUARD_SET_SIZE,
+            pin_mode: GuardPinMode::Rotate,
+        };
+        let guards = GuardSelector::new(&topo, &config, 123).unwrap();
+        let set = guards.guard_set().to_vec();
+        for i in 0..9u64 {
+            let path = select_path_indexed(&topo, Some(&guards), i).unwrap();
+            assert_eq!(path[0], set[(i as usize) % set.len()]);
         }
     }
 

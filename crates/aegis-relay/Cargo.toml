@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["noise-link"]
+noise-link = ["aegis-crypto/noise-link"]
+
 [lints]
 workspace = true
 
@@ -11,6 +15,7 @@ workspace = true
 aegis-crypto = { path = "../aegis-crypto" }
 aegis-negotiator = { path = "../aegis-negotiator" }
 aegis-trust = { path = "../aegis-trust" }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 tokio.workspace = true
 thiserror.workspace = true
 rand_core = { workspace = true, features = ["getrandom"] }

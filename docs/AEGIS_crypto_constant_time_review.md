@@ -91,15 +91,20 @@ in `kem.rs`, `sphinx.rs`, `link.rs`.
 **Update:** membership now uses a fixed-length scan over the FIFO window with
 `subtle::ConstantTimeEq` (see `replay.rs` module docs). `HashSet` is retained
 for insert/eviction/generation-drop bookkeeping only. **Residual:** O(capacity)
-CPU per check; final branch on aggregated `Choice`; no `dudect` proof yet.
+CPU per check; final branch on aggregated `Choice`; full `dudect` still ops/WSL.
 
-### Statistical timing smoke test
+### Statistical timing smoke tests
 
-`tests/timing_smoke.rs` — 2 000 trials each of `verify_mac` on valid vs last-byte-flipped packet; asserts median latency ratio &lt; 3×.
+| Harness | Scope | Gate |
+|---------|-------|------|
+| `tests/timing_smoke.rs` | `verify_mac` good vs bad (2 000 trials) | median ratio &lt; 3× |
+| `tests/dudect_smoke.rs` | `ReplayCache::contains_ct` hit vs miss (3 000 trials) | median ratio &lt; 2.5×; rank `P(hit>miss)` ∈ `[0.20, 0.80]` |
 
-**Result:** Passed (coarse smoke only; **not** a rigorous side-channel proof).
+`contains_ct` is the public timing-harness entry point (same scan as production).
 
-**Future work:** `dudect` / `ctgrind` on Linux with CPU isolation and pinned frequency.
+**Result:** Coarse smokes only — **not** a rigorous side-channel proof.
+
+**Full `dudect`:** see [`docs/ops/constant_time_ci.md`](ops/constant_time_ci.md) (WSL commands, class split, CPU isolation notes).
 
 ---
 
@@ -185,7 +190,7 @@ Phase-2 gate vectors (`tests/vectors.rs`) remain green after all changes.
 ## 7. Future work
 
 1. Linux CI job: `cargo +nightly fuzz run` × 4 targets, 60 s each, with corpus check-in.
-2. `dudect` / `ctgrind` MAC-verification and AEAD-open timing proofs.
-3. ~~Constant-time replay-cache membership (or HMAC-blinded lookup).~~ **Done (2026-07-17):** fixed-capacity CT scan in `ReplayCache::ct_contains`. Residual: O(capacity) cost; `dudect` proof.
+2. `dudect` / `ctgrind` MAC-verification and AEAD-open timing proofs (WSL/Linux — [`docs/ops/constant_time_ci.md`](ops/constant_time_ci.md)).
+3. ~~Constant-time replay-cache membership (or HMAC-blinded lookup).~~ **Done (2026-07-17):** fixed-capacity CT scan in `ReplayCache::ct_contains` / `contains_ct`. Residual: O(capacity) cost; in-tree hit/miss smoke; full `dudect` still WSL/ops.
 4. Workspace `cargo deny` policy (`deny.toml`).
 5. Optional: seed libFuzzer corpora from passing `proptest` inputs for cross-platform fuzz continuity.

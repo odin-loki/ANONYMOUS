@@ -19,6 +19,8 @@ pub mod replay;
 pub mod sphinx;
 pub mod link;
 pub mod fragment;
+#[cfg(feature = "noise-link")]
+pub mod noise_link;
 
 pub use kem::{
     blind_next, encapsulate, KemHeader, RelayKemPublic, RelayKemSecret, SharedSecret,
@@ -33,6 +35,12 @@ pub use link::{
     LINK_EPH_PUB_LEN, LINK_FRAME_LEN, LINK_HANDSHAKE_CONFIRM_LEN, LINK_HANDSHAKE_FINISH_LEN,
     LINK_HANDSHAKE_INIT_LEN, LINK_HANDSHAKE_MAC_LEN, LINK_HANDSHAKE_NONCE_LEN,
     LINK_HANDSHAKE_RESP_LEN, LINK_NONCE_LEN,
+};
+#[cfg(feature = "noise-link")]
+pub use noise_link::{
+    derive_noise_static_secret, noise_ik_initiator_read_msg2, noise_ik_initiator_write_msg1,
+    noise_ik_responder_read_msg1, noise_static_public, verify_noise_static_public,
+    NoiseIkInitiatorState, NoiseIkResponderState, NOISE_IK_MSG1_LEN, NOISE_IK_MSG2_LEN,
 };
 pub use replay::{
     ReplayCache, ReplayTag, DEFAULT_AUTO_ADVANCE_FILL_RATIO, DEFAULT_MAX_GENERATIONS,

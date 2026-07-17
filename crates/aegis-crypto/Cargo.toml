@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["noise-link"]
+## Noise_IK-compatible hop-link mutual auth (SHA3 transcript; see `noise_link`).
+noise-link = []
+
 [lints]
 workspace = true
 

@@ -15,9 +15,10 @@
 //! Modules:
 //! - [`reputation`] — real, working EWMA reputation ledger (the non-ZK
 //!   bookkeeping a future ZK circuit would sit in front of).
-//! - [`zk`] — Bulletproofs range proof for threshold membership + plaintext stand-in.
-//! - [`tee`] — TEE-broken-enclave assumption bookkeeping and the Phase-7 gate
-//!   check (currently vacuous — see module docs for why, honestly).
+//! - [`zk`] — Bulletproofs range proof for threshold membership, anonymous
+//!   presentation (no RelayId in proof bytes), + plaintext stand-in.
+//! - [`tee`] — TEE-broken-enclave assumption bookkeeping, attestation provider
+//!   interface, and the Phase-7 gate check.
 //! - [`anomaly`] — a generic EWMA/z-score anomaly detector as a stand-in for the
 //!   spec's Izaac/GRIA reference (NOT a reproduction of that specific published
 //!   method — see module docs).
@@ -35,8 +36,13 @@ pub use reputation::{
     signing_key_from_hex_seed, signing_key_from_seed, verifying_key_from_hex, ReputationError,
     ReputationLedger, ReputationScore,
 };
-pub use tee::{core_gates_hold_under, TeeAssumption};
+pub use tee::{
+    core_gates_hold_under, core_gates_hold_under_attested, phase7_gate_report_data,
+    AttestationError, AttestationProvider, AttestationQuote, SoftwareAttestationProvider,
+    TeeAssumption, PHASE7_GATE_REPORT_DOMAIN, SOFTWARE_PROVIDER_ID,
+};
 pub use zk::{
-    BulletproofsProof, BulletproofsReputationProof, PlaintextReputationProof, ZkReputationProof,
-    RANGE_BITS, SCORE_SCALE, scale_reputation,
+    derive_reputation_nullifier, present_anonymous, scale_reputation, verify_anonymous,
+    AnonymousReputationPresentation, BulletproofsProof, BulletproofsReputationProof,
+    PlaintextReputationProof, ReputationNullifier, ZkReputationProof, RANGE_BITS, SCORE_SCALE,
 };

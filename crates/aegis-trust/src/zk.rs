@@ -18,15 +18,20 @@
 //!   embeds the plaintext score in the proof. **Not zero-knowledge.** Use only
 //!   for integration tests of the surrounding trust pipeline.
 //!
-//! **Scope note:** these proofs establish threshold membership for a reputation
-//! score; they do **not** hide the relay's *identity*. Unlinking a proof from
-//! a specific relay is a separate anonymity property (out of scope here).
+//! ## Anonymous presentation (Partial)
+//!
+//! [`AnonymousReputationPresentation`] wraps a Bulletproofs threshold proof so
+//! that **no `RelayId` appears in the serialized proof bytes**. Identity binding
+//! is out-of-band: callers derive a [`ReputationNullifier`] (or check a ledger
+//! commitment) separately and associate it with the presentation by policy.
+//! See `docs/ops/anonymous_reputation.md` for AC future work vs what shipped.
 
 use bulletproofs::{BulletproofGens, PedersenGens, RangeProof};
 use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
 use rand::thread_rng;
+use sha3::{Digest, Sha3_256};
 
 use crate::reputation::ReputationScore;
 
@@ -37,6 +42,7 @@ pub const SCORE_SCALE: u64 = 10_000;
 pub const RANGE_BITS: usize = 16;
 
 const TRANSCRIPT_LABEL: &[u8] = b"aegis-trust/reputation-range-proof/v1";
+const NULLIFIER_DOMAIN: &[u8] = b"aegis-anon-rep-nullifier-v1";
 
 /// A proof that some relay's reputation satisfies `threshold` without (in a real
 /// implementation) revealing the relay's identity or exact score.
@@ -160,6 +166,74 @@ impl ZkReputationProof for BulletproofsReputationProof {
             )
             .is_ok()
     }
+}
+
+/// Anonymous threshold presentation: Bulletproofs proof **without** embedding a
+/// relay identity in the proof bytes.
+///
+/// `score_commitment` is the Pedersen commitment to
+/// `(score_scaled - threshold_scaled)` (same bytes as [`BulletproofsProof::commitment`]),
+/// exposed for out-of-band binding. Bind identity via [`derive_reputation_nullifier`]
+/// (or an external ledger commitment) checked by the verifier separately — not
+/// serialized inside [`Self::proof`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnonymousReputationPresentation {
+    /// Threshold range proof (commitment + range proof). Contains no RelayId.
+    pub proof: BulletproofsProof,
+    /// Pedersen score-delta commitment for out-of-band binding checks.
+    pub score_commitment: [u8; 32],
+}
+
+/// Unlinkable (with secret blinding) presentation nullifier for rate-limiting /
+/// spend-once policies. Verifiers check this **out-of-band** against the
+/// presentation; it is not part of the ZK proof bytes.
+pub type ReputationNullifier = [u8; 32];
+
+/// Build an anonymous presentation that `score >= threshold`.
+///
+/// The returned blob never includes a RelayId. Callers that need identity
+/// binding should attach [`derive_reputation_nullifier`] results via their
+/// transport/policy layer.
+pub fn present_anonymous(
+    score: ReputationScore,
+    threshold: f64,
+) -> AnonymousReputationPresentation {
+    let proof = BulletproofsReputationProof::prove(score, threshold);
+    AnonymousReputationPresentation {
+        score_commitment: proof.commitment,
+        proof,
+    }
+}
+
+/// Verify the threshold statement in an anonymous presentation.
+///
+/// Does **not** verify identity binding — check [`ReputationNullifier`] (or an
+/// external commitment) out-of-band.
+pub fn verify_anonymous(presentation: &AnonymousReputationPresentation, threshold: f64) -> bool {
+    if presentation.score_commitment != presentation.proof.commitment {
+        return false;
+    }
+    BulletproofsReputationProof::verify(&presentation.proof, threshold)
+}
+
+/// Derive a nullifier for out-of-band binding:
+/// `SHA3-256(NULLIFIER_DOMAIN || relay_id || epoch_le || blinding)`.
+///
+/// The prover keeps `blinding` secret so the nullifier does not reveal
+/// `relay_id` to parties that do not already know the binding inputs.
+/// Verifiers that share epoch policy can reject double-spends of the same
+/// nullifier without learning which relay produced the presentation.
+pub fn derive_reputation_nullifier(
+    relay_id: &[u8; 32],
+    epoch: u64,
+    blinding: &[u8; 32],
+) -> ReputationNullifier {
+    let mut hasher = Sha3_256::new();
+    hasher.update(NULLIFIER_DOMAIN);
+    hasher.update(relay_id);
+    hasher.update(epoch.to_le_bytes());
+    hasher.update(blinding);
+    hasher.finalize().into()
 }
 
 /// NON-PRIVATE reference implementation: the "proof" is literally the plaintext
@@ -297,5 +371,56 @@ mod tests {
         assert_eq!(scale_reputation(0.81236), 8_124);
         assert_eq!(scale_reputation(1.0), 10_000);
         assert_eq!(scale_reputation(0.0), 0);
+    }
+
+    #[test]
+    fn anonymous_presentation_verifies_without_relay_id() {
+        let presentation = present_anonymous(ReputationScore(0.8), 0.5);
+        assert!(verify_anonymous(&presentation, 0.5));
+        assert_eq!(
+            presentation.score_commitment, presentation.proof.commitment,
+            "score_commitment must match Pedersen commitment in proof"
+        );
+        assert!(!verify_anonymous(&presentation, 0.9));
+    }
+
+    #[test]
+    fn anonymous_presentation_bytes_contain_no_relay_id() {
+        let relay_id = [0xABu8; 32];
+        let presentation = present_anonymous(ReputationScore(0.75), 0.4);
+        assert!(verify_anonymous(&presentation, 0.4));
+
+        // Structural: no RelayId field; bytes must not embed the relay id.
+        assert!(
+            !presentation
+                .proof
+                .range_proof
+                .windows(32)
+                .any(|w| w == relay_id),
+            "range proof must not embed RelayId"
+        );
+        assert_ne!(presentation.score_commitment, relay_id);
+        assert_ne!(presentation.proof.commitment, relay_id);
+    }
+
+    #[test]
+    fn anonymous_mismatched_score_commitment_rejects() {
+        let mut presentation = present_anonymous(ReputationScore(0.8), 0.5);
+        presentation.score_commitment[0] ^= 0xff;
+        assert!(!verify_anonymous(&presentation, 0.5));
+    }
+
+    #[test]
+    fn nullifier_deterministic_and_domain_separated() {
+        let id = [7u8; 32];
+        let blind = [9u8; 32];
+        let a = derive_reputation_nullifier(&id, 1, &blind);
+        let b = derive_reputation_nullifier(&id, 1, &blind);
+        assert_eq!(a, b);
+        let c = derive_reputation_nullifier(&id, 2, &blind);
+        assert_ne!(a, c);
+        let other_id = [8u8; 32];
+        let d = derive_reputation_nullifier(&other_id, 1, &blind);
+        assert_ne!(a, d);
     }
 }

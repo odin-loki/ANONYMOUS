@@ -156,6 +156,7 @@ impl TcpTestnet {
                 Some(cover_rx),
                 None,
                 None,
+                None,
                 OsRng,
                 LinkBridgeConfig::default().without_ingress_rate_limit(),
                 None,

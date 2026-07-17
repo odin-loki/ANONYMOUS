@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use aegis_node::{exit_sink, NodeConfigFile, ReputationConfig};
 use aegis_relay::{
-    spawn_link_bridge, start_bulk_cover, PeerHealthTracker, RelayForwardTrace, RelayNode,
-    RELAY_CHANNEL_CAPACITY,
+    spawn_link_bridge, start_bulk_cover, unix_timestamp_secs, GossipOutbound, PeerHealthAdvert,
+    PeerHealthTracker, RelayForwardTrace, RelayId, RelayNode, RELAY_CHANNEL_CAPACITY,
 };
 use clap::Parser;
 use rand_core::OsRng;
@@ -81,6 +81,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (outbound_tx, outbound_rx) = mpsc::channel(RELAY_CHANNEL_CAPACITY);
     let (cover_tx, cover_rx) = mpsc::channel(RELAY_CHANNEL_CAPACITY);
 
+    let gossip_rx = if runtime.health_gossip.enabled {
+        let signing = runtime.health_gossip.resolve_signing_key()?;
+        if let Some(sk) = signing {
+            let (gossip_tx, gossip_rx) = mpsc::channel::<GossipOutbound>(RELAY_CHANNEL_CAPACITY);
+            let tracker = Arc::clone(&peer_health);
+            let reporter = *runtime.relay_id.as_bytes();
+            let peer_ids: Vec<RelayId> = runtime.peer_table.keys().copied().collect();
+            let peer_count = peer_ids.len();
+            let interval_secs = runtime.health_gossip.interval_secs.max(1);
+            let min_samples = PeerHealthTracker::DEFAULT_MIN_SAMPLES;
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+                loop {
+                    interval.tick().await;
+                    let now = unix_timestamp_secs();
+                    for (subject, ok, fail) in tracker.snapshot() {
+                        if ok.saturating_add(fail) < min_samples {
+                            continue;
+                        }
+                        // Do not gossip a peer its own local window about itself.
+                        if subject == reporter {
+                            continue;
+                        }
+                        let advert =
+                            PeerHealthAdvert::sign(&sk, reporter, subject, ok, fail, now);
+                        let cell = advert.to_cell();
+                        for peer_id in &peer_ids {
+                            let _ = gossip_tx.send((*peer_id, cell.clone())).await;
+                        }
+                    }
+                }
+            });
+            eprintln!(
+                "health gossip enabled (interval_secs={interval_secs}, peers={peer_count})"
+            );
+            Some(gossip_rx)
+        } else {
+            eprintln!("warning: health_gossip.enabled but no signing_seed; gossip emit disabled");
+            None
+        }
+    } else {
+        None
+    };
+
     let relay_id = runtime.relay_id;
     let bulk_cover = runtime.relay_config.bulk_cover.clone();
     let node = RelayNode::new(
@@ -114,6 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         inbound_tx,
         outbound_rx,
         Some(cover_rx),
+        gossip_rx,
         exit_tx,
         forward_trace,
         OsRng,

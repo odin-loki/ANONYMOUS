@@ -9,7 +9,7 @@ use rand_core::OsRng;
 use aegis_trust::policy::RelayPruningPolicy;
 
 use crate::error::TopologyError;
-use crate::guards::GuardSelector;
+use crate::guards::{GuardConfig, GuardSelector};
 use crate::layers::Topology;
 use crate::pruning::path_satisfies_pruning_policy;
 use crate::roster::RelayRoster;
@@ -57,11 +57,24 @@ pub fn path_satisfies_jurisdiction(
 
 /// Select one relay per layer using a fresh OS CSPRNG draw on every call.
 ///
-/// Layer 1 uses the stable guard from `guards` when provided (spec §4.6); inner
-/// hops (layers 2..L) are uniformly random per packet.
+/// Layer 1 is pinned from the held guard set when `guards` is provided
+/// ([`GuardSelector::entry_guard_for_packet`] with index 0 — sticky primary by
+/// default). Inner hops (layers 2..L) are uniformly random per packet.
+///
+/// For rotate pinning across the g-set, use [`select_path_indexed`].
 pub fn select_path(
     topology: &Topology,
     guards: Option<&GuardSelector>,
+) -> Result<Vec<RelayId>, TopologyError> {
+    select_path_indexed(topology, guards, 0)
+}
+
+/// Like [`select_path`] but pins layer-1 with `packet_index` under the selector's
+/// [`crate::guards::GuardPinMode`] (sticky primary or rotate across the g-set).
+pub fn select_path_indexed(
+    topology: &Topology,
+    guards: Option<&GuardSelector>,
+    packet_index: u64,
 ) -> Result<Vec<RelayId>, TopologyError> {
     let mut path = Vec::with_capacity(topology.layer_count);
     let mut rng = OsRng;
@@ -76,7 +89,7 @@ pub fn select_path(
 
         let relay = if layer_idx == 0 {
             if let Some(g) = guards {
-                g.primary_guard()
+                g.entry_guard_for_packet(packet_index)
             } else {
                 let idx = rng.gen_range(0..layer.len());
                 layer[idx]
@@ -220,7 +233,13 @@ pub fn relay_records_for_path(
 /// Production helper: pruned path selection plus roster record lookup with KEM commitments.
 ///
 /// Composes [`select_path_reputation_weighted_pruned`] and [`relay_records_for_path`].
-/// Callers attach live KEM public keys in `aegis-client` via [`hops_from_bound_path`].
+/// Layer-1 is pinned from the caller's multi-guard set (`g` = [`crate::guards::GUARD_SET_SIZE`]
+/// by default) via sticky primary / rotate — never a fresh uniform layer-1 draw when
+/// `guards` is `Some`. Callers attach live KEM public keys in `aegis-client` via
+/// `hops_from_bound_path`.
+///
+/// Prefer [`build_bound_path_pruned_with_guards`] when the client should also construct
+/// a reputation-weighted g-set rather than passing a pre-built selector.
 pub fn build_bound_path_pruned(
     topology: &Topology,
     roster: &RelayRoster,
@@ -238,6 +257,39 @@ pub fn build_bound_path_pruned(
         max_attempts,
     )?;
     relay_records_for_path(&path, roster)
+}
+
+/// Production default: build a reputation-weighted multi-guard set (`g` =
+/// [`GuardConfig::default`] = 3) then a pruned bound path pinned to that set.
+///
+/// This is the recommended production entry point — multi-guard + reputation
+/// filtering together. Unfiltered `select_path` / `GuardSelector::new` remain for
+/// research and residual-threat measurement.
+pub fn build_bound_path_pruned_with_guards(
+    topology: &Topology,
+    roster: &RelayRoster,
+    client_seed: u64,
+    policy: &RelayPruningPolicy,
+    min_reputation: f64,
+    max_attempts: usize,
+) -> Result<(GuardSelector, Vec<RelayRecord>), TopologyError> {
+    let config = GuardConfig::default();
+    let guards = GuardSelector::new_reputation_weighted_pruned(
+        topology,
+        &config,
+        client_seed,
+        policy,
+        min_reputation,
+    )?;
+    let records = build_bound_path_pruned(
+        topology,
+        roster,
+        Some(&guards),
+        policy,
+        min_reputation,
+        max_attempts,
+    )?;
+    Ok((guards, records))
 }
 
 /// Like [`build_bound_path_pruned`] but also enforces jurisdiction diversity.

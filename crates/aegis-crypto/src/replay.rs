@@ -189,6 +189,14 @@ impl ReplayCache {
         self.generation
     }
 
+    /// Constant-time membership probe (no insert).
+    ///
+    /// Exposed for timing / `dudect` harnesses. Production duplicate detection
+    /// uses the same scan via [`Self::check_and_insert`].
+    pub fn contains_ct(&self, tag: &ReplayTag) -> bool {
+        self.ct_contains(tag)
+    }
+
     /// Constant-time membership over the active FIFO window.
     ///
     /// Always iterates [`Self::capacity`] slots so elapsed time does not depend

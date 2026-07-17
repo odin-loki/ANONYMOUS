@@ -10,7 +10,9 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use aegis_topology::guards::{guard_exposure_plateau, GuardConfig, GuardSelector};
+use aegis_topology::guards::{
+    guard_exposure_plateau, GuardConfig, GuardPinMode, GuardSelector, GUARD_SET_SIZE,
+};
 use aegis_topology::path::{select_path, select_path_reputation_weighted};
 use aegis_topology::roster::{ConsortiumKey, RelayRoster, RosterAdmissionPolicy};
 use aegis_topology::types::{test_relay_id, test_relay_record, RelayId, RelayRecord, TopologyConfig};
@@ -88,10 +90,16 @@ fn seed_vetted_reputation(ledger: &mut ReputationLedger, id: RelayId) {
 
 struct ExposureMetrics {
     layer1_sybil_fraction: f64,
+    /// Fraction of clients whose sticky primary is a Sybil (g=1 effective entry pin).
     primary_guard_sybil_rate: f64,
+    /// Fraction of clients whose held g-set contains ≥1 Sybil (`1-(1-c)^g` empirical).
+    guard_set_any_sybil_rate: f64,
     path_any_sybil_rate: f64,
     path_any_sybil_reputation_filtered: f64,
+    /// Fraction of reputation-weighted g-sets that contain ≥1 Sybil.
+    rep_guard_set_any_sybil_rate: f64,
     primary_expected: f64,
+    set_expected: f64,
 }
 
 fn measure_exposure(
@@ -105,14 +113,22 @@ fn measure_exposure(
     let layer1_sybil_fraction = layer1_sybil as f64 / layer1.len() as f64;
 
     let guard_config = GuardConfig::default();
+    assert_eq!(guard_config.guard_count, GUARD_SET_SIZE);
+
     let mut primary_hits = 0u64;
+    let mut set_hits = 0u64;
     for seed in 0..CLIENT_SEEDS {
         let guards = GuardSelector::new(&topo, &guard_config, seed).expect("guards");
+        assert_eq!(guards.guard_set().len(), GUARD_SET_SIZE as usize);
         if sybil_ids.contains(&guards.primary_guard()) {
             primary_hits += 1;
         }
+        if guards.any_guard_compromised(sybil_ids) {
+            set_hits += 1;
+        }
     }
     let primary_guard_sybil_rate = primary_hits as f64 / CLIENT_SEEDS as f64;
+    let guard_set_any_sybil_rate = set_hits as f64 / CLIENT_SEEDS as f64;
 
     let mut path_hits = 0usize;
     for _ in 0..PATH_TRIALS {
@@ -140,14 +156,40 @@ fn measure_exposure(
     }
     let path_any_sybil_reputation_filtered = rep_hits as f64 / PATH_TRIALS as f64;
 
+    let mut rep_set_hits = 0u64;
+    let mut rep_set_ok = 0u64;
+    for seed in 0..CLIENT_SEEDS {
+        if let Ok(guards) = GuardSelector::new_reputation_weighted(
+            &topo,
+            &guard_config,
+            seed,
+            ledger,
+            MIN_REPUTATION,
+        ) {
+            rep_set_ok += 1;
+            if guards.any_guard_compromised(sybil_ids) {
+                rep_set_hits += 1;
+            }
+        }
+    }
+    let rep_guard_set_any_sybil_rate = if rep_set_ok > 0 {
+        rep_set_hits as f64 / rep_set_ok as f64
+    } else {
+        0.0
+    };
+
     let primary_expected = layer1_sybil_fraction;
+    let set_expected = guard_exposure_plateau(layer1_sybil_fraction, GUARD_SET_SIZE);
 
     ExposureMetrics {
         layer1_sybil_fraction,
         primary_guard_sybil_rate,
+        guard_set_any_sybil_rate,
         path_any_sybil_rate,
         path_any_sybil_reputation_filtered,
+        rep_guard_set_any_sybil_rate,
         primary_expected,
+        set_expected,
     }
 }
 
@@ -164,7 +206,7 @@ fn sybil_flood_reputation_filter_blocks_probationary_sybils() {
         baseline.primary_guard_sybil_rate
     );
 
-    let paper_plateau = guard_exposure_plateau(0.01, GuardConfig::default().guard_count);
+    let paper_plateau = guard_exposure_plateau(0.01, GUARD_SET_SIZE);
     assert!(
         (paper_plateau - 0.03).abs() < 0.005,
         "paper control plateau ~3%: {paper_plateau}"
@@ -175,11 +217,15 @@ fn sybil_flood_reputation_filter_blocks_probationary_sybils() {
     let half = measure_exposure(&mixed_roster, &sybil_ids, &ledger);
 
     eprintln!(
-        "50% flood post-fix: layer1_sybil={:.3} primary_guard={:.3} path={:.3} rep_filtered={:.3} (baseline rep_filtered ~{:.2})",
+        "50% flood post-fix: layer1_sybil={:.3} primary_g1={:.3} set_g3={:.3} (expected {:.3}) \
+         path={:.3} rep_path={:.3} rep_set_g3={:.3} (baseline rep_path ~{:.2})",
         half.layer1_sybil_fraction,
         half.primary_guard_sybil_rate,
+        half.guard_set_any_sybil_rate,
+        half.set_expected,
         half.path_any_sybil_rate,
         half.path_any_sybil_reputation_filtered,
+        half.rep_guard_set_any_sybil_rate,
         baseline_pre_fix::FLOOD_50_REP_PATH_SYBIL
     );
 
@@ -189,7 +235,7 @@ fn sybil_flood_reputation_filter_blocks_probationary_sybils() {
         half.layer1_sybil_fraction
     );
 
-    // Unguarded selection still captures ~layer-1 Sybil share (topology unchanged).
+    // Sticky primary (g=1 pin) still tracks ~layer-1 Sybil share.
     assert!(
         (half.primary_guard_sybil_rate - half.primary_expected).abs() < 0.08,
         "empirical primary guard rate {} should track layer1 fraction {}",
@@ -198,7 +244,21 @@ fn sybil_flood_reputation_filter_blocks_probationary_sybils() {
     );
     assert!(
         half.primary_guard_sybil_rate > paper_plateau * 5.0,
-        "50% Sybil flood ({}) should far exceed paper ~3% plateau ({paper_plateau})",
+        "50% Sybil flood primary ({}) should far exceed paper ~3% plateau ({paper_plateau})",
+        half.primary_guard_sybil_rate
+    );
+
+    // Held g=3 set exposure tracks plateau formula (higher than primary, not saturation-only).
+    assert!(
+        (half.guard_set_any_sybil_rate - half.set_expected).abs() < 0.08,
+        "g=3 set exposure {} should track 1-(1-c)^3 = {}",
+        half.guard_set_any_sybil_rate,
+        half.set_expected
+    );
+    assert!(
+        half.guard_set_any_sybil_rate >= half.primary_guard_sybil_rate - 0.02,
+        "set exposure should be ≥ primary: set={} primary={}",
+        half.guard_set_any_sybil_rate,
         half.primary_guard_sybil_rate
     );
 
@@ -216,27 +276,43 @@ fn sybil_flood_reputation_filter_blocks_probationary_sybils() {
         half.path_any_sybil_reputation_filtered,
         half.path_any_sybil_rate
     );
+    // g=3 + reputation: set capture collapses vs unfiltered g=1 primary.
+    assert!(
+        half.rep_guard_set_any_sybil_rate < 0.05,
+        "reputation-weighted g=3 set should exclude probationary Sybils: {}",
+        half.rep_guard_set_any_sybil_rate
+    );
+    assert!(
+        half.rep_guard_set_any_sybil_rate < half.primary_guard_sybil_rate * 0.15,
+        "g=3+rep plateau improvement vs unfiltered g=1 primary: rep_set={:.3} primary={:.3}",
+        half.rep_guard_set_any_sybil_rate,
+        half.primary_guard_sybil_rate
+    );
 }
 
+/// Honest science: unfiltered sticky-primary (g=1 pin) still saturates under majority flood.
 #[test]
-fn sybil_majority_flood_approaches_saturation_without_reputation_guard() {
+fn sybil_majority_flood_unfiltered_g1_saturates() {
     let mut rng = OsRng;
     let authority = ConsortiumKey::generate(&mut rng);
     let (roster, sybil_ids, ledger) = build_mixed_roster(96, &authority);
     let m = measure_exposure(&roster, &sybil_ids, &ledger);
 
     eprintln!(
-        "80% flood post-fix: layer1_sybil={:.3} primary_guard={:.3} path={:.3} rep_filtered={:.3}",
+        "80% flood: layer1_sybil={:.3} primary_g1={:.3} set_g3={:.3} path={:.3} \
+         rep_path={:.3} rep_set_g3={:.3}",
         m.layer1_sybil_fraction,
         m.primary_guard_sybil_rate,
+        m.guard_set_any_sybil_rate,
         m.path_any_sybil_rate,
-        m.path_any_sybil_reputation_filtered
+        m.path_any_sybil_reputation_filtered,
+        m.rep_guard_set_any_sybil_rate
     );
 
     assert!(m.layer1_sybil_fraction > 0.55, "layer1 dominated: {}", m.layer1_sybil_fraction);
     assert!(
         m.primary_guard_sybil_rate > 0.55,
-        "guard capture should be high: {}",
+        "unfiltered g=1 primary capture should be high: {}",
         m.primary_guard_sybil_rate
     );
     assert!(
@@ -247,13 +323,24 @@ fn sybil_majority_flood_approaches_saturation_without_reputation_guard() {
     );
     assert!(
         m.path_any_sybil_rate > 0.90,
-        "path capture should saturate: {}",
+        "unfiltered path capture should saturate: {}",
         m.path_any_sybil_rate
+    );
+    // Held g=3 without reputation also saturates when c is large (plateau → 1).
+    assert!(
+        m.guard_set_any_sybil_rate > 0.85,
+        "unfiltered g=3 set also saturates at high c: {}",
+        m.guard_set_any_sybil_rate
     );
     assert!(
         m.path_any_sybil_reputation_filtered < 0.05,
         "probationary Sybils should not pass reputation-filtered paths: {}",
         m.path_any_sybil_reputation_filtered
+    );
+    assert!(
+        m.rep_guard_set_any_sybil_rate < 0.05,
+        "g=3+rep still blocks fresh Sybils under majority flood: {}",
+        m.rep_guard_set_any_sybil_rate
     );
 }
 
@@ -293,10 +380,19 @@ fn vetted_one_percent_roster_matches_paper_plateau_assumption() {
         m.primary_guard_sybil_rate,
         m.layer1_sybil_fraction
     );
-    let paper = guard_exposure_plateau(m.layer1_sybil_fraction.max(0.01), 3);
+    // At small c, g=3 set exposure ≈ 1-(1-c)^3 ≈ 3c — the paper plateau.
+    let paper = guard_exposure_plateau(m.layer1_sybil_fraction.max(0.01), GUARD_SET_SIZE);
+    assert!(
+        (m.guard_set_any_sybil_rate - m.set_expected).abs() < 0.05
+            || m.layer1_sybil_fraction < 0.001,
+        "g=3 set exposure {} should track plateau {} at c={}",
+        m.guard_set_any_sybil_rate,
+        m.set_expected,
+        m.layer1_sybil_fraction
+    );
     assert!(
         m.primary_guard_sybil_rate <= paper + 0.02,
-        "single-primary exposure ({}) should stay near g=3 plateau ({paper}) at measured c={}",
+        "sticky primary ({}) stays ≤ paper plateau ({paper}) at measured c={}",
         m.primary_guard_sybil_rate,
         m.layer1_sybil_fraction
     );
@@ -330,6 +426,7 @@ fn reputation_weighted_guard_excludes_probationary_and_sub_floor_sybils() {
             MIN_REPUTATION,
         )
         .expect("rep guards");
+        assert_eq!(guards.guard_set().len(), GUARD_SET_SIZE as usize);
         assert!(!guards.guards.contains(&bad_sybil));
     }
 
@@ -352,6 +449,27 @@ fn reputation_weighted_guard_excludes_probationary_and_sub_floor_sybils() {
             assert!(!guards.guards.contains(id));
         }
     }
+}
+
+#[test]
+fn rotate_pin_uses_full_guard_set() {
+    let mut rng = OsRng;
+    let authority = ConsortiumKey::generate(&mut rng);
+    let (roster, _, _) = build_mixed_roster(0, &authority);
+    let topo = build_topology(&roster, 3, &TopologyConfig::high_threat(), 1).unwrap();
+    let config = GuardConfig {
+        guard_count: GUARD_SET_SIZE,
+        pin_mode: GuardPinMode::Rotate,
+    };
+    let guards = GuardSelector::new(&topo, &config, 42).unwrap();
+    let set: HashSet<_> = guards.guard_set().iter().copied().collect();
+    let mut seen = HashSet::new();
+    for i in 0..GUARD_SET_SIZE as u64 * 3 {
+        let entry = guards.entry_guard_for_packet(i);
+        assert!(set.contains(&entry));
+        seen.insert(entry);
+    }
+    assert_eq!(seen.len(), GUARD_SET_SIZE as usize, "rotate must visit all g guards");
 }
 
 #[test]
@@ -404,10 +522,13 @@ fn admission_rate_limit_caps_sybil_roster_growth_per_window() {
         .collect();
     let m = measure_exposure(&roster, &sybil_ids, &ledger);
     eprintln!(
-        "rate-limited flood: layer1_sybil={:.3} primary_guard={:.3} rep_filtered={:.3} (pre-fix 50% rep_filtered ~{:.2})",
+        "rate-limited flood: layer1_sybil={:.3} primary_g1={:.3} set_g3={:.3} \
+         rep_path={:.3} rep_set={:.3} (pre-fix 50% rep_path ~{:.2})",
         m.layer1_sybil_fraction,
         m.primary_guard_sybil_rate,
+        m.guard_set_any_sybil_rate,
         m.path_any_sybil_reputation_filtered,
+        m.rep_guard_set_any_sybil_rate,
         baseline_pre_fix::FLOOD_50_REP_PATH_SYBIL
     );
 

@@ -1,4 +1,4 @@
-//! TCP hop-link bridge: fixed-width AEAD frames + Sphinx fragmentation.
+﻿//! TCP hop-link bridge: fixed-width AEAD frames + Sphinx fragmentation.
 //!
 //! Bridges real `tokio::net::TcpStream` sockets to a local [`crate::RelayNode`]'s
 //! `mpsc` channels without modifying the relay core. Each ordered link carries
@@ -9,9 +9,12 @@
 //! ## Link-key provisioning
 //!
 //! Relays configure a **static pre-shared key** per peer pair (hex in the peer table /
-//! ingress config). On each new TCP connection an ephemeral X25519 handshake
-//! authenticated by that PSK derives a fresh ChaCha20-Poly1305 session key with
-//! forward secrecy before any Sphinx frames are sent.
+//! ingress config). On each new TCP connection either:
+//! - **LegacyPsk** (default): ephemeral X25519 + PSK MAC handshake, or
+//! - **Noise** (`noise-link` feature): Noise_IK-compatible mutual auth with roster
+//!   static X25519 keys (`LinkBridgeConfig::handshake`).
+//! Both derive a fresh ChaCha20-Poly1305 session key with forward secrecy before
+//! any Sphinx frames are sent.
 //!
 //! ## Inbound peer identification
 //!
@@ -22,20 +25,23 @@
 //! ## Ingress rate limiting
 //!
 //! After handshake, each inbound connection applies a token-bucket cell/frame rate
-//! limit (default ≈ Mode-1 `1/τ` cells/s with a small burst). Excess frames are
+//! limit (default â‰ˆ Mode-1 `1/Ï„` cells/s with a small burst). Excess frames are
 //! **dropped silently** (connection stays open); see [`IngressRateLimitStats`].
-//! Optional aggregate cap: [`IngressRateLimitConfig::global_max_cells_per_sec`].
+//! A shared aggregate cap ([`IngressRateLimitConfig::global_max_cells_per_sec`]) is
+//! **on by default** (Mode-1 Ã— [`DEFAULT_EXPECTED_INGRESS_CLIENTS`]); set `None` or
+//! `0.0` to disable.
 //!
-//! ## Bounded inbound queue (drop-newest)
+//! ## Bounded inbound queue (drop-newest) + per-peer fair drain
 //!
-//! Reassembled Sphinx packets are enqueued with [`crate::node::try_send_drop_newest`]
-//! into the relay's bounded inbound `mpsc` (capacity
-//! [`crate::node::RELAY_CHANNEL_CAPACITY`]). When the mix core is slower than
-//! admitted ingress, the **newest** packet is dropped and
-//! [`QueueDropStats::dropped`] increments — the inbound task does not block
-//! forever. Rate-limit drops happen first (pre-reassembly); queue drops are a
-//! second shed for post-reassembly backlog. Per-connection tasks share one
-//! channel, so load shedding is naturally interleaved across peers.
+//! Each inbound TCP connection gets its own bounded per-peer `mpsc` (capacity
+//! [`PER_PEER_INBOUND_CAPACITY`]). Reassembled Sphinx packets are enqueued with
+//! [`crate::node::try_send_drop_newest`] into that peer queue. A fair-drain task
+//! round-robins one packet at a time from live peer queues into the relay's
+//! shared inbound channel (capacity [`crate::node::RELAY_CHANNEL_CAPACITY`]),
+//! so one busy peer cannot monopolize the mix queue. When a peer queue or the
+//! shared inbound is full, the **newest** packet is dropped and
+//! [`QueueDropStats::dropped`] increments. Rate-limit drops happen first
+//! (pre-reassembly); queue drops are a second shed for post-reassembly backlog.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -58,12 +64,15 @@ use aegis_crypto::CryptoError;
 use rand_core::{CryptoRngCore, RngCore};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, Notify, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use thiserror::Error;
 
 use crate::cover_flow::is_relay_cover_fragment;
+use crate::health_gossip::{
+    accept_advert, unix_timestamp_secs, PeerHealthAdvert, DEFAULT_MAX_ADVERT_AGE_SECS,
+};
 use crate::node::{try_send_drop_newest, ForwardedPacket};
 use crate::peer_health::PeerHealthTracker;
 use crate::relay_id::RelayId;
@@ -75,27 +84,48 @@ pub const DEFAULT_LINK_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default cap on concurrent inbound TCP connections per listener.
 pub const DEFAULT_MAX_INBOUND_CONNECTIONS: usize = 256;
 
-/// Mode-1 spec worked-example slot period τ (seconds).
+/// Per-connection inbound queue capacity before fair round-robin drain into the
+/// shared relay inbound channel.
+pub const PER_PEER_INBOUND_CAPACITY: usize = 16;
+
+/// Mode-1 spec worked-example slot period Ï„ (seconds).
 pub const MODE1_TAU_SECS: f64 = 0.35;
 
-/// Default sustained ingress accept rate: ~1/τ cells/s (Mode-1 pacing).
+/// Default sustained ingress accept rate: ~1/Ï„ cells/s (Mode-1 pacing).
 pub const DEFAULT_INGRESS_MAX_CELLS_PER_SEC: f64 = 1.0 / MODE1_TAU_SECS;
 
-/// Small burst above sustained rate so τ-paced clients tolerate minor jitter.
+/// Small burst above sustained rate so Ï„-paced clients tolerate minor jitter.
 pub const DEFAULT_INGRESS_BURST: u32 = 4;
 
-/// Per-connection (and optional global) ingress frame rate limit for the link bridge.
+/// Conservative expected concurrent Mode-1 paced clients for the default global budget.
+///
+/// Operators with larger honest concurrency should raise
+/// [`IngressRateLimitConfig::global_max_cells_per_sec`] (TOML `[link]` /
+/// `[ingress]`).
+pub const DEFAULT_EXPECTED_INGRESS_CLIENTS: f64 = 8.0;
+
+/// Default aggregate ingress cap across connections: Mode-1 Ã— expected clients
+/// (`8 / Ï„` â‰ˆ 22.86 cells/s). Sheds multi-connection floods that individually stay
+/// under the per-conn limit.
+pub const DEFAULT_GLOBAL_MAX_CELLS_PER_SEC: f64 =
+    DEFAULT_EXPECTED_INGRESS_CLIENTS / MODE1_TAU_SECS;
+
+/// Default inter-cell spacing for cover egress (Mode-1 Ï„).
+pub const DEFAULT_COVER_CELL_TAU: Duration = Duration::from_millis(350);
+
+/// Per-connection and global ingress frame rate limit for the link bridge.
 ///
 /// Excess frames after AEAD framing are **dropped silently** (TCP stays open); see
 /// [`IngressRateLimitStats::dropped_frames`]. Set `max_cells_per_sec` to `0.0` to disable
-/// per-connection limiting; omit `global_max_cells_per_sec` to disable aggregate cap.
+/// per-connection limiting; set `global_max_cells_per_sec` to `None` or `Some(0.0)` to
+/// disable the aggregate cap (default is [`DEFAULT_GLOBAL_MAX_CELLS_PER_SEC`]).
 #[derive(Clone, Debug)]
 pub struct IngressRateLimitConfig {
     /// Sustained accept rate (cells/sec). `0.0` disables per-connection limiting.
     pub max_cells_per_sec: f64,
     /// Token-bucket burst (cells).
     pub burst: u32,
-    /// Optional aggregate cap across all inbound connections (cells/sec).
+    /// Aggregate cap across all inbound connections (cells/sec). `None` / `Some(0.0)` disables.
     pub global_max_cells_per_sec: Option<f64>,
 }
 
@@ -104,7 +134,7 @@ impl Default for IngressRateLimitConfig {
         Self {
             max_cells_per_sec: DEFAULT_INGRESS_MAX_CELLS_PER_SEC,
             burst: DEFAULT_INGRESS_BURST,
-            global_max_cells_per_sec: None,
+            global_max_cells_per_sec: Some(DEFAULT_GLOBAL_MAX_CELLS_PER_SEC),
         }
     }
 }
@@ -157,6 +187,150 @@ impl QueueDropStats {
     }
 }
 
+/// Per-connection sender into the fair-inbound hub (drop-newest on the peer queue).
+struct FairPeerSender {
+    tx: mpsc::Sender<SphinxPacket>,
+    notify: Arc<Notify>,
+    drop_stats: Arc<QueueDropStats>,
+}
+
+impl FairPeerSender {
+    fn try_enqueue(&self, packet: SphinxPacket) -> Result<(), ()> {
+        let result = try_send_drop_newest(&self.tx, packet, self.drop_stats.counter());
+        self.notify.notify_one();
+        result
+    }
+}
+
+/// Round-robin hub: per-connection receivers drained fairly into the mix inbound.
+struct FairInboundHub {
+    slots: Mutex<Vec<Option<mpsc::Receiver<SphinxPacket>>>>,
+    notify: Arc<Notify>,
+}
+
+impl FairInboundHub {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            slots: Mutex::new(Vec::new()),
+            notify: Arc::new(Notify::new()),
+        })
+    }
+
+    async fn register(
+        self: &Arc<Self>,
+        drop_stats: Arc<QueueDropStats>,
+    ) -> (usize, FairPeerSender) {
+        let (tx, rx) = mpsc::channel(PER_PEER_INBOUND_CAPACITY);
+        let mut slots = self.slots.lock().await;
+        let slot_id = if let Some(i) = slots.iter().position(|s| s.is_none()) {
+            slots[i] = Some(rx);
+            i
+        } else {
+            slots.push(Some(rx));
+            slots.len() - 1
+        };
+        let sender = FairPeerSender {
+            tx,
+            notify: Arc::clone(&self.notify),
+            drop_stats,
+        };
+        // Wake the drain task if it is blocked on an empty slot table (avoids
+        // lost wakeup between empty-check and `notified().await`).
+        self.notify.notify_one();
+        (slot_id, sender)
+    }
+}
+
+fn spawn_fair_inbound_drain(
+    hub: Arc<FairInboundHub>,
+    inbound_tx: mpsc::Sender<SphinxPacket>,
+    queue_drop_stats: Arc<QueueDropStats>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut cursor = 0usize;
+        loop {
+            // Subscribe before scanning so a concurrent enqueue cannot lose its wakeup.
+            let notified = hub.notify.notified();
+            tokio::pin!(notified);
+
+            let packet = {
+                let mut slots = hub.slots.lock().await;
+                if slots.is_empty() {
+                    drop(slots);
+                    notified.await;
+                    continue;
+                }
+                let n = slots.len();
+                let mut found = None;
+                for step in 0..n {
+                    let i = (cursor + step) % n;
+                    match slots.get_mut(i).and_then(|s| s.as_mut()) {
+                        Some(rx) => match rx.try_recv() {
+                            Ok(pkt) => {
+                                cursor = i.wrapping_add(1);
+                                found = Some(pkt);
+                                break;
+                            }
+                            Err(mpsc::error::TryRecvError::Empty) => {}
+                            Err(mpsc::error::TryRecvError::Disconnected) => {
+                                slots[i] = None;
+                            }
+                        },
+                        None => {}
+                    }
+                }
+                found
+            };
+
+            match packet {
+                Some(pkt) => {
+                    if try_send_drop_newest(&inbound_tx, pkt, queue_drop_stats.counter()).is_err()
+                    {
+                        return;
+                    }
+                }
+                None => {
+                    let _ = timeout(Duration::from_millis(5), notified).await;
+                }
+            }
+        }
+    })
+}
+
+/// Drain one round-robin pass for tests (exposes fair scheduling without TCP).
+#[cfg(test)]
+async fn fair_drain_once_for_test(
+    hub: &FairInboundHub,
+    cursor: &mut usize,
+) -> Option<SphinxPacket> {
+    let mut slots = hub.slots.lock().await;
+    let n = slots.len();
+    if n == 0 {
+        return None;
+    }
+    for step in 0..n {
+        let i = (*cursor + step) % n;
+        if let Some(rx) = slots.get_mut(i).and_then(|s| s.as_mut()) {
+            if let Ok(pkt) = rx.try_recv() {
+                *cursor = i.wrapping_add(1);
+                return Some(pkt);
+            }
+        }
+    }
+    None
+}
+
+/// Which hop-link handshake to run after TCP connect/accept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LinkHandshakeMode {
+    /// Ephemeral X25519 + PSK MAC (current default).
+    #[default]
+    LegacyPsk,
+    /// Noise_IK-compatible mutual auth with roster static keys (`noise-link` feature).
+    #[cfg(feature = "noise-link")]
+    Noise,
+}
+
 /// Tunables for the TCP link bridge (read timeout, connection cap, ingress rate limit).
 #[derive(Clone, Debug)]
 pub struct LinkBridgeConfig {
@@ -164,11 +338,24 @@ pub struct LinkBridgeConfig {
     pub max_inbound_connections: usize,
     /// When true, bind the peer roster relay id into handshake MAC inputs.
     pub identity_binding: bool,
+    /// Handshake protocol selection (`LegacyPsk` or `Noise`).
+    pub handshake: LinkHandshakeMode,
+    /// Local Noise static secret (32 bytes). Required when `handshake == Noise`.
+    pub noise_static_secret: Option<[u8; 32]>,
+    /// Expected initiator static public for shared ingress Noise auth (optional).
+    pub ingress_noise_static_public: Option<[u8; 32]>,
     pub ingress_rate_limit: IngressRateLimitConfig,
     /// Optional shared counter for rate-limited frame drops (tests / ops).
     pub ingress_rate_limit_stats: Option<Arc<IngressRateLimitStats>>,
     /// Optional shared counter for inbound queue-full drops (tests / ops).
     pub queue_drop_stats: Option<Arc<QueueDropStats>>,
+    /// Inter-cell spacing for cover egress on the wire (Mode-1 Ï„ by default).
+    ///
+    /// Cover dispatcher emits **one** sealed cell per tick when non-zero, matching
+    /// client Mode-1 cadence. Set to [`Duration::ZERO`] in lab tests that only
+    /// check frame shape. Residual: multi-hop Sphinx semantics still differ from
+    /// real bulk (cover is discarded at the next hop).
+    pub cover_cell_tau: Duration,
 }
 
 impl Default for LinkBridgeConfig {
@@ -177,9 +364,13 @@ impl Default for LinkBridgeConfig {
             read_timeout: DEFAULT_LINK_READ_TIMEOUT,
             max_inbound_connections: DEFAULT_MAX_INBOUND_CONNECTIONS,
             identity_binding: true,
+            handshake: LinkHandshakeMode::LegacyPsk,
+            noise_static_secret: None,
+            ingress_noise_static_public: None,
             ingress_rate_limit: IngressRateLimitConfig::default(),
             ingress_rate_limit_stats: None,
             queue_drop_stats: None,
+            cover_cell_tau: DEFAULT_COVER_CELL_TAU,
         }
     }
 }
@@ -188,6 +379,12 @@ impl LinkBridgeConfig {
     /// Disable ingress rate limiting while keeping other defaults.
     pub fn without_ingress_rate_limit(mut self) -> Self {
         self.ingress_rate_limit = IngressRateLimitConfig::disabled();
+        self
+    }
+
+    /// Disable cover Ï„-pacing (burst cover cells; lab / unit tests).
+    pub fn without_cover_cell_pacing(mut self) -> Self {
+        self.cover_cell_tau = Duration::ZERO;
         self
     }
 }
@@ -307,6 +504,10 @@ pub struct PeerInfo {
     pub link_key_bytes: [u8; 32],
     /// Optional roster KEM public-key commitment bound into outbound handshake MACs.
     pub kem_public_commitment: Option<[u8; 32]>,
+    /// Optional Ed25519 verifying key for signed [`crate::health_gossip::PeerHealthAdvert`].
+    pub gossip_verifying_key: Option<[u8; 32]>,
+    /// Expected peer Noise static public key (32 bytes). Required for `LinkHandshakeMode::Noise`.
+    pub noise_static_public: Option<[u8; 32]>,
 }
 
 impl PeerInfo {
@@ -315,11 +516,24 @@ impl PeerInfo {
             addr,
             link_key_bytes,
             kem_public_commitment: None,
+            gossip_verifying_key: None,
+            noise_static_public: None,
         }
     }
 
     pub fn with_kem_commitment(mut self, kem_public_commitment: [u8; 32]) -> Self {
         self.kem_public_commitment = Some(kem_public_commitment);
+        self
+    }
+
+    pub fn with_gossip_verifying_key(mut self, gossip_verifying_key: [u8; 32]) -> Self {
+        self.gossip_verifying_key = Some(gossip_verifying_key);
+        self
+    }
+
+    /// Set the roster-expected Noise static public key for this peer.
+    pub fn with_noise_static_public(mut self, noise_static_public: [u8; 32]) -> Self {
+        self.noise_static_public = Some(noise_static_public);
         self
     }
 }
@@ -339,11 +553,16 @@ pub enum NetError {
     Fragment(#[from] aegis_crypto::fragment::FragmentError),
     #[error("could not authenticate link handshake with any configured key")]
     UnidentifiedInbound,
+    #[error("noise handshake misconfigured: {0}")]
+    NoiseConfig(&'static str),
     #[error("link read timed out after {0:?}")]
     ReadTimeout(Duration),
     #[error("inbound connection limit reached ({0})")]
     ConnectionLimit(usize),
 }
+
+/// Outbound signed health-gossip cell destined for one hop peer.
+pub type GossipOutbound = (RelayId, Cell);
 
 /// Spawn inbound listener + outbound dispatcher bridging TCP and `RelayNode` channels.
 ///
@@ -351,10 +570,14 @@ pub enum NetError {
 /// [`crate::RelayNode::spawn`] and writes them on a hop link (same AEAD framing as
 /// real traffic).
 ///
+/// When `gossip_rx` is set, sealed [`Command::PeerHealthAdvert`] cells are written
+/// on hop links without entering Sphinx reassembly.
+///
 /// When `peer_health` is set, outbound send/handshake outcomes and inbound
 /// responder handshakes (once a peer-table PSK matches) are recorded per peer
 /// for periodic feeding into [`RelayPruningPolicy`](aegis_trust::RelayPruningPolicy)
-/// via [`PeerHealthTracker::drain_into_policy`].
+/// via [`PeerHealthTracker::drain_into_policy`]. Inbound health-gossip cells are
+/// verified and merged into the same tracker.
 ///
 /// Returns join handles for the listener and dispatcher tasks.
 pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
@@ -366,6 +589,7 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
     inbound_tx: mpsc::Sender<SphinxPacket>,
     outbound_rx: mpsc::Receiver<ForwardedPacket>,
     cover_rx: Option<mpsc::Receiver<Vec<Cell>>>,
+    gossip_rx: Option<mpsc::Receiver<GossipOutbound>>,
     exit_tx: Option<ExitSink>,
     forward_trace: Option<RelayForwardTrace>,
     rng: R,
@@ -381,6 +605,7 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
         inbound_tx,
         outbound_rx,
         cover_rx,
+        gossip_rx,
         exit_tx,
         forward_trace,
         rng,
@@ -400,6 +625,7 @@ pub fn spawn_link_bridge_with_listener<R: RngCore + CryptoRngCore + Send + Sync 
     inbound_tx: mpsc::Sender<SphinxPacket>,
     outbound_rx: mpsc::Receiver<ForwardedPacket>,
     cover_rx: Option<mpsc::Receiver<Vec<Cell>>>,
+    gossip_rx: Option<mpsc::Receiver<GossipOutbound>>,
     exit_tx: Option<ExitSink>,
     forward_trace: Option<RelayForwardTrace>,
     rng: R,
@@ -422,6 +648,15 @@ pub fn spawn_link_bridge_with_listener<R: RngCore + CryptoRngCore + Send + Sync 
             cover_rx,
             peer_table.clone(),
             forward_trace.clone(),
+            Arc::clone(&rng),
+            bridge_config.clone(),
+            peer_health.clone(),
+        );
+    }
+    if let Some(gossip_rx) = gossip_rx {
+        spawn_gossip_dispatcher(
+            gossip_rx,
+            peer_table.clone(),
             Arc::clone(&rng),
             bridge_config.clone(),
             peer_health.clone(),
@@ -492,6 +727,7 @@ impl LinkSession {
         psk: &[u8; 32],
         peer_relay_id: RelayId,
         kem_public_commitment: Option<[u8; 32]>,
+        peer_noise_static: Option<[u8; 32]>,
         rng: &mut R,
         bridge_config: &LinkBridgeConfig,
     ) -> Result<Self, NetError> {
@@ -501,6 +737,7 @@ impl LinkSession {
             psk,
             peer_relay_id,
             kem_public_commitment,
+            peer_noise_static,
             rng,
             bridge_config,
         )
@@ -534,13 +771,21 @@ pub async fn send_sphinx_packet<R: RngCore + CryptoRngCore>(
     psk: &[u8; 32],
     peer_relay_id: RelayId,
     kem_public_commitment: Option<[u8; 32]>,
+    peer_noise_static: Option<[u8; 32]>,
     packet: &SphinxPacket,
     rng: &mut R,
     bridge_config: &LinkBridgeConfig,
 ) -> Result<(), NetError> {
-    let mut session =
-        LinkSession::connect(addr, psk, peer_relay_id, kem_public_commitment, rng, bridge_config)
-            .await?;
+    let mut session = LinkSession::connect(
+        addr,
+        psk,
+        peer_relay_id,
+        kem_public_commitment,
+        peer_noise_static,
+        rng,
+        bridge_config,
+    )
+    .await?;
     write_packet_on_session(&mut session, packet, rng).await
 }
 
@@ -619,14 +864,24 @@ async fn write_all_timeout(
 }
 
 /// Initiator-side link handshake on an established TCP stream.
+///
+/// `peer_noise_static` is the roster-expected responder static public key when
+/// [`LinkBridgeConfig::handshake`] is [`LinkHandshakeMode::Noise`]; ignored for LegacyPsk.
 pub async fn run_initiator_handshake<R: RngCore + CryptoRngCore>(
     stream: &mut TcpStream,
     psk: &[u8; 32],
     peer_relay_id: RelayId,
     kem_public_commitment: Option<[u8; 32]>,
+    peer_noise_static: Option<[u8; 32]>,
     rng: &mut R,
     bridge_config: &LinkBridgeConfig,
 ) -> Result<LinkKey, NetError> {
+    #[cfg(feature = "noise-link")]
+    if bridge_config.handshake == LinkHandshakeMode::Noise {
+        return run_initiator_noise_handshake(stream, peer_noise_static, rng, bridge_config).await;
+    }
+    let _ = peer_noise_static;
+
     let binding = link_handshake_binding(bridge_config, peer_relay_id, kem_public_commitment);
     let binding_ref = binding.as_ref();
     let read_timeout = bridge_config.read_timeout;
@@ -648,6 +903,7 @@ pub async fn run_initiator_handshake<R: RngCore + CryptoRngCore>(
     if !verify_link_handshake_finish_mac(psk, &transcript, binding_ref, &finish) {
         return Err(NetError::Crypto(CryptoError::IntegrityFailure));
     }
+    let _ = psk;
     Ok(aegis_crypto::link::derive_link_session_key(
         init_sk,
         &resp.eph_pk,
@@ -655,7 +911,36 @@ pub async fn run_initiator_handshake<R: RngCore + CryptoRngCore>(
     ))
 }
 
+#[cfg(feature = "noise-link")]
+async fn run_initiator_noise_handshake<R: RngCore + CryptoRngCore>(
+    stream: &mut TcpStream,
+    peer_noise_static: Option<[u8; 32]>,
+    rng: &mut R,
+    bridge_config: &LinkBridgeConfig,
+) -> Result<LinkKey, NetError> {
+    use aegis_crypto::noise_link::{
+        noise_ik_initiator_read_msg2, noise_ik_initiator_write_msg1, NOISE_IK_MSG2_LEN,
+    };
+
+    let local_sk = bridge_config
+        .noise_static_secret
+        .ok_or(NetError::NoiseConfig("missing local noise_static_secret"))?;
+    let remote_pk = peer_noise_static
+        .ok_or(NetError::NoiseConfig("missing peer noise_static_public"))?;
+    let read_timeout = bridge_config.read_timeout;
+
+    let (state, msg1) = noise_ik_initiator_write_msg1(&local_sk, &remote_pk, rng)?;
+    write_all_timeout(stream, &msg1, read_timeout).await?;
+
+    let mut msg2 = [0u8; NOISE_IK_MSG2_LEN];
+    read_exact_timeout(stream, &mut msg2, read_timeout).await?;
+    Ok(noise_ik_initiator_read_msg2(state, &msg2)?)
+}
+
 /// Responder-side link handshake; identifies which configured PSK matched.
+///
+/// Returns `(session_key, matched_peer_table_id)`. The peer id is `Some` only when
+/// authentication succeeded via a peer-table PSK (not the shared ingress key).
 ///
 /// When local_kem_commitment is Some, it is bound into confirm/finish MACs (must match
 /// the initiator's peer-table / hop commitment for this relay).
@@ -672,7 +957,20 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
     rng: &mut R,
     bridge_config: &LinkBridgeConfig,
     peer_health: Option<&PeerHealthTracker>,
-) -> Result<LinkKey, NetError> {
+) -> Result<(LinkKey, Option<RelayId>), NetError> {
+    #[cfg(feature = "noise-link")]
+    if bridge_config.handshake == LinkHandshakeMode::Noise {
+        return run_responder_noise_handshake(
+            stream,
+            ingress_link_key,
+            peer_table,
+            rng,
+            bridge_config,
+            peer_health,
+        )
+        .await;
+    }
+
     let read_timeout = bridge_config.read_timeout;
 
     let mut init_msg = [0u8; LINK_HANDSHAKE_INIT_LEN];
@@ -703,7 +1001,7 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
             )?;
             let finish = link_handshake_finish_mac(&psk, &transcript, binding_ref);
             write_all_timeout(stream, &finish, read_timeout).await?;
-            return Ok(session);
+            return Ok((session, None));
         }
     }
 
@@ -726,7 +1024,7 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
                         return Err(e.into());
                     }
                     record_inbound_handshake_outcome(peer_health, Some(matched), true);
-                    return Ok(session);
+                    return Ok((session, Some(matched)));
                 }
                 Err(e) => {
                     record_inbound_handshake_outcome(peer_health, Some(matched), false);
@@ -738,6 +1036,77 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
 
     Err(NetError::UnidentifiedInbound)
 }
+
+#[cfg(feature = "noise-link")]
+async fn run_responder_noise_handshake<R: RngCore + CryptoRngCore>(
+    stream: &mut TcpStream,
+    ingress_link_key: Option<[u8; 32]>,
+    peer_table: &HashMap<RelayId, PeerInfo>,
+    rng: &mut R,
+    bridge_config: &LinkBridgeConfig,
+    peer_health: Option<&PeerHealthTracker>,
+) -> Result<(LinkKey, Option<RelayId>), NetError> {
+    use aegis_crypto::noise_link::{
+        derive_noise_static_secret, noise_ik_responder_read_msg1, noise_static_public,
+        verify_noise_static_public, NOISE_IK_MSG1_LEN,
+    };
+
+    let local_sk = bridge_config
+        .noise_static_secret
+        .ok_or(NetError::NoiseConfig("missing local noise_static_secret"))?;
+    let read_timeout = bridge_config.read_timeout;
+
+    let mut msg1 = [0u8; NOISE_IK_MSG1_LEN];
+    read_exact_timeout(stream, &mut msg1, read_timeout).await?;
+    let resp_state = noise_ik_responder_read_msg1(&local_sk, &msg1, rng)?;
+    let initiator_pk = resp_state.initiator_static_pk;
+    let msg2 = *resp_state.msg2();
+
+    let mut candidates: Vec<([u8; 32], Option<RelayId>)> = Vec::new();
+    if let Some(expected) = bridge_config.ingress_noise_static_public {
+        candidates.push((expected, None));
+    } else if let Some(ingress_psk) = ingress_link_key {
+        candidates.push((
+            noise_static_public(&derive_noise_static_secret(&ingress_psk)),
+            None,
+        ));
+    }
+    for (id, peer) in peer_table {
+        let expected = match peer.noise_static_public {
+            Some(pk) => pk,
+            None => noise_static_public(&derive_noise_static_secret(&peer.link_key_bytes)),
+        };
+        candidates.push((expected, Some(*id)));
+    }
+
+    let mut matched_expected: Option<([u8; 32], Option<RelayId>)> = None;
+    for (expected, matched) in candidates {
+        if verify_noise_static_public(&initiator_pk, &expected) {
+            matched_expected = Some((expected, matched));
+            break;
+        }
+    }
+
+    let Some((expected, matched)) = matched_expected else {
+        return Err(NetError::UnidentifiedInbound);
+    };
+
+    match resp_state.into_session_if_peer_matches(&expected) {
+        Ok(session) => {
+            if let Err(e) = write_all_timeout(stream, &msg2, read_timeout).await {
+                record_inbound_handshake_outcome(peer_health, matched, false);
+                return Err(e);
+            }
+            record_inbound_handshake_outcome(peer_health, matched, true);
+            Ok((session, matched))
+        }
+        Err(e) => {
+            record_inbound_handshake_outcome(peer_health, matched, false);
+            Err(e.into())
+        }
+    }
+}
+
 
 fn spawn_inbound_listener(
     listen: InboundListen,
@@ -768,7 +1137,15 @@ fn spawn_inbound_listener(
                 rate_limit_config.burst,
             )))
         });
+    let fair_hub = FairInboundHub::new();
     tokio::spawn(async move {
+        // Keep the drain JoinHandle alive for the listener lifetime; dropping it
+        // would abort the task and starve the mix inbound channel.
+        let _fair_drain = spawn_fair_inbound_drain(
+            Arc::clone(&fair_hub),
+            inbound_tx,
+            Arc::clone(&queue_drop_stats),
+        );
         let listener = match listen {
             InboundListen::Listener(l) => l,
             InboundListen::Bind(listen_addr) => match TcpListener::bind(listen_addr).await {
@@ -797,7 +1174,6 @@ fn spawn_inbound_listener(
             let peer_table = peer_table.clone();
             let ingress = ingress_link_key;
             let kem = local_kem_commitment;
-            let inbound_tx = inbound_tx.clone();
             let cfg = bridge_config.clone();
             let local_id = local_relay_id;
             let health = peer_health.clone();
@@ -805,24 +1181,30 @@ fn spawn_inbound_listener(
             let queue_drop_stats = Arc::clone(&queue_drop_stats);
             let rate_limit_config = rate_limit_config.clone();
             let global_rate_bucket = global_rate_bucket.clone();
+            let fair_hub = Arc::clone(&fair_hub);
             tokio::spawn(async move {
                 let _permit = permit;
-                if let Err(e) = run_inbound_connection(
+                // Do not `unregister` here: dropping the peer queue would discard a
+                // just-reassembled Sphinx packet when the client closes TCP immediately
+                // after the last fragment (common in lab floods). Closing `peer_tx`
+                // (end of this task) lets the fair drain empty remaining items, then
+                // clear the slot on `TryRecvError::Disconnected`.
+                let (_slot_id, peer_tx) = fair_hub.register(Arc::clone(&queue_drop_stats)).await;
+                let result = run_inbound_connection(
                     stream,
                     local_id,
                     kem,
                     peer_table,
                     ingress,
-                    inbound_tx,
+                    peer_tx,
                     &cfg,
                     health.as_deref(),
                     rate_limit_config,
                     rate_stats,
-                    queue_drop_stats,
                     global_rate_bucket,
                 )
-                .await
-                {
+                .await;
+                if let Err(e) = result {
                     eprintln!("aegis-relay net: inbound connection ended: {e}");
                 }
             });
@@ -836,16 +1218,15 @@ async fn run_inbound_connection(
     local_kem_commitment: Option<[u8; 32]>,
     peer_table: HashMap<RelayId, PeerInfo>,
     ingress_link_key: Option<[u8; 32]>,
-    inbound_tx: mpsc::Sender<SphinxPacket>,
+    peer_tx: FairPeerSender,
     bridge_config: &LinkBridgeConfig,
     peer_health: Option<&PeerHealthTracker>,
     rate_limit_config: IngressRateLimitConfig,
     rate_stats: Arc<IngressRateLimitStats>,
-    queue_drop_stats: Arc<QueueDropStats>,
     global_rate_bucket: Option<Arc<Mutex<TokenBucket>>>,
 ) -> Result<(), NetError> {
     let mut rng = rand_core::OsRng;
-    let session_key = run_responder_handshake(
+    let (session_key, matched_peer) = run_responder_handshake(
         &mut stream,
         local_relay_id,
         local_kem_commitment,
@@ -869,22 +1250,148 @@ async fn run_inbound_connection(
             continue;
         }
         let cell = session_key.open(&frame)?;
-        // Mode-1 cover / loop cells share the link with Sphinx fragments; discard
-        // them here so continuous dummy cover does not poison reassembly.
+        // Mode-1 cover / loop / health-gossip cells share the link with Sphinx
+        // fragments; handle control cells here so they never poison reassembly.
         match Command::from_u8(cell.as_bytes()[0]) {
             Some(Command::Drop) | Some(Command::LoopToSelf) => continue,
+            Some(Command::PeerHealthAdvert) => {
+                if let (Some(tracker), Some(link_peer)) = (peer_health, matched_peer) {
+                    if let Ok(advert) = PeerHealthAdvert::from_cell(&cell) {
+                        let _ = accept_advert(
+                            &advert,
+                            link_peer,
+                            &peer_table,
+                            unix_timestamp_secs(),
+                            DEFAULT_MAX_ADVERT_AGE_SECS,
+                            tracker,
+                        );
+                    }
+                }
+                continue;
+            }
             Some(Command::SphinxFragment) if is_relay_cover_fragment(&cell) => continue,
             Some(Command::SphinxFragment) => {}
             _ => continue,
         }
         if let Some(packet) = reassembler.push(&cell)? {
-            // Drop-newest when the mix inbound queue is full (never block forever).
-            if try_send_drop_newest(&inbound_tx, packet, queue_drop_stats.counter()).is_err() {
+            // Per-peer drop-newest; fair drain moves packets into the mix inbound.
+            if peer_tx.try_enqueue(packet).is_err() {
                 break;
             }
         }
     }
     Ok(())
+}
+
+fn spawn_gossip_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
+    gossip_rx: mpsc::Receiver<GossipOutbound>,
+    peer_table: HashMap<RelayId, PeerInfo>,
+    rng: Arc<Mutex<R>>,
+    bridge_config: LinkBridgeConfig,
+    peer_health: Option<Arc<PeerHealthTracker>>,
+) {
+    tokio::spawn(async move {
+        let pool = Arc::new(Mutex::new(ConnectionPool::new()));
+        let mut gossip_rx = gossip_rx;
+        while let Some((peer_id, cell)) = gossip_rx.recv().await {
+            let peer = match peer_table.get(&peer_id) {
+                Some(p) => p.clone(),
+                None => continue,
+            };
+            let mut guard = rng.lock().await;
+            if let Err(e) = write_gossip_cell(
+                &pool,
+                peer_id,
+                &peer,
+                &cell,
+                &mut *guard,
+                &bridge_config,
+                &peer_health,
+            )
+            .await
+            {
+                eprintln!("aegis-relay net: health gossip to {:?}: {e}", peer.addr);
+            }
+        }
+    });
+}
+
+async fn write_gossip_cell<R: RngCore + CryptoRngCore>(
+    pool: &Arc<Mutex<ConnectionPool>>,
+    peer_id: RelayId,
+    peer: &PeerInfo,
+    cell: &Cell,
+    rng: &mut R,
+    bridge_config: &LinkBridgeConfig,
+    peer_health: &Option<Arc<PeerHealthTracker>>,
+) -> Result<(), NetError> {
+    let conn = match {
+        let mut pool = pool.lock().await;
+        pool.get_or_handshake(peer_id, peer, rng, bridge_config).await
+    } {
+        Ok(c) => c,
+        Err(e) => {
+            record_peer_outcome(peer_health, peer_id, false);
+            return Err(e);
+        }
+    };
+    let mut guard = conn.lock().await;
+    let session_key = LinkKey::new(*guard.session_key.as_bytes());
+    // Pace real bulk on the same τ schedule as cover (cover-burst indistinguishability).
+    let pace = bridge_config.cover_cell_tau;
+    match write_cells_on_stream(
+        &mut guard.stream,
+        &session_key,
+        std::slice::from_ref(cell),
+        rng,
+        bridge_config.read_timeout,
+        pace,
+    )
+    .await
+    {
+        Ok(()) => {
+            record_peer_outcome(peer_health, peer_id, true);
+            Ok(())
+        }
+        Err(NetError::Io(_)) | Err(NetError::ReadTimeout(_)) => {
+            drop(guard);
+            let conn = match {
+                let mut pool = pool.lock().await;
+                pool.reconnect(peer_id, peer, rng, bridge_config).await
+            } {
+                Ok(c) => c,
+                Err(e) => {
+                    record_peer_outcome(peer_health, peer_id, false);
+                    return Err(e);
+                }
+            };
+            let mut guard = conn.lock().await;
+            let session_key = LinkKey::new(*guard.session_key.as_bytes());
+            match write_cells_on_stream(
+                &mut guard.stream,
+                &session_key,
+                std::slice::from_ref(cell),
+                rng,
+                bridge_config.read_timeout,
+                pace,
+            )
+            .await
+            {
+                Ok(()) => {
+                    record_peer_outcome(peer_health, peer_id, true);
+                    Ok(())
+                }
+                Err(e) => {
+                    record_peer_outcome(peer_health, peer_id, false);
+                    Err(e)
+                }
+            }
+        }
+        Err(e) => {
+            record_peer_outcome(peer_health, peer_id, false);
+            Err(e)
+        }
+    }
 }
 
 fn pick_cover_egress(peer_table: &HashMap<RelayId, PeerInfo>) -> Option<(RelayId, PeerInfo)> {
@@ -965,12 +1472,14 @@ async fn write_cover_cells<R: RngCore + CryptoRngCore>(
     };
     let mut guard = conn.lock().await;
     let session_key = LinkKey::new(*guard.session_key.as_bytes());
+    let pace = bridge_config.cover_cell_tau;
     match write_cells_on_stream(
         &mut guard.stream,
         &session_key,
         cells,
         rng,
         bridge_config.read_timeout,
+        pace,
     )
     .await
     {
@@ -998,6 +1507,7 @@ async fn write_cover_cells<R: RngCore + CryptoRngCore>(
                 cells,
                 rng,
                 bridge_config.read_timeout,
+                pace,
             )
             .await
             {
@@ -1024,8 +1534,12 @@ async fn write_cells_on_stream<R: RngCore + CryptoRngCore>(
     cells: &[Cell],
     rng: &mut R,
     read_timeout: Duration,
+    cell_pace: Duration,
 ) -> Result<(), NetError> {
-    for cell in cells {
+    for (i, cell) in cells.iter().enumerate() {
+        if i > 0 && !cell_pace.is_zero() {
+            tokio::time::sleep(cell_pace).await;
+        }
         let frame = link_key.seal(cell, rng)?;
         write_all_timeout(stream, &frame, read_timeout).await?;
     }
@@ -1065,6 +1579,7 @@ impl ConnectionPool {
             &peer.link_key_bytes,
             peer_id,
             peer.kem_public_commitment,
+            peer.noise_static_public,
             rng,
             bridge_config,
         )
@@ -1111,7 +1626,7 @@ fn spawn_outbound_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
             let peer = match peer_table.get(&fwd.next_hop) {
                 Some(p) => p.clone(),
                 None => {
-                    // Terminal peel (exit hop) or misconfiguration — no peer route.
+                    // Terminal peel (exit hop) or misconfiguration â€” no peer route.
                     // When `exit_tx` is set the packet was already delivered above.
                     continue;
                 }
@@ -1264,7 +1779,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut rng = OsRng;
-            let key = run_responder_handshake(
+            let (key, _) = run_responder_handshake(
                 &mut stream,
                 relay_id,
                 None,
@@ -1288,7 +1803,7 @@ mod tests {
         });
 
         let mut rng = OsRng;
-        let mut session = LinkSession::connect(addr, &psk, relay_id, None, &mut rng, &cfg)
+        let mut session = LinkSession::connect(addr, &psk, relay_id, None, None, &mut rng, &cfg)
             .await
             .unwrap();
         for i in 0..3u8 {
@@ -1328,10 +1843,10 @@ mod tests {
 
         let mut client = TcpStream::connect(addr).await.unwrap();
         let mut rng = OsRng;
-        let key_i = run_initiator_handshake(&mut client, &psk, relay_id, None, &mut rng, &cfg)
+        let key_i = run_initiator_handshake(&mut client, &psk, relay_id, None, None, &mut rng, &cfg)
             .await
             .unwrap();
-        let key_r = server.await.unwrap();
+        let (key_r, _) = server.await.unwrap();
         assert_eq!(key_i, key_r);
     }
 
@@ -1364,7 +1879,7 @@ mod tests {
         let mut client = TcpStream::connect(addr).await.unwrap();
         let mut rng = OsRng;
         let err =
-            run_initiator_handshake(&mut client, &psk, wrong, None, &mut rng, &cfg).await;
+            run_initiator_handshake(&mut client, &psk, wrong, None, None, &mut rng, &cfg).await;
         assert!(matches!(
             err,
             Err(NetError::ReadTimeout(_))
@@ -1403,7 +1918,7 @@ mod tests {
 
         let mut client = TcpStream::connect(addr).await.unwrap();
         let mut rng = OsRng;
-        let err = run_initiator_handshake(&mut client, &psk, relay_id, None, &mut rng, &cfg).await;
+        let err = run_initiator_handshake(&mut client, &psk, relay_id, None, None, &mut rng, &cfg).await;
         assert!(matches!(
             err,
             Err(NetError::ReadTimeout(_))
@@ -1433,7 +1948,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut rng = OsRng;
-            let key = run_responder_handshake(
+            let (key, _) = run_responder_handshake(
                 &mut stream,
                 peer_id,
                 None,
@@ -1469,6 +1984,7 @@ mod tests {
             mpsc::channel(1).0,
             mpsc::channel(1).1,
             Some(cover_rx),
+            None,
             None,
             None,
             OsRng,
@@ -1534,6 +2050,7 @@ mod tests {
             Some(cover_rx),
             None,
             None,
+            None,
             OsRng,
             LinkBridgeConfig::default(),
             None,
@@ -1566,18 +2083,21 @@ mod tests {
         let server_cfg = cfg.clone();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
+            let hub = FairInboundHub::new();
+            let drop_stats = Arc::new(QueueDropStats::default());
+            let (_slot, peer_tx) = hub.register(Arc::clone(&drop_stats)).await;
+            let _drain = spawn_fair_inbound_drain(Arc::clone(&hub), inbound_tx, drop_stats);
             run_inbound_connection(
                 stream,
                 relay_id,
                 None,
                 HashMap::new(),
                 Some(psk),
-                inbound_tx,
+                peer_tx,
                 &server_cfg,
                 None,
                 server_cfg.ingress_rate_limit.clone(),
                 Arc::new(IngressRateLimitStats::default()),
-                Arc::new(QueueDropStats::default()),
                 None,
             )
             .await
@@ -1590,7 +2110,7 @@ mod tests {
             let mut stream = TcpStream::connect(addr).await.unwrap();
             let mut rng = OsRng;
             let session_key =
-                run_initiator_handshake(&mut stream, &psk, relay_id, None, &mut rng, &cfg)
+                run_initiator_handshake(&mut stream, &psk, relay_id, None, None, &mut rng, &cfg)
                     .await
                     .unwrap();
             write_cells_on_stream(
@@ -1599,6 +2119,7 @@ mod tests {
                 &flow.cells,
                 &mut rng,
                 cfg.read_timeout,
+                Duration::ZERO,
             )
             .await
             .unwrap();
@@ -1648,12 +2169,13 @@ mod tests {
             &psk,
             relay_id,
             Some(commitment),
+            None,
             &mut rng,
             &cfg,
         )
         .await
         .unwrap();
-        let key_r = server.await.unwrap();
+        let (key_r, _) = server.await.unwrap();
         assert_eq!(key_i, key_r);
     }
 
@@ -1689,6 +2211,7 @@ mod tests {
             &psk,
             relay_id,
             Some([0x22u8; 32]),
+            None,
             &mut rng,
             &cfg,
         )
@@ -1731,10 +2254,10 @@ mod tests {
 
         let mut client = TcpStream::connect(addr).await.unwrap();
         let mut rng = OsRng;
-        let key_i = run_initiator_handshake(&mut client, &psk, relay_id, None, &mut rng, &cfg)
+        let key_i = run_initiator_handshake(&mut client, &psk, relay_id, None, None, &mut rng, &cfg)
             .await
             .unwrap();
-        let key_r = server.await.unwrap();
+        let (key_r, _) = server.await.unwrap();
         assert_eq!(key_i, key_r);
     }
 
@@ -1769,7 +2292,7 @@ mod tests {
 
         let mut client = TcpStream::connect(addr).await.unwrap();
         let mut rng = OsRng;
-        run_initiator_handshake(&mut client, &psk, local_id, None, &mut rng, &cfg)
+        run_initiator_handshake(&mut client, &psk, local_id, None, None, &mut rng, &cfg)
             .await
             .unwrap();
         server.await.unwrap().unwrap();
@@ -1813,7 +2336,7 @@ mod tests {
 
         let mut client = TcpStream::connect(addr).await.unwrap();
         let mut rng = OsRng;
-        let _ = run_initiator_handshake(&mut client, &psk, local_id, None, &mut rng, &cfg).await;
+        let _ = run_initiator_handshake(&mut client, &psk, local_id, None, None, &mut rng, &cfg).await;
         assert!(matches!(
             server.await.unwrap(),
             Err(NetError::UnidentifiedInbound)
@@ -1837,6 +2360,7 @@ mod tests {
             None,
             mpsc::channel(1).0,
             outbound_rx,
+            None,
             None,
             None,
             None,
@@ -1869,7 +2393,7 @@ mod tests {
         let stats = Arc::new(IngressRateLimitStats::default());
         let cfg = LinkBridgeConfig {
             ingress_rate_limit: IngressRateLimitConfig {
-                // Comfortably above Mode-1 1/τ ≈ 2.86 cells/s.
+                // Comfortably above Mode-1 1/Ï„ â‰ˆ 2.86 cells/s.
                 max_cells_per_sec: 10.0,
                 burst: 4,
                 global_max_cells_per_sec: None,
@@ -1881,13 +2405,17 @@ mod tests {
         let server_cfg = cfg.clone();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
+            let hub = FairInboundHub::new();
+            let drop_stats = Arc::new(QueueDropStats::default());
+            let (_slot, peer_tx) = hub.register(Arc::clone(&drop_stats)).await;
+            let _drain = spawn_fair_inbound_drain(Arc::clone(&hub), inbound_tx, drop_stats);
             let _ = run_inbound_connection(
                 stream,
                 relay_id,
                 None,
                 HashMap::new(),
                 Some(psk),
-                inbound_tx,
+                peer_tx,
                 &server_cfg,
                 None,
                 server_cfg.ingress_rate_limit.clone(),
@@ -1895,7 +2423,6 @@ mod tests {
                     .ingress_rate_limit_stats
                     .clone()
                     .unwrap_or_default(),
-                Arc::new(QueueDropStats::default()),
                 None,
             )
             .await;
@@ -1904,10 +2431,10 @@ mod tests {
         let mut stream = TcpStream::connect(addr).await.unwrap();
         let mut rng = OsRng;
         let session_key =
-            run_initiator_handshake(&mut stream, &psk, relay_id, None, &mut rng, &cfg)
+            run_initiator_handshake(&mut stream, &psk, relay_id, None, None, &mut rng, &cfg)
                 .await
                 .unwrap();
-        // One cell every 200ms ≈ 5 cells/s — under the 10/s limit.
+        // One cell every 200ms â‰ˆ 5 cells/s â€” under the 10/s limit.
         for i in 0..6u8 {
             let mut cell = Cell::zeroed();
             cell.0[0] = Command::Drop as u8;
@@ -1923,7 +2450,7 @@ mod tests {
         assert_eq!(
             stats.dropped_frames(),
             0,
-            "τ-paced traffic must pass comfortably"
+            "Ï„-paced traffic must pass comfortably"
         );
     }
 
@@ -1947,13 +2474,17 @@ mod tests {
         let server_cfg = cfg.clone();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
+            let hub = FairInboundHub::new();
+            let drop_stats = Arc::new(QueueDropStats::default());
+            let (_slot, peer_tx) = hub.register(Arc::clone(&drop_stats)).await;
+            let _drain = spawn_fair_inbound_drain(Arc::clone(&hub), inbound_tx, drop_stats);
             let _ = run_inbound_connection(
                 stream,
                 relay_id,
                 None,
                 HashMap::new(),
                 Some(psk),
-                inbound_tx,
+                peer_tx,
                 &server_cfg,
                 None,
                 server_cfg.ingress_rate_limit.clone(),
@@ -1961,7 +2492,6 @@ mod tests {
                     .ingress_rate_limit_stats
                     .clone()
                     .unwrap_or_default(),
-                Arc::new(QueueDropStats::default()),
                 None,
             )
             .await;
@@ -1970,10 +2500,10 @@ mod tests {
         let mut stream = TcpStream::connect(addr).await.unwrap();
         let mut rng = OsRng;
         let session_key =
-            run_initiator_handshake(&mut stream, &psk, relay_id, None, &mut rng, &cfg)
+            run_initiator_handshake(&mut stream, &psk, relay_id, None, None, &mut rng, &cfg)
                 .await
                 .unwrap();
-        // Flood 40 cells immediately — burst=2 then drop the rest.
+        // Flood 40 cells immediately â€” burst=2 then drop the rest.
         for i in 0..40u8 {
             let mut cell = Cell::zeroed();
             cell.0[0] = Command::Drop as u8;
@@ -1999,8 +2529,192 @@ mod tests {
         let cfg = IngressRateLimitConfig::default();
         assert!((cfg.max_cells_per_sec - (1.0 / MODE1_TAU_SECS)).abs() < 1e-9);
         assert_eq!(cfg.burst, DEFAULT_INGRESS_BURST);
+        assert_eq!(
+            cfg.global_max_cells_per_sec,
+            Some(DEFAULT_GLOBAL_MAX_CELLS_PER_SEC)
+        );
+        assert!(
+            (DEFAULT_GLOBAL_MAX_CELLS_PER_SEC
+                - DEFAULT_EXPECTED_INGRESS_CLIENTS / MODE1_TAU_SECS)
+                .abs()
+                < 1e-9
+        );
+        assert_eq!(LinkBridgeConfig::default().cover_cell_tau, DEFAULT_COVER_CELL_TAU);
         assert!(cfg.is_active());
         assert!(!IngressRateLimitConfig::disabled().is_active());
+    }
+
+    /// Cover cells on the wire are spaced near Ï„ (Mode-1), not burst at round close.
+    ///
+    /// Residual (documented): multi-hop Sphinx semantics still differ â€” cover is
+    /// discarded at the next hop and never peels/forwards like real bulk.
+    #[tokio::test]
+    async fn cover_dispatcher_paces_cells_near_tau() {
+        use aegis_crypto::cell::Command;
+        use crate::cover_flow::CoverFlowGenerator;
+        use aegis_negotiator::cover::CoverRequirement;
+
+        let psk = test_psk(0xCF);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let tau = Duration::from_millis(40);
+        let cfg = LinkBridgeConfig {
+            cover_cell_tau: tau,
+            ..LinkBridgeConfig::default().without_ingress_rate_limit()
+        };
+        let cfg_server = cfg.clone();
+        let peer_id = test_relay_id(0xCF);
+        let local_id = test_relay_id(0xCE);
+        let peer_table = HashMap::from([(peer_id, PeerInfo::new(addr, psk))]);
+        let cell_count = 5usize;
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            let (key, _) = run_responder_handshake(
+                &mut stream,
+                peer_id,
+                None,
+                Some(psk),
+                &HashMap::new(),
+                &mut rng,
+                &cfg_server,
+                None,
+            )
+            .await
+            .unwrap();
+
+            let mut frame = [0u8; LINK_FRAME_LEN];
+            let mut stamps = Vec::with_capacity(cell_count);
+            for _ in 0..cell_count {
+                read_exact_timeout(&mut stream, &mut frame, cfg_server.read_timeout)
+                    .await
+                    .unwrap();
+                let cell = key.open(&frame).unwrap();
+                assert_eq!(cell.as_bytes()[0], Command::SphinxFragment as u8);
+                stamps.push(Instant::now());
+            }
+            stamps
+        });
+
+        let (cover_tx, cover_rx) = mpsc::channel(4);
+        let (_listener_task, _dispatcher_task) = spawn_link_bridge(
+            "127.0.0.1:0".parse().unwrap(),
+            local_id,
+            None,
+            peer_table,
+            None,
+            mpsc::channel(1).0,
+            mpsc::channel(1).1,
+            Some(cover_rx),
+            None,
+            None,
+            None,
+            OsRng,
+            cfg,
+            None,
+        );
+
+        let gen = CoverFlowGenerator::with_config(
+            CoverRequirement::new(1),
+            crate::cover_flow::CoverFlowConfig {
+                cells_per_flow: cell_count,
+            },
+        );
+        let flow = gen.generate(0, &mut OsRng).into_iter().next().unwrap();
+        assert_eq!(flow.cells.len(), cell_count);
+        cover_tx.send(flow.cells).await.unwrap();
+        drop(cover_tx);
+
+        let stamps = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("cover pacing test timed out")
+            .expect("server task");
+        assert_eq!(stamps.len(), cell_count);
+        for w in stamps.windows(2) {
+            let gap = w[1].duration_since(w[0]);
+            assert!(
+                gap >= tau / 2 && gap < tau * 3,
+                "cover cell gap {gap:?} not near τ={tau:?}"
+            );
+        }
+    }
+
+
+    /// Multi-connection flood is shed by the shared global token bucket even when
+    /// each connection stays under a generous per-conn limit.
+    #[tokio::test]
+    async fn global_ingress_budget_sheds_multi_conn_flood() {
+        let psk = test_psk(0xB3);
+        let relay_id = test_relay_id(0xB3);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stats = Arc::new(IngressRateLimitStats::default());
+        let cfg = LinkBridgeConfig {
+            ingress_rate_limit: IngressRateLimitConfig {
+                max_cells_per_sec: 200.0,
+                burst: 8,
+                global_max_cells_per_sec: Some(4.0),
+            },
+            ingress_rate_limit_stats: Some(Arc::clone(&stats)),
+            ..Default::default()
+        };
+
+        let (inbound_tx, _inbound_rx) = mpsc::channel(64);
+        let _tasks = spawn_link_bridge_with_listener(
+            InboundListen::Listener(listener),
+            relay_id,
+            None,
+            HashMap::new(),
+            Some(psk),
+            inbound_tx,
+            mpsc::channel(1).1,
+            None,
+            None,
+            None,
+            None,
+            OsRng,
+            cfg.clone(),
+            None,
+        );
+
+        async fn flood_conn(
+            addr: SocketAddr,
+            psk: [u8; 32],
+            relay_id: RelayId,
+            cfg: LinkBridgeConfig,
+            n: u8,
+        ) {
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            let mut rng = OsRng;
+            let session_key =
+                run_initiator_handshake(&mut stream, &psk, relay_id, None, None, &mut rng, &cfg)
+                    .await
+                    .unwrap();
+            for i in 0..n {
+                let mut cell = Cell::zeroed();
+                cell.0[0] = Command::Drop as u8;
+                cell.0[1] = i;
+                let frame = session_key.seal(&cell, &mut rng).unwrap();
+                write_all_timeout(&mut stream, &frame, cfg.read_timeout)
+                    .await
+                    .unwrap();
+            }
+            stream.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(80)).await;
+        }
+
+        let a = tokio::spawn(flood_conn(addr, psk, relay_id, cfg.clone(), 30));
+        let b = tokio::spawn(flood_conn(addr, psk, relay_id, cfg.clone(), 30));
+        a.await.unwrap();
+        b.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        assert!(
+            stats.dropped_frames() >= 40,
+            "shared global budget must shed multi-conn flood, dropped={}",
+            stats.dropped_frames()
+        );
     }
 
     #[test]
@@ -2037,13 +2751,14 @@ mod tests {
             None,
             None,
             None,
+            None,
             OsRng,
             cfg.clone(),
             None,
         );
 
         let mut rng = OsRng;
-        let mut session = LinkSession::connect(addr, &psk, relay_id, None, &mut rng, &cfg)
+        let mut session = LinkSession::connect(addr, &psk, relay_id, None, None, &mut rng, &cfg)
             .await
             .expect("ingress handshake via spawn_link_bridge_with_listener");
         let mut cell = Cell::zeroed();
@@ -2052,5 +2767,307 @@ mod tests {
         session.flush().await.unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(inbound_rx.try_recv().is_err(), "Drop must not reassemble");
+    }
+
+    #[tokio::test]
+    async fn fair_inbound_round_robin_interleaves_peers() {
+        use aegis_crypto::sphinx::SPHINX_PACKET_LEN;
+
+        let hub = FairInboundHub::new();
+        let stats = Arc::new(QueueDropStats::default());
+        let (_id_a, tx_a) = hub.register(Arc::clone(&stats)).await;
+        let (_id_b, tx_b) = hub.register(Arc::clone(&stats)).await;
+
+        // Tag packets via first payload byte so we can see RR order.
+        let mk = |tag: u8| {
+            let mut bytes = [0u8; SPHINX_PACKET_LEN];
+            bytes[0] = tag;
+            SphinxPacket::from_bytes(bytes)
+        };
+        // Peer A floods 4; peer B sends 2.
+        for _ in 0..4 {
+            assert!(tx_a.try_enqueue(mk(0xAA)).is_ok());
+        }
+        for _ in 0..2 {
+            assert!(tx_b.try_enqueue(mk(0xBB)).is_ok());
+        }
+
+        let mut cursor = 0usize;
+        let mut order = Vec::new();
+        for _ in 0..6 {
+            let pkt = fair_drain_once_for_test(&hub, &mut cursor)
+                .await
+                .expect("packet available");
+            order.push(pkt.as_bytes()[0]);
+        }
+        // Round-robin must serve B between A's packets (not AAAA then BB).
+        assert_eq!(order, vec![0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xAA]);
+        assert!(fair_drain_once_for_test(&hub, &mut cursor).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fair_peer_queue_full_drops_newest_not_other_peer() {
+        use aegis_crypto::sphinx::SPHINX_PACKET_LEN;
+
+        let hub = FairInboundHub::new();
+        let stats = Arc::new(QueueDropStats::default());
+        let (_id_a, tx_a) = hub.register(Arc::clone(&stats)).await;
+        let (_id_b, tx_b) = hub.register(Arc::clone(&stats)).await;
+        let mk = || SphinxPacket::from_bytes([0u8; SPHINX_PACKET_LEN]);
+
+        for _ in 0..PER_PEER_INBOUND_CAPACITY {
+            assert!(tx_a.try_enqueue(mk()).is_ok());
+        }
+        // One more on A drops newest on A's queue only.
+        assert!(tx_a.try_enqueue(mk()).is_ok());
+        assert_eq!(stats.dropped(), 1);
+        // B can still enqueue.
+        assert!(tx_b.try_enqueue(mk()).is_ok());
+        assert_eq!(stats.dropped(), 1);
+    }
+
+    #[tokio::test]
+    async fn peer_health_advert_over_link_merges_into_tracker() {
+        use ed25519_dalek::SigningKey;
+
+        let reporter_sk = SigningKey::from_bytes(&[0x42; 32]);
+        let reporter_id = test_relay_id(0x42);
+        let local_id = test_relay_id(0x10);
+        let subject = test_relay_id(0x99);
+        let psk = test_psk(0x42);
+
+        let mut peer_table = HashMap::new();
+        peer_table.insert(
+            reporter_id,
+            PeerInfo::new("127.0.0.1:1".parse().unwrap(), psk)
+                .with_gossip_verifying_key(reporter_sk.verifying_key().to_bytes()),
+        );
+
+        let health = Arc::new(PeerHealthTracker::new());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = LinkBridgeConfig::default().without_ingress_rate_limit();
+        let cfg_server = cfg.clone();
+        let peer_table_server = peer_table.clone();
+        let health_server = Arc::clone(&health);
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            let (key, matched) = run_responder_handshake(
+                &mut stream,
+                local_id,
+                None,
+                None,
+                &peer_table_server,
+                &mut rng,
+                &cfg_server,
+                Some(health_server.as_ref()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(matched, Some(reporter_id));
+
+            let mut frame = [0u8; LINK_FRAME_LEN];
+            read_exact_timeout(&mut stream, &mut frame, cfg_server.read_timeout)
+                .await
+                .unwrap();
+            let cell = key.open(&frame).unwrap();
+            assert_eq!(cell.as_bytes()[0], Command::PeerHealthAdvert as u8);
+            let advert = PeerHealthAdvert::from_cell(&cell).unwrap();
+            accept_advert(
+                &advert,
+                matched.unwrap(),
+                &peer_table_server,
+                advert.timestamp_secs,
+                DEFAULT_MAX_ADVERT_AGE_SECS,
+                health_server.as_ref(),
+            )
+            .unwrap();
+        });
+
+        let mut rng = OsRng;
+        let mut session =
+            LinkSession::connect(addr, &psk, local_id, None, None, &mut rng, &cfg)
+                .await
+                .unwrap();
+        let advert = PeerHealthAdvert::sign(
+            &reporter_sk,
+            *reporter_id.as_bytes(),
+            *subject.as_bytes(),
+            8,
+            2,
+            1_700_000_000,
+        );
+        session.send_cell(&advert.to_cell(), &mut rng).await.unwrap();
+        session.flush().await.unwrap();
+        server.await.unwrap();
+
+        // Half-weight: 8/2 → 4/1 → failure rate 0.2
+        let rate = health.failure_rate(*subject.as_bytes()).unwrap();
+        assert!((rate - 0.2).abs() < 1e-9);
+    }
+
+    #[cfg(feature = "noise-link")]
+    #[tokio::test]
+    async fn noise_ik_honest_roundtrip() {
+        use aegis_crypto::noise_link::{derive_noise_static_secret, noise_static_public};
+
+        let init_sk = derive_noise_static_secret(&[0x11u8; 32]);
+        let resp_sk = derive_noise_static_secret(&[0x22u8; 32]);
+        let init_pk = noise_static_public(&init_sk);
+        let resp_pk = noise_static_public(&resp_sk);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer_id = test_relay_id(0xA1);
+        let local_id = test_relay_id(0xA2);
+        let psk = test_psk(0xAA);
+
+        let peer = PeerInfo::new(addr, psk).with_noise_static_public(init_pk);
+        let peer_table = HashMap::from([(peer_id, peer)]);
+
+        let mut cfg = LinkBridgeConfig::default();
+        cfg.handshake = LinkHandshakeMode::Noise;
+        cfg.noise_static_secret = Some(resp_sk);
+
+        let cfg_server = cfg.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            run_responder_handshake(
+                &mut stream,
+                local_id,
+                None,
+                None,
+                &peer_table,
+                &mut rng,
+                &cfg_server,
+                None,
+            )
+            .await
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let mut rng = OsRng;
+        let mut init_cfg = LinkBridgeConfig::default();
+        init_cfg.handshake = LinkHandshakeMode::Noise;
+        init_cfg.noise_static_secret = Some(init_sk);
+        let key_i = run_initiator_handshake(
+            &mut client,
+            &psk,
+            local_id,
+            None,
+            Some(resp_pk),
+            &mut rng,
+            &init_cfg,
+        )
+        .await
+        .unwrap();
+        let (key_r, matched) = server.await.unwrap().unwrap();
+        assert_eq!(matched, Some(peer_id));
+        assert_eq!(key_i, key_r);
+    }
+
+    #[cfg(feature = "noise-link")]
+    #[tokio::test]
+    async fn noise_ik_wrong_static_key_fails() {
+        use aegis_crypto::noise_link::{derive_noise_static_secret, noise_static_public};
+
+        let init_sk = derive_noise_static_secret(&[0x31u8; 32]);
+        let resp_sk = derive_noise_static_secret(&[0x32u8; 32]);
+        let wrong_init_pk = noise_static_public(&derive_noise_static_secret(&[0x99u8; 32]));
+        let resp_pk = noise_static_public(&resp_sk);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer_id = test_relay_id(0xA3);
+        let local_id = test_relay_id(0xA4);
+        let psk = test_psk(0xBB);
+
+        // Responder expects a different initiator static than the real client.
+        let peer = PeerInfo::new(addr, psk).with_noise_static_public(wrong_init_pk);
+        let peer_table = HashMap::from([(peer_id, peer)]);
+
+        let mut cfg = LinkBridgeConfig::default();
+        cfg.handshake = LinkHandshakeMode::Noise;
+        cfg.noise_static_secret = Some(resp_sk);
+        let cfg_server = cfg.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            run_responder_handshake(
+                &mut stream,
+                local_id,
+                None,
+                None,
+                &peer_table,
+                &mut rng,
+                &cfg_server,
+                None,
+            )
+            .await
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let mut rng = OsRng;
+        let mut init_cfg = LinkBridgeConfig::default();
+        init_cfg.handshake = LinkHandshakeMode::Noise;
+        init_cfg.noise_static_secret = Some(init_sk);
+        let err = run_initiator_handshake(
+            &mut client,
+            &psk,
+            local_id,
+            None,
+            Some(resp_pk),
+            &mut rng,
+            &init_cfg,
+        )
+        .await;
+        assert!(matches!(
+            err,
+            Err(NetError::ReadTimeout(_))
+                | Err(NetError::Io(_))
+                | Err(NetError::Crypto(_))
+                | Err(NetError::UnidentifiedInbound)
+        ));
+        let server_err = server.await.unwrap();
+        assert!(matches!(server_err, Err(NetError::UnidentifiedInbound)));
+    }
+
+    #[tokio::test]
+    async fn legacy_psk_still_default_after_noise_wiring() {
+        let psk = test_psk(0x42);
+        let relay_id = test_relay_id(0x01);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = LinkBridgeConfig::default();
+        assert_eq!(cfg.handshake, LinkHandshakeMode::LegacyPsk);
+
+        let cfg_server = cfg.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            run_responder_handshake(
+                &mut stream,
+                relay_id,
+                None,
+                Some(psk),
+                &HashMap::new(),
+                &mut rng,
+                &cfg_server,
+                None,
+            )
+            .await
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let mut rng = OsRng;
+        let key_i =
+            run_initiator_handshake(&mut client, &psk, relay_id, None, None, &mut rng, &cfg)
+                .await
+                .unwrap();
+        let (key_r, _) = server.await.unwrap().unwrap();
+        assert_eq!(key_i, key_r);
     }
 }

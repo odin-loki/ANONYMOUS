@@ -7,12 +7,11 @@
 //! [`try_send_drop_newest`]: the **newest** item is dropped and a coarse counter
 //! is incremented — the sender never blocks forever under flood.
 //!
-//! This complements (does not replace) link-bridge ingress rate limiting in
-//! [`crate::net`]: rate-limit drops frames before reassembly; queue drops apply
-//! after a full Sphinx packet is ready for the mix core (inbound) or after peel
-//! (outbound). Multiple inbound peer tasks share one inbound channel; each
-//! independently `try_send`s, so a slow consumer sheds load fairly across peers
-//! without a single peer blocking the others.
+//! This complements (does not replace) link-bridge ingress rate limiting and
+//! per-peer fair drain in [`crate::net`]: rate-limit drops frames before
+//! reassembly; each connection enqueues into its own bounded peer queue; a
+//! round-robin drain feeds the shared mix inbound. Queue drops apply on peer
+//! queues or the shared inbound (drop-newest) so one peer cannot monopolize.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

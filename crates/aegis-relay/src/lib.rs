@@ -31,17 +31,19 @@
 //! `tokio::net::TcpStream`, with Sphinx fragmentation and per-connection
 //! ephemeral handshake for link-layer forward secrecy.
 //!
-//! ## Bounded queues (drop-newest)
+//! ## Bounded queues (drop-newest) + per-peer fair drain
 //!
 //! [`RelayNode::spawn`] and production `aegis-node` use bounded `mpsc` channels of
 //! capacity [`RELAY_CHANNEL_CAPACITY`]. Full queues drop the newest item via
 //! [`try_send_drop_newest`] and increment coarse counters
 //! ([`RelayCoarseStats::queue_dropped`] outbound; [`QueueDropStats`] inbound).
-//! See [`node`] module docs.
+//! Link-bridge ingress uses per-connection queues (`PER_PEER_INBOUND_CAPACITY`)
+//! with round-robin drain into the shared mix inbound. See [`node`] / [`net`].
 
 pub mod config;
 pub mod cover_flow;
 pub mod delay;
+pub mod health_gossip;
 pub mod net;
 pub mod node;
 pub mod peer_health;
@@ -57,12 +59,19 @@ pub use cover_flow::{
     CoverFlowConfig, CoverFlowGenerator, COVER_FRAGMENT_RESERVED,
 };
 pub use delay::sample_mixing_delay;
+pub use health_gossip::{
+    accept_advert, unix_timestamp_secs, HealthGossipError, PeerHealthAdvert, ADVERT_BODY_LEN,
+    ADVERT_SIG_LEN, ADVERT_WIRE_LEN, DEFAULT_MAX_ADVERT_AGE_SECS, GOSSIP_WEIGHT_DEN,
+    GOSSIP_WEIGHT_NUM,
+};
 pub use net::{
-    send_link_cell, send_sphinx_packet, write_packet, IngressRateLimitConfig, IngressRateLimitStats,
-    InboundListen, LinkBridgeConfig, LinkSession, NetError, PeerInfo, QueueDropStats, ExitSink,
-    spawn_link_bridge, spawn_link_bridge_with_listener, run_initiator_handshake,
-    run_responder_handshake, DEFAULT_INGRESS_BURST, DEFAULT_INGRESS_MAX_CELLS_PER_SEC,
-    DEFAULT_LINK_READ_TIMEOUT, DEFAULT_MAX_INBOUND_CONNECTIONS, MODE1_TAU_SECS,
+    send_link_cell, send_sphinx_packet, write_packet, GossipOutbound, IngressRateLimitConfig,
+    IngressRateLimitStats, InboundListen, LinkBridgeConfig, LinkHandshakeMode, LinkSession,
+    NetError, PeerInfo, QueueDropStats, ExitSink, spawn_link_bridge,
+    spawn_link_bridge_with_listener, run_initiator_handshake, run_responder_handshake,
+    DEFAULT_COVER_CELL_TAU, DEFAULT_EXPECTED_INGRESS_CLIENTS, DEFAULT_GLOBAL_MAX_CELLS_PER_SEC,
+    DEFAULT_INGRESS_BURST, DEFAULT_INGRESS_MAX_CELLS_PER_SEC, DEFAULT_LINK_READ_TIMEOUT,
+    DEFAULT_MAX_INBOUND_CONNECTIONS, MODE1_TAU_SECS, PER_PEER_INBOUND_CAPACITY,
 };
 pub use node::{
     packet_delta, start_bulk_cover, try_send_drop_newest, ForwardedPacket, RelayCoarseStats,

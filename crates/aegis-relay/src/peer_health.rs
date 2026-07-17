@@ -1,9 +1,10 @@
 //! Per-peer link health sampling for [`aegis_trust::RelayPruningPolicy`].
 //!
-//! In a permissioned mixnet without cross-relay health gossip, each relay
-//! observes inbound/outbound handshake and send outcomes on its hop links and
-//! feeds scalar failure rates into anomaly-driven pruning via
-//! [`Self::drain_into_policy`].
+//! Each relay observes inbound/outbound handshake and send outcomes on its hop
+//! links and feeds scalar failure rates into anomaly-driven pruning via
+//! [`Self::drain_into_policy`]. Cross-relay signed gossip
+//! ([`crate::health_gossip`]) can also contribute dampened remote observations
+//! via [`Self::apply_gossip_outcomes`].
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -40,6 +41,40 @@ impl PeerHealthTracker {
         let mut guard = self.inner.lock().expect("peer health lock");
         let entry = guard.entry(peer).or_insert((0, 0));
         entry.1 = entry.1.saturating_add(1);
+    }
+
+    /// Merge a remote gossip observation with integer weight `num/den` (e.g. 1/2).
+    ///
+    /// Counts are floored after scaling; zero-total windows are ignored.
+    pub fn apply_gossip_outcomes(
+        &self,
+        peer: [u8; 32],
+        successes: u64,
+        failures: u64,
+        weight_num: u64,
+        weight_den: u64,
+    ) {
+        if weight_den == 0 {
+            return;
+        }
+        let ok = successes.saturating_mul(weight_num) / weight_den;
+        let fail = failures.saturating_mul(weight_num) / weight_den;
+        if ok == 0 && fail == 0 {
+            return;
+        }
+        let mut guard = self.inner.lock().expect("peer health lock");
+        let entry = guard.entry(peer).or_insert((0, 0));
+        entry.0 = entry.0.saturating_add(ok);
+        entry.1 = entry.1.saturating_add(fail);
+    }
+
+    /// Non-destructive snapshot of current windows (for gossip emission).
+    pub fn snapshot(&self) -> Vec<([u8; 32], u64, u64)> {
+        let guard = self.inner.lock().expect("peer health lock");
+        guard
+            .iter()
+            .map(|(peer, (ok, fail))| (*peer, *ok, *fail))
+            .collect()
     }
 
     /// Failure rate for `peer` over the current window, if any samples exist.

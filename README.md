@@ -82,22 +82,22 @@ Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing 
    example of the config shape). `crates/aegis-node/tests/trace_capture.rs` (run with
    `-- --ignored`) reproduces the Phase-8 benign and malicious real trace captures.
 
-   **Security profiling status (2026-07-17): done** for actionable call-site gaps.
-   Mitigations include paced session + ρ≤0.7, ingress token-bucket rate limit,
-   M-of-N + KEM-derived `RelayId`, CT replay scan, signed reputation snapshots,
-   link FS + roster-id/KEM handshake binding, required L2 bulk cover,
-   peer-health→EWMA, anomaly-gated admission, verified roster load, external
-   KEM seeds (Windows DPAPI-protected by default), exit sink, post-shaping
-   traces, deprecated raw `send_payload`, default-required KEM bindings,
-   drop-newest bounded queues, CI fuzz/deny.
+   **Security profiling status (2026-07-17): done** — call-site gaps closed, and
+   the research/ops residual wave is shipped (Partial/Mitigated). See
+   `docs/AEGIS_research_ops_hardening_plan.md` and `docs/ops/`.
 
-   Accepted residuals (ops / research, not unfinished wiring): real TEE attestation;
-   consortium key ceremony; full Noise / roster-key-derived link auth; Unix
-   keychain KEM encryption; cover-burst timing indistinguishability; cross-relay
-   health gossip / reputation consensus; ZK anonymous reputation; multi-connection
-   ingress floods up to connection cap; Sybil plateau under majority flood;
-   g=1 vs g=3 guard exposure. See **Profiling complete** in
-   `docs/AEGIS_implementation_threat_model.md`.
+   Call-site mitigations: paced session + ρ≤0.7, ingress token-bucket + global
+   budget, M-of-N + KEM-derived `RelayId`, CT replay scan, signed reputation
+   snapshots, link FS + roster-id/KEM binding, optional Noise_IK-compatible
+   handshake, required L2 bulk cover (τ-paced), peer-health→EWMA + health
+   gossip, g=3 guards, anomaly-gated admission, verified roster load, DPAPI +
+   Unix keyring KEM seeds, exit sink, post-shaping traces, anonymous reputation
+   presentations, per-peer fair inbound RR, drop-newest queues, CI fuzz/deny.
+
+   Honest leftovers (not unfinished wiring): hardware TEE SDK, HSM/Shamir
+   ceremony, BLAKE2s-Noise byte-compat / default-on Noise, full AC issuer,
+   BFT reputation consensus, WSL dudect proofs, weighted (not equal) WFQ.
+   See **Profiling complete** in `docs/AEGIS_implementation_threat_model.md`.
 
 ## Honest boundaries (do not oversell — see spec §8, §9)
 - Strong guarantees are for **internal** (client↔client) traffic. Clearnet exit is

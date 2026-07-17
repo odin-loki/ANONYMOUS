@@ -7,10 +7,13 @@
 //! `[kem] file = "..."`. Inline seeds in the main config require explicit
 //! `[kem] allow_plaintext_kem = true` (lab/test).
 //!
-//! - **Unix:** plaintext TOML in the seed file with mode `0600`.
+//! - **Unix** (feature `kem-keyring`, default): OS keychain via `keyring`
+//!   (service `aegis-node`; account = relay id or config-path hash). Pointer file
+//!   uses magic [`crate::kem_seed_protect::KEM_SEED_KEYRING_MAGIC`]. Falls back to
+//!   plaintext TOML + mode `0600` if the keychain is unavailable.
 //! - **Windows** (feature `kem-dpapi`, default): DPAPI user-scope wrap
 //!   (`CryptProtectData`) with magic [`crate::kem_seed_protect::KEM_SEED_DPAPI_MAGIC`];
-//!   legacy plaintext `kem.seeds` still loads. Not a full OS keychain UX.
+//!   legacy plaintext `kem.seeds` still loads.
 
 use std::collections::HashMap;
 use std::fs;
@@ -20,9 +23,9 @@ use std::path::{Path, PathBuf};
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_negotiator::SecurityDial;
 use aegis_relay::{
-    BulkCoverConfig, IngressRateLimitConfig, LinkBridgeConfig, PeerInfo, RelayConfig, RelayId,
-    DEFAULT_COVER_ROUND_SECS, DEFAULT_COVER_TARGET_FLOW_COUNT, DEFAULT_INGRESS_BURST,
-    DEFAULT_INGRESS_MAX_CELLS_PER_SEC,
+    BulkCoverConfig, IngressRateLimitConfig, LinkBridgeConfig, LinkHandshakeMode, PeerInfo,
+    RelayConfig, RelayId, DEFAULT_COVER_ROUND_SECS, DEFAULT_COVER_TARGET_FLOW_COUNT,
+    DEFAULT_GLOBAL_MAX_CELLS_PER_SEC, DEFAULT_INGRESS_BURST, DEFAULT_INGRESS_MAX_CELLS_PER_SEC,
 };
 use aegis_topology::{RelayRoster, RosterError, ThresholdConsortium};
 use aegis_trust::{
@@ -91,6 +94,9 @@ pub struct NodeConfigFile {
     /// Optional local reputation ledger persistence (spec §4.8).
     #[serde(default)]
     pub reputation: ReputationConfig,
+    /// Optional signed cross-relay peer-health gossip (see `docs/ops/health_gossip.md`).
+    #[serde(default)]
+    pub health_gossip: HealthGossipConfig,
 }
 
 /// TOML `[reputation]` — EWMA ledger persistence for this relay process.
@@ -312,9 +318,24 @@ pub struct LinkNetConfig {
     /// Token-bucket burst (cells) above the sustained rate.
     #[serde(default = "default_ingress_burst")]
     pub burst: u32,
-    /// Optional aggregate cap across all inbound connections (cells/sec).
-    #[serde(default)]
+    /// Aggregate cap across all inbound connections (cells/sec).
+    /// Default: Mode-1 × 8 expected clients (`DEFAULT_GLOBAL_MAX_CELLS_PER_SEC` ≈ 22.86).
+    /// Set to `0.0` to disable the shared budget.
+    #[serde(default = "default_global_max_cells_per_sec")]
     pub global_max_cells_per_sec: Option<f64>,
+    /// `"legacy_psk"` (default) or `"noise"` for Noise_IK-compatible mutual auth.
+    #[serde(default = "default_link_handshake")]
+    pub handshake: String,
+    /// Local Noise static secret (64 hex). Required when `handshake = "noise"`.
+    #[serde(default)]
+    pub noise_static_secret: Option<String>,
+    /// Expected ingress initiator Noise static public (64 hex), optional.
+    #[serde(default)]
+    pub ingress_noise_static_public: Option<String>,
+}
+
+fn default_link_handshake() -> String {
+    "legacy_psk".to_string()
 }
 
 impl Default for LinkNetConfig {
@@ -325,7 +346,10 @@ impl Default for LinkNetConfig {
             identity_binding: default_identity_binding(),
             max_cells_per_sec: default_max_cells_per_sec(),
             burst: default_ingress_burst(),
-            global_max_cells_per_sec: None,
+            global_max_cells_per_sec: default_global_max_cells_per_sec(),
+            handshake: default_link_handshake(),
+            noise_static_secret: None,
+            ingress_noise_static_public: None,
         }
     }
 }
@@ -348,6 +372,10 @@ fn default_max_cells_per_sec() -> f64 {
 
 fn default_ingress_burst() -> u32 {
     DEFAULT_INGRESS_BURST
+}
+
+fn default_global_max_cells_per_sec() -> Option<f64> {
+    Some(DEFAULT_GLOBAL_MAX_CELLS_PER_SEC)
 }
 
 fn default_mu() -> f64 {
@@ -463,11 +491,23 @@ fn generate_kem_seeds(rng: &mut (impl RngCore + CryptoRngCore)) -> KemSeeds {
 /// Write KEM seeds to `path`.
 ///
 /// On Windows with `kem-dpapi` (default), stores DPAPI-protected bytes with a
-/// clear magic header. On Unix / without the feature, stores plaintext TOML
-/// with mode `0600` (best-effort create/truncate on Windows).
+/// clear magic header. On Unix with `kem-keyring` (default), stores a keyring
+/// pointer file and the secret in the OS keychain (falls back to plaintext
+/// `0600` if the keychain is unavailable). Account defaults to a hash of `path`.
 pub fn persist_kem_seeds_file(path: &Path, seeds: &KemSeeds) -> Result<(), ConfigError> {
+    let account = crate::kem_seed_protect::kem_keyring_account(path, None);
+    persist_kem_seeds_file_with_account(path, seeds, &account)
+}
+
+/// Like [`persist_kem_seeds_file`], but with an explicit keyring account
+/// (typically `kem_keyring_account(config_path, Some(relay_id_hex))`).
+pub fn persist_kem_seeds_file_with_account(
+    path: &Path,
+    seeds: &KemSeeds,
+    account: &str,
+) -> Result<(), ConfigError> {
     let text = toml::to_string(seeds)?;
-    let stored = crate::kem_seed_protect::protect_seed_bytes(text.as_bytes())
+    let stored = crate::kem_seed_protect::protect_seed_bytes(text.as_bytes(), account)
         .map_err(ConfigError::KemProtect)?;
     write_restricted_file(path, &stored)
 }
@@ -521,6 +561,51 @@ pub struct PeerConfig {
     /// Optional roster KEM public-key commitment (64 hex chars) for outbound handshake MAC binding.
     #[serde(default)]
     pub kem_commitment: Option<String>,
+    /// Optional Ed25519 verifying key (64 hex) for this peer's health-gossip adverts.
+    #[serde(default)]
+    pub gossip_verifying_key: Option<String>,
+    /// Optional peer Noise static public key (64 hex) for `handshake = "noise"`.
+    #[serde(default)]
+    pub noise_static_public: Option<String>,
+}
+
+/// TOML `[health_gossip]` — signed `PeerHealthAdvert` exchange over hop links.
+///
+/// When `enabled` and a signing seed is configured, the node periodically signs
+/// local peer-health windows and sends them as link-control cells. Receivers
+/// verify under each peer's `gossip_verifying_key` and merge with half weight.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HealthGossipConfig {
+    /// Emit and accept health-gossip cells (default false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Hex Ed25519 seed (32 bytes) for signing outbound adverts.
+    #[serde(default)]
+    pub signing_seed: Option<String>,
+    /// Alternative path to a file containing the hex signing seed.
+    #[serde(default)]
+    pub signing_key_file: Option<String>,
+    /// Seconds between gossip emission rounds (default 60).
+    #[serde(default = "default_gossip_interval_secs")]
+    pub interval_secs: u64,
+}
+
+fn default_gossip_interval_secs() -> u64 {
+    60
+}
+
+impl HealthGossipConfig {
+    /// Resolve the optional gossip signing key.
+    pub fn resolve_signing_key(&self) -> Result<Option<SigningKey>, ReputationError> {
+        if let Some(ref hex) = self.signing_seed {
+            Ok(Some(signing_key_from_hex_seed(hex)?))
+        } else if let Some(ref path_str) = self.signing_key_file {
+            let text = fs::read_to_string(path_str)?;
+            Ok(Some(signing_key_from_hex_seed(text.trim())?))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 /// Exit delivery for terminal Sphinx peels (`deliver_to` and/or `log_payloads`).
@@ -587,6 +672,7 @@ pub struct NodeRuntimeConfig {
     /// Verified (or explicitly lab-unverified) roster when `[roster]` is configured.
     pub roster: Option<RelayRoster>,
     pub reputation: ReputationConfig,
+    pub health_gossip: HealthGossipConfig,
 }
 
 impl NodeConfigFile {
@@ -608,6 +694,7 @@ impl NodeConfigFile {
         if file.kem.is_none() {
             file.kem = Some(KemFileConfig::default());
         }
+        let relay_id_hex = file.relay_id.clone();
         let kem_cfg = file.kem.as_mut().expect("kem section just initialized");
         if resolve_kem_seeds(path, kem_cfg).is_ok() {
             return Ok(());
@@ -626,7 +713,9 @@ impl NodeConfigFile {
             );
         } else {
             let seed_path = kem_seed_file_path(path, kem_cfg);
-            persist_kem_seeds_file(&seed_path, &seeds)?;
+            let account =
+                crate::kem_seed_protect::kem_keyring_account(path, Some(relay_id_hex.as_str()));
+            persist_kem_seeds_file_with_account(&seed_path, &seeds, &account)?;
             if kem_cfg.file.is_none() {
                 kem_cfg.file = Some(DEFAULT_KEM_SEED_FILENAME.to_string());
             }
@@ -695,6 +784,12 @@ impl NodeConfigFile {
             if let Some(ref hex) = peer.kem_commitment {
                 info = info.with_kem_commitment(parse_hex32(hex)?);
             }
+            if let Some(ref hex) = peer.gossip_verifying_key {
+                info = info.with_gossip_verifying_key(parse_hex32(hex)?);
+            }
+            if let Some(ref hex) = peer.noise_static_public {
+                info = info.with_noise_static_public(parse_hex32(hex)?);
+            }
             peer_table.insert(id, info);
         }
         let roster = self
@@ -702,6 +797,25 @@ impl NodeConfigFile {
             .as_ref()
             .map(load_roster_from_config)
             .transpose()?;
+        let handshake = parse_link_handshake_mode(&self.link.handshake)?;
+        let noise_static_secret = self
+            .link
+            .noise_static_secret
+            .as_deref()
+            .map(parse_hex32)
+            .transpose()?;
+        let ingress_noise_static_public = self
+            .link
+            .ingress_noise_static_public
+            .as_deref()
+            .map(parse_hex32)
+            .transpose()?;
+        #[cfg(feature = "noise-link")]
+        if handshake == LinkHandshakeMode::Noise && noise_static_secret.is_none() {
+            return Err(ConfigError::Hex(
+                "link.noise_static_secret required when handshake = \"noise\"",
+            ));
+        }
         Ok(NodeRuntimeConfig {
             relay_id,
             listen,
@@ -714,14 +828,17 @@ impl NodeConfigFile {
                 read_timeout: std::time::Duration::from_secs(self.link.read_timeout_secs),
                 max_inbound_connections: self.link.max_inbound_connections,
                 identity_binding: self.link.identity_binding,
+                handshake,
+                noise_static_secret,
+                ingress_noise_static_public,
                 ingress_rate_limit,
-                ingress_rate_limit_stats: None,
-                queue_drop_stats: None,
+                ..LinkBridgeConfig::default()
             },
             exit: self.exit,
             trace: self.trace,
             roster,
             reputation: self.reputation,
+            health_gossip: self.health_gossip,
         })
     }
 }
@@ -743,6 +860,21 @@ pub fn load_roster_from_config(cfg: &RosterFileConfig) -> Result<RelayRoster, Co
         consortium.as_ref(),
         cfg.allow_unverified_roster,
     )?)
+}
+
+fn parse_link_handshake_mode(s: &str) -> Result<LinkHandshakeMode, ConfigError> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "legacy_psk" | "legacy" | "psk" => Ok(LinkHandshakeMode::LegacyPsk),
+        #[cfg(feature = "noise-link")]
+        "noise" | "noise_ik" => Ok(LinkHandshakeMode::Noise),
+        #[cfg(not(feature = "noise-link"))]
+        "noise" | "noise_ik" => Err(ConfigError::Hex(
+            "handshake = \"noise\" requires the noise-link feature",
+        )),
+        _ => Err(ConfigError::Hex(
+            "link.handshake must be \"legacy_psk\" or \"noise\"",
+        )),
+    }
 }
 
 pub fn parse_hex32(s: &str) -> Result<[u8; 32], ConfigError> {
@@ -811,6 +943,37 @@ ledger_path = "data/reputation.json"
         );
         assert!(file.reputation.operator_signing_seed.is_none());
         assert!(file.reputation.operator_verifying_key.is_none());
+    }
+
+    #[test]
+    fn health_gossip_config_parses() {
+        let seed = "cc".repeat(32);
+        let vk = "dd".repeat(32);
+        let toml = format!(
+            r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[health_gossip]
+enabled = true
+signing_seed = "{seed}"
+interval_secs = 45
+
+[[peers]]
+id = "0200000000000000000000000000000000000000000000000000000000000000"
+addr = "127.0.0.1:9001"
+link_key = "ee00000000000000000000000000000000000000000000000000000000000000"
+gossip_verifying_key = "{vk}"
+"#
+        );
+        let file: NodeConfigFile = toml::from_str(&toml).unwrap();
+        assert!(file.health_gossip.enabled);
+        assert_eq!(file.health_gossip.interval_secs, 45);
+        assert!(file.health_gossip.resolve_signing_key().unwrap().is_some());
+        assert_eq!(
+            file.peers[0].gossip_verifying_key.as_deref(),
+            Some(vk.as_str())
+        );
     }
 
     #[test]
@@ -1287,5 +1450,9 @@ burst = 2
         let cfg = LinkNetConfig::default();
         assert!((cfg.max_cells_per_sec - DEFAULT_INGRESS_MAX_CELLS_PER_SEC).abs() < 1e-9);
         assert_eq!(cfg.burst, DEFAULT_INGRESS_BURST);
+        assert_eq!(
+            cfg.global_max_cells_per_sec,
+            Some(DEFAULT_GLOBAL_MAX_CELLS_PER_SEC)
+        );
     }
 }

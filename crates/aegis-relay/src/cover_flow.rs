@@ -32,9 +32,11 @@
 //! and each cover cell is a fixed-width AEAD link frame indistinguishable in length from
 //! real traffic. After decryption, cover fragments carry random payload bytes (not a valid
 //! Sphinx onion). A reserved-byte wire marker (`COVER_FRAGMENT_RESERVED`) lets inbound
-//! link handlers discard cover before reassembly so it never reaches peel. Cover does not
-//! replicate inter-cell timing, multi-hop forwarding semantics, or valid Sphinx ciphertext.
-//! A GPA with deep timing analysis may still distinguish cover bursts from genuine bulk traffic.
+//! link handlers discard cover before reassembly so it never reaches peel. The link-bridge
+//! cover dispatcher paces cells onto the wire at Mode-1 τ ([`crate::net::DEFAULT_COVER_CELL_TAU`])
+//! so inter-cell gaps match client paced bulk when possible. Residual: multi-hop forwarding
+//! semantics and valid Sphinx ciphertext still differ — cover is discarded at the next hop
+//! and never peels/forwards like genuine bulk.
 
 use aegis_crypto::cell::{Cell, Command, CELL_LEN};
 use aegis_crypto::fragment::{

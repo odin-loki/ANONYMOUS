@@ -137,6 +137,7 @@ impl TcpTestnet {
                 inbound_tx,
                 outbound_rx,
                 Some(cover_rx),
+                None,
                 exit,
                 if i == 0 {
                     ingress_trace.clone()

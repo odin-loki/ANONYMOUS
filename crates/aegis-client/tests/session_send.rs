@@ -224,7 +224,7 @@ async fn two_paced_sends_reuse_one_tcp_handshake() {
         let (mut stream, _) = listener.accept().await.unwrap();
         handshakes_server.fetch_add(1, Ordering::SeqCst);
         let mut rng = OsRng;
-        let key = run_responder_handshake(
+        let (key, _) = run_responder_handshake(
             &mut stream,
             first_hop_id,
             None,

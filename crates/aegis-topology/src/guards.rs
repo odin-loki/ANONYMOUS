@@ -10,30 +10,57 @@ use crate::layers::Topology;
 use crate::pruning::relay_satisfies_pruning_policy;
 use crate::types::RelayId;
 
+/// Default guard-set size (`g`) matching the paper exposure plateau `1-(1-c)^g`.
+pub const GUARD_SET_SIZE: u32 = 3;
+
+/// How layer-1 is chosen from the held epoch guard set when building paths.
+///
+/// Production defaults to [`GuardPinMode::StickyPrimary`]: the primary stays fixed for
+/// the epoch (GPA learns one entry); backups are available for failover / alternate
+/// circuits. [`GuardPinMode::Rotate`] cycles across the set per packet index for
+/// empirical plateau measurements that track `1-(1-c)^g`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GuardPinMode {
+    /// Always pin layer-1 to [`GuardSelector::primary_guard`] (default production).
+    #[default]
+    StickyPrimary,
+    /// Rotate layer-1 across [`GuardSelector::guard_set`] by packet index.
+    Rotate,
+}
+
 /// Guard selection parameters for one client across an epoch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GuardConfig {
     /// Number of stable layer-1 guards held for the epoch (used in exposure math as `g`).
     pub guard_count: u32,
+    /// How path builders pin layer-1 from the held set.
+    pub pin_mode: GuardPinMode,
 }
 
 impl Default for GuardConfig {
     fn default() -> Self {
-        Self { guard_count: 3 }
+        Self {
+            guard_count: GUARD_SET_SIZE,
+            pin_mode: GuardPinMode::StickyPrimary,
+        }
     }
 }
 
-/// Stable guard set for one client epoch. Layer-1 entry is NOT re-randomized per packet.
+/// Stable guard set for one client epoch. Layer-1 entry is NOT re-randomized uniformly
+/// over all layer-1 relays; it is pinned from this held set of size `g` (default 3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GuardSelector {
     pub epoch: u64,
     /// Fixed guard relays for this epoch (selected from layer 1 at epoch start).
     pub guards: Vec<RelayId>,
+    /// Pin policy for path builders (sticky primary vs rotate).
+    pub pin_mode: GuardPinMode,
 }
 
 impl GuardSelector {
     /// Pick `config.guard_count` relays from topology layer 1, deterministically per
-    /// `(client_seed, epoch)`. The primary guard (`guards[0]`) is used for every packet.
+    /// `(client_seed, epoch)`. The full set is held for the epoch; path builders pin
+    /// layer-1 via [`Self::entry_guard_for_packet`] (sticky primary by default).
     pub fn new(
         topology: &Topology,
         config: &GuardConfig,
@@ -71,6 +98,7 @@ impl GuardSelector {
         Ok(Self {
             epoch: topology.epoch,
             guards: candidates,
+            pin_mode: config.pin_mode,
         })
     }
 
@@ -123,6 +151,7 @@ impl GuardSelector {
         Ok(Self {
             epoch: topology.epoch,
             guards: candidates,
+            pin_mode: config.pin_mode,
         })
     }
 
@@ -173,12 +202,48 @@ impl GuardSelector {
         Ok(Self {
             epoch: topology.epoch,
             guards: candidates,
+            pin_mode: config.pin_mode,
         })
     }
 
-    /// Primary entry guard — stable for all packets in this epoch.
+    /// Held epoch guard set of size `g` (default [`GUARD_SET_SIZE`]).
+    pub fn guard_set(&self) -> &[RelayId] {
+        &self.guards
+    }
+
+    /// Primary entry guard plus remaining backups (same order as [`Self::guard_set`]).
+    pub fn primary_and_backups(&self) -> (RelayId, &[RelayId]) {
+        let primary = self.guards[0];
+        let backups = if self.guards.len() > 1 {
+            &self.guards[1..]
+        } else {
+            &[]
+        };
+        (primary, backups)
+    }
+
+    /// Primary entry guard — sticky default for production path pinning.
     pub fn primary_guard(&self) -> RelayId {
         self.guards[0]
+    }
+
+    /// Layer-1 entry for `packet_index` under this selector's [`GuardPinMode`].
+    ///
+    /// - [`GuardPinMode::StickyPrimary`]: always `guards[0]`
+    /// - [`GuardPinMode::Rotate`]: `guards[packet_index % g]`
+    pub fn entry_guard_for_packet(&self, packet_index: u64) -> RelayId {
+        match self.pin_mode {
+            GuardPinMode::StickyPrimary => self.primary_guard(),
+            GuardPinMode::Rotate => {
+                let g = self.guards.len().max(1);
+                self.guards[(packet_index as usize) % g]
+            }
+        }
+    }
+
+    /// True when any held guard is in `adversary` (set-exposure for g>1 plateau math).
+    pub fn any_guard_compromised(&self, adversary: &std::collections::HashSet<RelayId>) -> bool {
+        self.guards.iter().any(|id| adversary.contains(id))
     }
 }
 
@@ -235,7 +300,7 @@ mod tests {
         let ledger = ledger_with_bad_relay(bad, 20);
         assert!(ledger.score(*bad.as_bytes()).0 < 0.3);
 
-        let config = GuardConfig { guard_count: 3 };
+        let config = GuardConfig::default();
         for seed in 0..100u64 {
             let guards =
                 GuardSelector::new_reputation_weighted(&topo, &config, seed, &ledger, 0.3).unwrap();

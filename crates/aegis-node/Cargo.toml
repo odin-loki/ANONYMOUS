@@ -16,10 +16,16 @@ name = "aegis-node"
 path = "src/main.rs"
 
 [features]
-default = ["kem-dpapi"]
+# kem-dpapi: Windows DPAPI. kem-keyring: Unix OS keychain (default-on; effective on unix).
+default = ["kem-dpapi", "kem-keyring", "noise-link"]
 # Windows: protect external kem.seeds with DPAPI (CryptProtectData, user scope).
 # No-op on non-Windows. Disable for lab plaintext seed files on Windows.
 kem-dpapi = ["dep:windows-dpapi"]
+# Unix: store seed material via `keyring` (service `aegis-node`). Falls back to 0600 file.
+# On Windows this feature is a no-op (DPAPI path wins). Disable for lab plaintext on Unix.
+kem-keyring = ["dep:keyring"]
+# Noise_IK-compatible hop-link mutual auth (see docs/ops/noise_link_auth.md).
+noise-link = ["aegis-relay/noise-link", "aegis-crypto/noise-link"]
 
 [dependencies]
 aegis-relay = { path = "../aegis-relay" }
@@ -34,6 +40,8 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 thiserror.workspace = true
 rand_core = { workspace = true, features = ["getrandom"] }
+sha3.workspace = true
+keyring = { version = "3", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-dpapi = { version = "0.2", optional = true }
