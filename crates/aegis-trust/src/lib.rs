@@ -19,6 +19,8 @@
 //!   presentation (no RelayId in proof bytes), + plaintext stand-in.
 //! - [`nullifier`] — local/file-backed spent-nullifier registry (replay prevention
 //!   per epoch; not a multi-node AC issuer).
+//! - [`anon_issuer`] — minimal software-bound [`AnonymousCredentialIssuer`]
+//!   (Partial; not a full interactive AC / real ZK show protocol).
 //! - [`tee`] — TEE-broken-enclave assumption bookkeeping, attestation provider
 //!   interface, and the Phase-7 gate check.
 //! - [`anomaly`] — a generic EWMA/z-score anomaly detector as a stand-in for the
@@ -27,6 +29,7 @@
 //! - [`policy`] — wires anomaly verdicts into reputation demotion for path pruning.
 
 pub mod anomaly;
+pub mod anon_issuer;
 pub mod nullifier;
 pub mod policy;
 pub mod reputation;
@@ -34,6 +37,10 @@ pub mod tee;
 pub mod zk;
 
 pub use anomaly::{AnomalyDetector, AnomalyVerdict};
+pub use anon_issuer::{
+    AnonymousCredentialIssuer, AnonymousCredentialIssuerParams, IssuedAnonymousCredential,
+    IssuerError,
+};
 pub use nullifier::{NullifierError, NullifierRegistry};
 pub use policy::{feed_peer_metric, feed_peer_outcomes, RelayPruningPolicy, DEFAULT_PATH_REPUTATION_FLOOR};
 pub use reputation::{

@@ -44,3 +44,4 @@ zeroize          = "1"      # key hygiene
 # runtime (Phase 3+)
 tokio            = { version = "1", features = ["full"] }
 thiserror        = "1"
+snow             = { version = "0.9", default-features = false, features = ["default-resolver", "curve25519-dalek", "chacha20poly1305", "blake2"] }

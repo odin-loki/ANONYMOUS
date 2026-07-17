@@ -44,10 +44,21 @@
 //! queue or the shared inbound is full, the **newest** packet is dropped and
 //! [`QueueDropStats::dropped`] increments. Rate-limit drops happen first
 //! (pre-reassembly); queue drops are a second shed for post-reassembly backlog.
+//!
+//! ## Bounded outbound queue (drop-newest) + per-peer weighted fair drain
+//!
+//! Packets from the relay's shared outbound channel are routed into per-next-hop
+//! bounded queues (capacity [`PER_PEER_OUTBOUND_CAPACITY`]) with drop-newest.
+//! A fair-drain task uses **weighted deficit round-robin** (WFQ-style) to choose
+//! which peer to serve next, so one busy next-hop cannot monopolize egress TCP
+//! writes. Weights use the same peer-health success-rate mapping as inbound.
+//! Exit/terminal peels with no peer-table route bypass the fair hub when
+//! `exit_tx` is wired. Residual: discrete weight quanta (not continuous GPS);
+//! per-peer queues are keyed by roster `RelayId`, not TCP connection count.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -89,6 +100,9 @@ pub const DEFAULT_MAX_INBOUND_CONNECTIONS: usize = 256;
 /// Per-connection inbound queue capacity before weighted fair drain into the
 /// shared relay inbound channel.
 pub const PER_PEER_INBOUND_CAPACITY: usize = 16;
+
+/// Per-next-hop outbound queue capacity before weighted fair drain to TCP.
+pub const PER_PEER_OUTBOUND_CAPACITY: usize = 16;
 
 /// Default per-peer inbound drain weight when no health samples exist.
 pub const DEFAULT_PEER_QUEUE_WEIGHT: u32 = 1;
@@ -244,8 +258,8 @@ impl FairPeerSender {
 }
 
 /// Live peer slot: receiver + WFQ weight + remaining service credits.
-struct FairPeerSlot {
-    rx: mpsc::Receiver<SphinxPacket>,
+struct FairPeerSlot<T> {
+    rx: mpsc::Receiver<T>,
     weight: u32,
     /// Remaining packets this peer may send before the cursor advances.
     credits: u32,
@@ -253,7 +267,7 @@ struct FairPeerSlot {
 
 /// Weighted fair hub: per-connection receivers drained by deficit round-robin.
 struct FairInboundHub {
-    slots: Mutex<Vec<Option<FairPeerSlot>>>,
+    slots: Mutex<Vec<Option<FairPeerSlot<SphinxPacket>>>>,
     notify: Arc<Notify>,
 }
 
@@ -281,7 +295,7 @@ impl FairInboundHub {
         let weight = weight.max(DEFAULT_PEER_QUEUE_WEIGHT);
         let (tx, rx) = mpsc::channel(PER_PEER_INBOUND_CAPACITY);
         let mut slots = self.slots.lock().await;
-        let slot = FairPeerSlot {
+        let slot = FairPeerSlot::<SphinxPacket> {
             rx,
             weight,
             credits: 0,
@@ -317,10 +331,10 @@ impl FairInboundHub {
 
 /// Weighted fair take: each peer may emit up to `weight` packets per visit
 /// (credit refill). Equal weights (`1`) reduce to classic round-robin.
-fn fair_wfq_take_one(
-    slots: &mut [Option<FairPeerSlot>],
+fn fair_wfq_take_one<T>(
+    slots: &mut [Option<FairPeerSlot<T>>],
     cursor: &mut usize,
-) -> Option<SphinxPacket> {
+) -> Option<T> {
     let n = slots.len();
     if n == 0 {
         return None;
@@ -406,10 +420,174 @@ fn spawn_fair_inbound_drain(
 
 /// Drain one weighted-fair packet for tests (exposes WFQ scheduling without TCP).
 #[cfg(test)]
-async fn fair_drain_once_for_test(
+async fn fair_inbound_drain_once_for_test(
     hub: &FairInboundHub,
     cursor: &mut usize,
 ) -> Option<SphinxPacket> {
+    let mut slots = hub.slots.lock().await;
+    fair_wfq_take_one(&mut slots, cursor)
+}
+
+/// Per-next-hop sender into the fair-outbound hub (drop-newest on the peer queue).
+struct FairOutboundPeerSender {
+    tx: mpsc::Sender<ForwardedPacket>,
+    notify: Arc<Notify>,
+    drop_stats: Arc<QueueDropStats>,
+    hub: Arc<FairOutboundHub>,
+    slot_id: usize,
+}
+
+impl FairOutboundPeerSender {
+    fn try_enqueue(&self, packet: ForwardedPacket) -> Result<(), ()> {
+        let result = try_send_drop_newest(&self.tx, packet, self.drop_stats.counter());
+        self.notify.notify_one();
+        result
+    }
+
+    async fn set_weight(&self, weight: u32) {
+        self.hub.set_weight(self.slot_id, weight).await;
+    }
+}
+
+/// Weighted fair hub for egress: per-next-hop queues drained by deficit round-robin.
+struct FairOutboundHub {
+    slots: Mutex<Vec<Option<FairPeerSlot<ForwardedPacket>>>>,
+    notify: Arc<Notify>,
+}
+
+impl FairOutboundHub {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            slots: Mutex::new(Vec::new()),
+            notify: Arc::new(Notify::new()),
+        })
+    }
+
+    async fn register_peer(
+        self: &Arc<Self>,
+        drop_stats: Arc<QueueDropStats>,
+        weight: u32,
+    ) -> FairOutboundPeerSender {
+        let weight = weight.max(DEFAULT_PEER_QUEUE_WEIGHT);
+        let (tx, rx) = mpsc::channel(PER_PEER_OUTBOUND_CAPACITY);
+        let mut slots = self.slots.lock().await;
+        let slot = FairPeerSlot::<ForwardedPacket> {
+            rx,
+            weight,
+            credits: 0,
+        };
+        let slot_id = if let Some(i) = slots.iter().position(|s| s.is_none()) {
+            slots[i] = Some(slot);
+            i
+        } else {
+            slots.push(Some(slot));
+            slots.len() - 1
+        };
+        let sender = FairOutboundPeerSender {
+            tx,
+            notify: Arc::clone(&self.notify),
+            drop_stats,
+            hub: Arc::clone(self),
+            slot_id,
+        };
+        self.notify.notify_one();
+        sender
+    }
+
+    async fn set_weight(&self, slot_id: usize, weight: u32) {
+        let weight = weight.max(DEFAULT_PEER_QUEUE_WEIGHT);
+        let mut slots = self.slots.lock().await;
+        if let Some(Some(slot)) = slots.get_mut(slot_id) {
+            slot.weight = weight;
+        }
+    }
+}
+
+fn all_outbound_slots_empty(slots: &[Option<FairPeerSlot<ForwardedPacket>>]) -> bool {
+    slots
+        .iter()
+        .all(|slot| slot.as_ref().map_or(true, |s| s.rx.is_empty()))
+}
+
+fn spawn_fair_outbound_drain<R: RngCore + CryptoRngCore + Send + 'static>(
+    hub: Arc<FairOutboundHub>,
+    router_done: Arc<AtomicBool>,
+    pool: Arc<Mutex<ConnectionPool>>,
+    peer_table: HashMap<RelayId, PeerInfo>,
+    forward_trace: Option<RelayForwardTrace>,
+    rng: Arc<Mutex<R>>,
+    bridge_config: LinkBridgeConfig,
+    peer_health: Option<Arc<PeerHealthTracker>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut cursor = 0usize;
+        loop {
+            let notified = hub.notify.notified();
+            tokio::pin!(notified);
+
+            let fwd = {
+                let mut slots = hub.slots.lock().await;
+                if slots.is_empty() {
+                    drop(slots);
+                    if router_done.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    notified.await;
+                    continue;
+                }
+                if router_done.load(Ordering::Relaxed) && all_outbound_slots_empty(&slots) {
+                    return;
+                }
+                fair_wfq_take_one(&mut slots, &mut cursor)
+            };
+
+            match fwd {
+                Some(fwd) => {
+                    let Some(peer) = peer_table.get(&fwd.next_hop).cloned() else {
+                        continue;
+                    };
+                    let mut guard = rng.lock().await;
+                    match forward_to_peer(
+                        &pool,
+                        fwd.next_hop,
+                        &peer,
+                        &fwd.packet,
+                        &mut *guard,
+                        &bridge_config,
+                        &peer_health,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            if let Some(ref trace) = forward_trace {
+                                trace.record_forward(SPHINX_FRAGMENT_COUNT as u32);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("aegis-relay net: forward to {:?}: {e}", fwd.next_hop);
+                        }
+                    }
+                }
+                None => {
+                    if router_done.load(Ordering::Relaxed) {
+                        let slots = hub.slots.lock().await;
+                        if all_outbound_slots_empty(&slots) {
+                            return;
+                        }
+                    }
+                    let _ = timeout(Duration::from_millis(5), notified).await;
+                }
+            }
+        }
+    })
+}
+
+/// Drain one weighted-fair outbound packet for tests (WFQ without TCP).
+#[cfg(test)]
+async fn fair_outbound_drain_once_for_test(
+    hub: &FairOutboundHub,
+    cursor: &mut usize,
+) -> Option<ForwardedPacket> {
     let mut slots = hub.slots.lock().await;
     fair_wfq_take_one(&mut slots, cursor)
 }
@@ -1749,6 +1927,30 @@ fn spawn_outbound_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let pool = Arc::new(Mutex::new(ConnectionPool::new()));
+        let fair_hub = FairOutboundHub::new();
+        let outbound_drop_stats = Arc::new(QueueDropStats::default());
+        let router_done = Arc::new(AtomicBool::new(false));
+
+        let mut peer_senders: HashMap<RelayId, FairOutboundPeerSender> = HashMap::new();
+        for (peer_id, _) in &peer_table {
+            let weight = peer_queue_weight_for(Some(*peer_id), peer_health.as_deref());
+            let sender = fair_hub
+                .register_peer(Arc::clone(&outbound_drop_stats), weight)
+                .await;
+            peer_senders.insert(*peer_id, sender);
+        }
+
+        let drain = spawn_fair_outbound_drain(
+            Arc::clone(&fair_hub),
+            Arc::clone(&router_done),
+            Arc::clone(&pool),
+            peer_table.clone(),
+            forward_trace.clone(),
+            Arc::clone(&rng),
+            bridge_config.clone(),
+            peer_health.clone(),
+        );
+
         let mut outbound_rx = outbound_rx;
         while let Some(fwd) = outbound_rx.recv().await {
             if let Some(ref tx) = exit_tx {
@@ -1760,36 +1962,18 @@ fn spawn_outbound_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
                     continue;
                 }
             }
-            let peer = match peer_table.get(&fwd.next_hop) {
-                Some(p) => p.clone(),
-                None => {
-                    // Terminal peel (exit hop) or misconfiguration â€” no peer route.
-                    // When `exit_tx` is set the packet was already delivered above.
-                    continue;
-                }
-            };
-            let mut guard = rng.lock().await;
-            match forward_to_peer(
-                &pool,
-                fwd.next_hop,
-                &peer,
-                &fwd.packet,
-                &mut *guard,
-                &bridge_config,
-                &peer_health,
-            )
-            .await
-            {
-                Ok(()) => {
-                    if let Some(ref trace) = forward_trace {
-                        trace.record_forward(SPHINX_FRAGMENT_COUNT as u32);
-                    }
-                }
-                Err(e) => {
-                    eprintln!("aegis-relay net: forward to {:?}: {e}", fwd.next_hop);
-                }
+            if peer_table.get(&fwd.next_hop).is_none() {
+                continue;
+            }
+            if let Some(sender) = peer_senders.get(&fwd.next_hop) {
+                let weight = peer_queue_weight_for(Some(fwd.next_hop), peer_health.as_deref());
+                sender.set_weight(weight).await;
+                let _ = sender.try_enqueue(fwd);
             }
         }
+        router_done.store(true, Ordering::Relaxed);
+        fair_hub.notify.notify_one();
+        let _ = drain.await;
     })
 }
 
@@ -2932,14 +3116,14 @@ mod tests {
         let mut cursor = 0usize;
         let mut order = Vec::new();
         for _ in 0..6 {
-            let pkt = fair_drain_once_for_test(&hub, &mut cursor)
+            let pkt = fair_inbound_drain_once_for_test(&hub, &mut cursor)
                 .await
                 .expect("packet available");
             order.push(pkt.as_bytes()[0]);
         }
         // Equal weights → classic RR: B between A's packets (not AAAA then BB).
         assert_eq!(order, vec![0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xAA]);
-        assert!(fair_drain_once_for_test(&hub, &mut cursor).await.is_none());
+        assert!(fair_inbound_drain_once_for_test(&hub, &mut cursor).await.is_none());
     }
 
     #[tokio::test]
@@ -2965,7 +3149,7 @@ mod tests {
         let mut cursor = 0usize;
         let mut order = Vec::new();
         for _ in 0..8 {
-            let pkt = fair_drain_once_for_test(&hub, &mut cursor)
+            let pkt = fair_inbound_drain_once_for_test(&hub, &mut cursor)
                 .await
                 .expect("packet available");
             order.push(pkt.as_bytes()[0]);
@@ -2979,6 +3163,87 @@ mod tests {
         let a_count = order.iter().filter(|&&b| b == 0xAA).count();
         let b_count = order.iter().filter(|&&b| b == 0xBB).count();
         assert!(a_count > b_count, "healthy peer should win share: {order:?}");
+    }
+
+    #[tokio::test]
+    async fn fair_outbound_round_robin_interleaves_peers() {
+        use aegis_crypto::sphinx::SPHINX_PACKET_LEN;
+
+        let hub = FairOutboundHub::new();
+        let stats = Arc::new(QueueDropStats::default());
+        let tx_a = hub
+            .register_peer(Arc::clone(&stats), DEFAULT_PEER_QUEUE_WEIGHT)
+            .await;
+        let tx_b = hub
+            .register_peer(Arc::clone(&stats), DEFAULT_PEER_QUEUE_WEIGHT)
+            .await;
+
+        let mk = |tag: u8| ForwardedPacket {
+            next_hop: test_relay_id(tag),
+            packet: {
+                let mut bytes = [0u8; SPHINX_PACKET_LEN];
+                bytes[0] = tag;
+                SphinxPacket::from_bytes(bytes)
+            },
+            delay_applied: Duration::ZERO,
+        };
+        for _ in 0..4 {
+            assert!(tx_a.try_enqueue(mk(0xAA)).is_ok());
+        }
+        for _ in 0..2 {
+            assert!(tx_b.try_enqueue(mk(0xBB)).is_ok());
+        }
+
+        let mut cursor = 0usize;
+        let mut order = Vec::new();
+        for _ in 0..6 {
+            let fwd = fair_outbound_drain_once_for_test(&hub, &mut cursor)
+                .await
+                .expect("packet available");
+            order.push(fwd.packet.as_bytes()[0]);
+        }
+        assert_eq!(order, vec![0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xAA]);
+        assert!(fair_outbound_drain_once_for_test(&hub, &mut cursor)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn fair_outbound_weighted_prefers_healthy_peer() {
+        use aegis_crypto::sphinx::SPHINX_PACKET_LEN;
+
+        let hub = FairOutboundHub::new();
+        let stats = Arc::new(QueueDropStats::default());
+        let tx_a = hub.register_peer(Arc::clone(&stats), 3).await;
+        let tx_b = hub.register_peer(Arc::clone(&stats), 1).await;
+
+        let mk = |tag: u8| ForwardedPacket {
+            next_hop: test_relay_id(tag),
+            packet: {
+                let mut bytes = [0u8; SPHINX_PACKET_LEN];
+                bytes[0] = tag;
+                SphinxPacket::from_bytes(bytes)
+            },
+            delay_applied: Duration::ZERO,
+        };
+        for _ in 0..6 {
+            assert!(tx_a.try_enqueue(mk(0xAA)).is_ok());
+            assert!(tx_b.try_enqueue(mk(0xBB)).is_ok());
+        }
+
+        let mut cursor = 0usize;
+        let mut order = Vec::new();
+        for _ in 0..8 {
+            let fwd = fair_outbound_drain_once_for_test(&hub, &mut cursor)
+                .await
+                .expect("packet available");
+            order.push(fwd.packet.as_bytes()[0]);
+        }
+        assert_eq!(
+            &order[..4],
+            &[0xAA, 0xAA, 0xAA, 0xBB],
+            "outbound WFQ must serve heavy peer first: {order:?}"
+        );
     }
 
     #[test]

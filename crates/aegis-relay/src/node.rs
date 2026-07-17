@@ -10,8 +10,9 @@
 //! This complements (does not replace) link-bridge ingress rate limiting and
 //! per-peer fair drain in [`crate::net`]: rate-limit drops frames before
 //! reassembly; each connection enqueues into its own bounded peer queue; a
-//! weighted fair drain feeds the shared mix inbound. Queue drops apply on peer
-//! queues or the shared inbound (drop-newest) so one peer cannot monopolize.
+//! weighted fair drain feeds the shared mix inbound; egress uses symmetric
+//! health-weighted WFQ per next-hop before TCP. Queue drops apply on peer
+//! queues or the shared channels (drop-newest) so one peer cannot monopolize.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

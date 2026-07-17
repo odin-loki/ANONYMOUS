@@ -38,8 +38,9 @@
 //! [`try_send_drop_newest`] and increment coarse counters
 //! ([`RelayCoarseStats::queue_dropped`] outbound; [`QueueDropStats`] inbound).
 //! Link-bridge ingress uses per-connection queues (`PER_PEER_INBOUND_CAPACITY`)
-//! with weighted fair (WFQ-style) drain into the shared mix inbound. See [`node`]
-//! / [`net`].
+//! with weighted fair (WFQ-style) drain into the shared mix inbound. Egress uses
+//! symmetric per-next-hop queues (`PER_PEER_OUTBOUND_CAPACITY`) with health-weighted
+//! WFQ before TCP writes. See [`node`] / [`net`].
 
 pub mod config;
 pub mod cover_flow;

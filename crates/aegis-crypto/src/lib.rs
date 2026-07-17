@@ -21,6 +21,8 @@ pub mod link;
 pub mod fragment;
 #[cfg(feature = "noise-link")]
 pub mod noise_link;
+#[cfg(feature = "noise-link-legacy-sha3")]
+pub mod noise_link_legacy;
 
 pub use kem::{
     blind_next, encapsulate, KemHeader, RelayKemPublic, RelayKemSecret, SharedSecret,

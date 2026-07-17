@@ -16,11 +16,22 @@ Hop links can use:
 
 `Auto` keeps existing deployments on LegacyPsk until operators configure `noise_static_*` keys. Explicit `legacy_psk` never selects Noise.
 
-The Noise path is **not** a full [Noise Protocol Framework](https://noiseprotocol.org) stack (no `snow` crate). It follows the Noise_IK message pattern (`-> e, es, s, ss` / `<- e, ee, se`) with **X25519 + ChaCha20-Poly1305**, using **SHA3-256** for transcript mixing / HKDF instead of BLAKE2s. Documented as a **Noise_IK-compatible transcript**.
+## Wire format (`snow` / standard Noise)
 
-## Why not `snow`?
+| Message | Bytes |
+|---------|------:|
+| Initiator → responder (msg1) | 96 (`e` ‖ enc(`s`) ‖ enc(payload tag)) |
+| Responder → initiator (msg2) | 48 (`e` ‖ enc(payload tag)) |
 
-The Windows workspace preferred staying on in-tree primitives (`x25519-dalek`, `chacha20poly1305`, `sha3`) to avoid an extra Noise framework dependency and platform friction. Interop with other Noise_IK_25519_ChaChaPoly_BLAKE2s implementations is **not** claimed.
+Handshake uses **`Noise_IK_25519_ChaChaPoly_BLAKE2s`** via the [`snow`](https://docs.rs/snow) crate
+(BLAKE2s transcript). Session keys are derived from the Noise handshake hash with an AEGIS
+domain separator; 580-byte cell AEAD framing is unchanged.
+
+### Legacy SHA3 path
+
+Feature `noise-link-legacy-sha3` exposes the pre-2026-07 in-tree transcript (80-byte msg1,
+SHA3-256 mixing). **Not** interoperable with the default `snow` path or other standard Noise
+stacks. Use only for migration testing.
 
 ## Auto selection rules
 
@@ -82,8 +93,8 @@ noise_static_secret = "<64 hex local static secret>"
 
 | Message | Bytes |
 |---------|------:|
-| Initiator → responder (msg1) | 80 (`e` ‖ enc(`s`) ‖ tag) |
-| Responder → initiator (msg2) | 48 (`e` ‖ tag) |
+| Initiator → responder (msg1) | 96 |
+| Responder → initiator (msg2) | 48 |
 
 After handshake, both sides share one `LinkKey` and use the existing 580-byte ChaCha20-Poly1305 cell frames. Ingress rate-limit, peer-health, weighted fair inbound queues, and drop-newest policy are unchanged.
 
@@ -95,7 +106,8 @@ After handshake, both sides share one `LinkKey` and use the existing 580-byte Ch
 
 ## Residual
 
-- Not byte-compatible with Noise_IK_25519_ChaChaPoly_BLAKE2s.
+- Handshake is standard Noise IK on the wire; **AEGIS `LinkKey`** still uses a SHA3-256 domain mix on the handshake hash (cell frames are not raw Noise transport).
 - Ingress still admits any holder of the configured ingress static (or derived ingress key).
 - Static secrets remain operator-distributed (config / roster); no PKI ceremony in this crate.
 - Auto without keys (or explicit `legacy_psk`) remains LegacyPsk for existing deployments.
+- Pre-`snow` SHA3 peers (80-byte msg1) require explicit migration; see `noise-link-legacy-sha3`.

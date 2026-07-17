@@ -33,6 +33,7 @@ use curve25519_dalek::ristretto::CompressedRistretto;
 use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
 use rand::thread_rng;
+use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 
 use crate::nullifier::{NullifierError, NullifierRegistry};
@@ -92,7 +93,7 @@ fn shared_bp_gens() -> BulletproofGens {
 /// score or the raw scalar difference.
 pub struct BulletproofsReputationProof;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BulletproofsProof {
     /// Pedersen commitment to `(score_scaled - threshold_scaled)` at prove time.
     pub commitment: [u8; 32],
@@ -179,7 +180,7 @@ impl ZkReputationProof for BulletproofsReputationProof {
 /// exposed for out-of-band binding. Bind identity via [`derive_reputation_nullifier`]
 /// (or an external ledger commitment) checked by the verifier separately — not
 /// serialized inside [`Self::proof`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnonymousReputationPresentation {
     /// Threshold range proof (commitment + range proof). Contains no RelayId.
     pub proof: BulletproofsProof,

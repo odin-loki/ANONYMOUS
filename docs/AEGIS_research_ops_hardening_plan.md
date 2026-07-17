@@ -27,8 +27,8 @@ Each residual must have:
 | 7 | ZK anonymous reputation | Anonymous presentation + nullifier API | **Partial** |
 | 8 | Adversarial multi-conn flood | Default global ingress budget 8/τ | **Mitigated** |
 | 9 | Sybil / g=3 guard plateau | `GUARD_SET_SIZE=3` + production helpers + `test-utils` API fence | **Mitigated** |
-| 10 | dudect / CT evidence | In-tree smoke + WSL dudect ops doc | **Partial** |
-| 11 | Per-peer fair queues | Per-peer inbound + weighted WFQ-style drain | **Partial/Mitigated** |
+| 10 | dudect / CT evidence | In-tree smoke + `scripts/run_dudect_wsl.sh` + ops doc | **Partial** |
+| 11 | Per-peer fair queues | Inbound + outbound health-weighted WFQ | **Done** |
 
 ## Ops documentation index
 
@@ -62,8 +62,8 @@ Each residual must have:
 | 7 | **Partial** | `AnonymousReputationPresentation` + nullifier helper |
 | 8 | **Mitigated** | Default `global_max_cells_per_sec = 8/τ` |
 | 9 | **Mitigated** | `GUARD_SET_SIZE=3` + `build_bound_path_pruned_with_guards`; unfiltered APIs gated `test-utils` |
-| 10 | **Partial** | `dudect_smoke` + `docs/ops/constant_time_ci.md` |
-| 11 | **Partial/Mitigated** | Per-peer inbound queues + RR fair drain |
+| 10 | **Partial** | `dudect_smoke` + `scripts/run_dudect_wsl.sh` + `docs/ops/constant_time_ci.md` |
+| 11 | **Done** | Health-weighted inbound + outbound WFQ in `aegis-relay::net` |
 
 ## Verification
 
