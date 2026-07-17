@@ -72,7 +72,8 @@ bound ports; peer table built in-memory.
    bytes in the routing slot) hitting the outbound dispatcher without an `exit_tx` sink,
    not client Sphinx misroutes. Fixed: cover cells carry a reserved-byte marker and are
    discarded before reassembly; unknown `next_hop` without a peer route is dropped
-   silently (or delivered via `exit_tx` when configured).
+   silently when no exit sink is configured, or delivered via `exit_tx` / TOML exit
+   sink when enabled (2026-07-17).
 
 #### Fixes applied
 - Build once; invoke `target/debug/aegis-node(.exe)` and `aegis-client(.exe)`
@@ -100,8 +101,9 @@ The multi-process vantage timestamps **slightly earlier** than in-process
 metrics should agree within noise — and do (see below).
 
 Columns for both: `payload_bytes` (32–256 B varying) and `cell_count` (= 18 =
-`SPHINX_FRAGMENT_COUNT` per Sphinx packet). Relay-side timestamps were not
-instrumented.
+`SPHINX_FRAGMENT_COUNT` per Sphinx packet). Client-send captures timestamp at
+orchestrator/client vantage; relay-side post-forward timestamps are now available
+via optional `trace.path` (see §5 below).
 
 ### Artifacts
 - `sim/data/real_testnet_trace.csv` — 48 events, in-process capture
@@ -115,6 +117,67 @@ instrumented.
 - `sim/tests/test_multiprocess_trace.py` — mp trace + comparison gate
 - `crates/aegis-node/tests/trace_capture.rs` — in-process capture test
 - `crates/aegis-node/tests/multiprocess_trace_capture.rs` — multi-process gate
+
+--------------------------------------------------------------------------------
+5. RELAY POST-FORWARD TRACE + EXIT SINK (this pass)
+--------------------------------------------------------------------------------
+### Exit sink (`aegis-node`, off by default)
+Terminal Sphinx peels (unknown `next_hop` in the peer table) can be delivered to an
+optional sink instead of being dropped. Enable **only on exit relays** — mix relays
+should leave this disabled.
+
+TOML (`crates/aegis-node/src/config.rs`):
+```toml
+[exit]
+log_payloads = true              # stderr hex preview of peeled payload
+deliver_to = "stdout"            # or "file:/path/to/exit.log"
+```
+
+Wiring: `aegis-node` spawns [`spawn_exit_sink`](../../crates/aegis-node/src/exit_sink.rs)
+and passes the channel to [`spawn_link_bridge`](../../crates/aegis-relay/src/net.rs)
+as `exit_tx`. Payload bytes are trimmed from the Sphinx delta region (trailing
+zero padding stripped) and written as hex lines.
+
+Tests: `tcp_testnet_exit_sink_file_receives_payload` in
+`crates/aegis-node/tests/tcp_testnet.rs`.
+
+**Residual:** `aegis-node` passes `exit_tx: None` when `[exit]` is unset (correct for
+mix relays). Multi-process capture configs do not yet enable exit sink on the last
+hop — peels are still dropped silently there unless TOML is extended.
+
+### Post-forward timestamp trace (relay vantage, off by default)
+Optional instrumentation records **post-shaping** wire events: immediately after a
+Sphinx packet is sealed on a hop link, after cover bursts egress, or when a peel is
+delivered to the exit sink.
+
+TOML:
+```toml
+[trace]
+path = "relay_forward_trace.csv"
+```
+
+Format (`crates/aegis-relay/src/trace.rs`):
+```
+timestamp,cell_count,event_type
+1730000000.123456,18,forward
+1730000000.456789,18,cover
+1730000000.789012,18,exit
+```
+
+Event types: `forward` (Sphinx after mix delay), `cover` (bulk cover burst on wire),
+`exit` (terminal peel to exit sink). `cell_count` is `SPHINX_FRAGMENT_COUNT` (18) for
+forward/exit, or the cover burst length for `cover`.
+
+Tests / artifacts:
+- `crates/aegis-node/tests/relay_forward_trace.rs` — integration gate + `#[ignore]`
+  sample regenerator
+- `sim/data/relay_forward_trace_sample.csv` — committed sample for pytest
+- `sim/scripts/load_relay_forward_trace.py` — loader CLI
+- `sim/tests/test_relay_forward_trace.py` — shapeability gate on sample
+- `sim/aegis_sim/traffic.py` — `load_relay_forward_trace` / `load_relay_forward_timestamps`
+
+Threat model future work **#8** status: **[T] instrumented** at post-forward vantage;
+operational re-capture over a full paced session remains future work.
 
 ### Trace shape (rough)
 | Quantity | In-process | Multi-process |
@@ -151,14 +214,16 @@ Record for evidence ledger (§12): benign real-client-send traces, 4-hop testnet
 in-process CV≈1.39 / multi-process CV≈1.48, min_multiple 1.1–1.2, tier=feasible [T].
 
 ### Rust instrumentation note
-No relay/client timestamp logging was added. A minimal `Debug` impl for
-`CoverFlow`/`CoverEmitResult` in `aegis-relay/src/cover_flow.rs` was required
-because concurrent work left the crate non-compiling (`Cell` lacks `Debug`).
-`cargo test -p aegis-relay` reports one pre-existing failure in
-`cover_flow_count_accumulates_across_rounds` (unrelated to trace capture).
+Relay post-forward trace via [`RelayForwardTrace`](../../crates/aegis-relay/src/trace.rs)
+(optional `trace.path` in node TOML). Exit sink via
+[`spawn_exit_sink`](../../crates/aegis-node/src/exit_sink.rs) (optional `[exit]`).
+A minimal `Debug` impl for `CoverFlow`/`CoverEmitResult` in
+`aegis-relay/src/cover_flow.rs` was required because concurrent work left the crate
+non-compiling (`Cell` lacks `Debug`).
 
 ### Future work
-- Re-capture from relay-observed forward timestamps (instrument `RelayStats`).
+- Re-capture **full-path** relay forward traces over paced multi-process testnet
+  (compare post-shaping CV to client-send captures in §4).
 - Longer horizon (≥128 slots) for Hurst; adversarial/malicious-like emission
   patterns; constant-rate emitter output (post-shaping wire view) vs raw client
   sends.

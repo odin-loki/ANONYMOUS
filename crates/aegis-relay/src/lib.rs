@@ -33,6 +33,7 @@ pub mod net;
 pub mod node;
 pub mod peer_health;
 pub mod relay_id;
+pub mod trace;
 
 pub use config::{RelayConfig, DEFAULT_MU};
 pub use cover_flow::{
@@ -50,3 +51,4 @@ pub use node::{
 };
 pub use peer_health::PeerHealthTracker;
 pub use relay_id::RelayId;
+pub use trace::{load_trace_timestamps, parse_trace_timestamps, RelayForwardTrace};

@@ -197,11 +197,14 @@ async fn two_paced_sends_reuse_one_tcp_handshake() {
         k[0] = 0x42;
         k
     };
+    let hops = sample_hops(3);
+    let first_hop_id = aegis_relay::RelayId::from(hops[0].id);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let cfg = LinkBridgeConfig::default();
     let handshakes = Arc::new(AtomicUsize::new(0));
     let handshakes_server = Arc::clone(&handshakes);
+    let server_cfg = cfg.clone();
 
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
@@ -209,10 +212,11 @@ async fn two_paced_sends_reuse_one_tcp_handshake() {
         let mut rng = OsRng;
         let key = run_responder_handshake(
             &mut stream,
+            first_hop_id,
             Some(psk),
             &HashMap::new(),
             &mut rng,
-            cfg.read_timeout,
+            &server_cfg,
         )
         .await
         .unwrap();
@@ -231,6 +235,7 @@ async fn two_paced_sends_reuse_one_tcp_handshake() {
 
     let link = ClientLink {
         first_hop_addr: addr,
+        first_hop_relay_id: hops[0].id,
         link_key_bytes: psk,
     };
     let tau = Duration::from_millis(25);
@@ -246,7 +251,6 @@ async fn two_paced_sends_reuse_one_tcp_handshake() {
     .await
     .unwrap();
 
-    let hops = sample_hops(3);
     let mut rng = OsRng;
     session
         .send_payload_via_session(&hops, b"first-send", &mut rng)

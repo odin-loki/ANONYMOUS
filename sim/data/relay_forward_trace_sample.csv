@@ -1,0 +1,5 @@
+timestamp,cell_count,event_type
+# vantage=relay_post_forward
+1750000000.000000,18,forward
+1750000000.100000,18,cover
+1750000000.200000,18,exit

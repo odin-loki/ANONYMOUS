@@ -26,7 +26,8 @@ pub use error::{RosterError, TopologyError};
 pub use guards::{guard_exposure_plateau, GuardConfig, GuardSelector};
 pub use layers::{build_topology, build_topology_reputation_filtered, Topology};
 pub use path::{
-    path_compromise_probability, path_satisfies_jurisdiction, path_satisfies_reputation,
+    build_bound_path_diverse_pruned, build_bound_path_pruned, path_compromise_probability,
+    path_satisfies_jurisdiction, path_satisfies_reputation, relay_records_for_path,
     select_diverse_path, select_diverse_reputation_path, select_diverse_reputation_path_pruned,
     select_path, select_path_reputation_weighted, select_path_reputation_weighted_pruned,
     JurisdictionPolicy,

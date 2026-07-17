@@ -47,6 +47,7 @@ pub const LINK_HANDSHAKE_FINISH_LEN: usize = LINK_HANDSHAKE_MAC_LEN;
 
 const HANDSHAKE_AUTH_DOMAIN: &[u8] = b"aegis-link-handshake-auth-v1";
 const HANDSHAKE_MAC_DOMAIN: &[u8] = b"aegis-link-handshake-mac-v1";
+const HANDSHAKE_IDENTITY_DOMAIN: &[u8] = b"aegis-link-handshake-identity-v1";
 const HANDSHAKE_SESSION_DOMAIN: &[u8] = b"aegis-link-session-v1";
 const HANDSHAKE_TRANSCRIPT_DOMAIN: &[u8] = b"aegis-link-handshake-v1";
 
@@ -158,6 +159,47 @@ impl LinkHandshakeTranscript {
     }
 }
 
+/// Roster identity bound into the link handshake MAC transcript.
+///
+/// Both peers must agree on `peer_relay_id` — the relay id of the responder being
+/// authenticated on this hop link. When present, a stolen PSK for peer A cannot
+/// authenticate as peer B without matching identity material.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkHandshakeBinding {
+    pub peer_relay_id: [u8; 32],
+    pub kem_public_commitment: Option<[u8; 32]>,
+}
+
+impl LinkHandshakeBinding {
+    pub fn peer_id(peer_relay_id: [u8; 32]) -> Self {
+        Self {
+            peer_relay_id,
+            kem_public_commitment: None,
+        }
+    }
+
+    pub fn with_kem_commitment(mut self, kem_public_commitment: [u8; 32]) -> Self {
+        self.kem_public_commitment = Some(kem_public_commitment);
+        self
+    }
+}
+
+fn update_handshake_mac_with_binding(h: &mut Sha3_256, binding: Option<&LinkHandshakeBinding>) {
+    if let Some(binding) = binding {
+        h.update(HANDSHAKE_IDENTITY_DOMAIN);
+        h.update(&binding.peer_relay_id);
+        match binding.kem_public_commitment {
+            Some(commitment) => {
+                h.update([0x01]);
+                h.update(&commitment);
+            }
+            None => {
+                h.update([0x00]);
+            }
+        }
+    }
+}
+
 fn handshake_auth_key(psk: &[u8; 32]) -> [u8; 32] {
     let mut h = Sha3_256::new();
     h.update(HANDSHAKE_AUTH_DOMAIN);
@@ -165,7 +207,12 @@ fn handshake_auth_key(psk: &[u8; 32]) -> [u8; 32] {
     h.finalize().into()
 }
 
-fn handshake_mac(auth_key: &[u8; 32], role: u8, transcript: &LinkHandshakeTranscript) -> [u8; 32] {
+fn handshake_mac(
+    auth_key: &[u8; 32],
+    role: u8,
+    transcript: &LinkHandshakeTranscript,
+    binding: Option<&LinkHandshakeBinding>,
+) -> [u8; 32] {
     let mut h = Sha3_256::new();
     h.update(HANDSHAKE_MAC_DOMAIN);
     h.update(auth_key);
@@ -174,6 +221,7 @@ fn handshake_mac(auth_key: &[u8; 32], role: u8, transcript: &LinkHandshakeTransc
     h.update(&transcript.initiator_nonce);
     h.update(&transcript.responder_eph_pk);
     h.update(&transcript.responder_nonce);
+    update_handshake_mac_with_binding(&mut h, binding);
     h.finalize().into()
 }
 
@@ -181,9 +229,10 @@ fn verify_handshake_mac(
     auth_key: &[u8; 32],
     role: u8,
     transcript: &LinkHandshakeTranscript,
+    binding: Option<&LinkHandshakeBinding>,
     mac: &[u8; LINK_HANDSHAKE_MAC_LEN],
 ) -> bool {
-    let expected = handshake_mac(auth_key, role, transcript);
+    let expected = handshake_mac(auth_key, role, transcript, binding);
     bool::from(expected.ct_eq(mac))
 }
 
@@ -262,38 +311,42 @@ pub fn parse_link_handshake_resp(bytes: &[u8]) -> Result<LinkHandshakeResp> {
 pub fn link_handshake_confirm_mac(
     psk: &[u8; 32],
     transcript: &LinkHandshakeTranscript,
+    binding: Option<&LinkHandshakeBinding>,
 ) -> [u8; LINK_HANDSHAKE_MAC_LEN] {
     let auth_key = handshake_auth_key(psk);
-    handshake_mac(&auth_key, ROLE_INITIATOR, transcript)
+    handshake_mac(&auth_key, ROLE_INITIATOR, transcript, binding)
 }
 
 /// Responder finish MAC (role = responder).
 pub fn link_handshake_finish_mac(
     psk: &[u8; 32],
     transcript: &LinkHandshakeTranscript,
+    binding: Option<&LinkHandshakeBinding>,
 ) -> [u8; LINK_HANDSHAKE_MAC_LEN] {
     let auth_key = handshake_auth_key(psk);
-    handshake_mac(&auth_key, ROLE_RESPONDER, transcript)
+    handshake_mac(&auth_key, ROLE_RESPONDER, transcript, binding)
 }
 
 /// Verify initiator confirm MAC with the expected PSK.
 pub fn verify_link_handshake_confirm_mac(
     psk: &[u8; 32],
     transcript: &LinkHandshakeTranscript,
+    binding: Option<&LinkHandshakeBinding>,
     mac: &[u8; LINK_HANDSHAKE_MAC_LEN],
 ) -> bool {
     let auth_key = handshake_auth_key(psk);
-    verify_handshake_mac(&auth_key, ROLE_INITIATOR, transcript, mac)
+    verify_handshake_mac(&auth_key, ROLE_INITIATOR, transcript, binding, mac)
 }
 
 /// Verify responder finish MAC with the expected PSK.
 pub fn verify_link_handshake_finish_mac(
     psk: &[u8; 32],
     transcript: &LinkHandshakeTranscript,
+    binding: Option<&LinkHandshakeBinding>,
     mac: &[u8; LINK_HANDSHAKE_MAC_LEN],
 ) -> bool {
     let auth_key = handshake_auth_key(psk);
-    verify_handshake_mac(&auth_key, ROLE_RESPONDER, transcript, mac)
+    verify_handshake_mac(&auth_key, ROLE_RESPONDER, transcript, binding, mac)
 }
 
 /// Parse a fixed-width handshake MAC from the wire.
@@ -327,12 +380,13 @@ pub fn link_handshake_initiator_finish(
     init: &LinkHandshakeInit,
     resp_msg: &[u8],
     finish_msg: &[u8],
+    binding: Option<&LinkHandshakeBinding>,
 ) -> Result<(LinkKey, [u8; LINK_HANDSHAKE_CONFIRM_LEN])> {
     let resp = parse_link_handshake_resp(resp_msg)?;
     let transcript = LinkHandshakeTranscript::from_messages(init, &resp);
-    let confirm = link_handshake_confirm_mac(psk, &transcript);
+    let confirm = link_handshake_confirm_mac(psk, &transcript, binding);
     let finish = parse_link_handshake_mac(finish_msg)?;
-    if !verify_link_handshake_finish_mac(psk, &transcript, &finish) {
+    if !verify_link_handshake_finish_mac(psk, &transcript, binding, &finish) {
         return Err(CryptoError::IntegrityFailure);
     }
     let session = derive_link_session_key(init_sk, &resp.eph_pk, &transcript);
@@ -346,10 +400,11 @@ pub fn link_handshake_responder_finish(
     init: &LinkHandshakeInit,
     resp: &LinkHandshakeResp,
     confirm_msg: &[u8],
+    binding: Option<&LinkHandshakeBinding>,
 ) -> Result<LinkKey> {
     let confirm = parse_link_handshake_mac(confirm_msg)?;
     let transcript = LinkHandshakeTranscript::from_messages(init, resp);
-    if !verify_link_handshake_confirm_mac(psk, &transcript, &confirm) {
+    if !verify_link_handshake_confirm_mac(psk, &transcript, binding, &confirm) {
         return Err(CryptoError::IntegrityFailure);
     }
     Ok(derive_link_session_key(resp_sk, &init.eph_pk, &transcript))
@@ -360,19 +415,44 @@ mod tests {
     use super::*;
     use rand_core::OsRng;
 
-    fn run_honest_handshake(psk: [u8; 32], rng: &mut OsRng) -> (LinkKey, LinkKey) {
+    fn test_peer_id(tag: u8) -> [u8; 32] {
+        let mut id = [0u8; 32];
+        id[0] = tag;
+        id
+    }
+
+    fn run_honest_handshake(
+        psk: [u8; 32],
+        binding: Option<LinkHandshakeBinding>,
+        rng: &mut OsRng,
+    ) -> (LinkKey, LinkKey) {
+        let binding_ref = binding.as_ref();
         let (init_sk, init_msg) = link_handshake_init_write(rng);
         let init = parse_link_handshake_init(&init_msg).unwrap();
         let (resp_sk, resp_msg) = link_handshake_resp_write(rng);
         let resp = parse_link_handshake_resp(&resp_msg).unwrap();
         let transcript = LinkHandshakeTranscript::from_messages(&init, &resp);
-        let confirm = link_handshake_confirm_mac(&psk, &transcript);
-        let finish = link_handshake_finish_mac(&psk, &transcript);
-        let key_i = link_handshake_initiator_finish(&psk, init_sk, &init, &resp_msg, &finish)
-            .unwrap()
-            .0;
-        let key_r =
-            link_handshake_responder_finish(&psk, resp_sk, &init, &resp, &confirm).unwrap();
+        let confirm = link_handshake_confirm_mac(&psk, &transcript, binding_ref);
+        let finish = link_handshake_finish_mac(&psk, &transcript, binding_ref);
+        let key_i = link_handshake_initiator_finish(
+            &psk,
+            init_sk,
+            &init,
+            &resp_msg,
+            &finish,
+            binding_ref,
+        )
+        .unwrap()
+        .0;
+        let key_r = link_handshake_responder_finish(
+            &psk,
+            resp_sk,
+            &init,
+            &resp,
+            &confirm,
+            binding_ref,
+        )
+        .unwrap();
         (key_i, key_r)
     }
 
@@ -401,25 +481,85 @@ mod tests {
     fn handshake_honest_parties_derive_matching_keys() {
         let psk = [0x42u8; 32];
         let mut rng = OsRng;
-        let (key_i, key_r) = run_honest_handshake(psk, &mut rng);
+        let (key_i, key_r) =
+            run_honest_handshake(psk, Some(LinkHandshakeBinding::peer_id(test_peer_id(0x01))), &mut rng);
         assert_eq!(key_i, key_r);
+    }
+
+    #[test]
+    fn handshake_honest_without_identity_binding() {
+        let psk = [0x42u8; 32];
+        let mut rng = OsRng;
+        let (key_i, key_r) = run_honest_handshake(psk, None, &mut rng);
+        assert_eq!(key_i, key_r);
+    }
+
+    #[test]
+    fn handshake_rejects_wrong_peer_id() {
+        let psk = [0x42u8; 32];
+        let mut rng = OsRng;
+        let initiator_binding = LinkHandshakeBinding::peer_id(test_peer_id(0x01));
+        let responder_binding = LinkHandshakeBinding::peer_id(test_peer_id(0x02));
+        let (init_sk, init_msg) = link_handshake_init_write(&mut rng);
+        let init = parse_link_handshake_init(&init_msg).unwrap();
+        let (resp_sk, resp_msg) = link_handshake_resp_write(&mut rng);
+        let resp = parse_link_handshake_resp(&resp_msg).unwrap();
+        let transcript = LinkHandshakeTranscript::from_messages(&init, &resp);
+        let confirm = link_handshake_confirm_mac(&psk, &transcript, Some(&initiator_binding));
+        let finish = link_handshake_finish_mac(&psk, &transcript, Some(&initiator_binding));
+        let key_i = link_handshake_initiator_finish(
+            &psk,
+            init_sk,
+            &init,
+            &resp_msg,
+            &finish,
+            Some(&initiator_binding),
+        )
+        .unwrap()
+        .0;
+        let err = link_handshake_responder_finish(
+            &psk,
+            resp_sk,
+            &init,
+            &resp,
+            &confirm,
+            Some(&responder_binding),
+        );
+        assert!(matches!(err, Err(CryptoError::IntegrityFailure)));
+        let _ = key_i;
     }
 
     #[test]
     fn handshake_rejects_wrong_psk_on_responder() {
         let psk = [0x42u8; 32];
         let wrong = [0x43u8; 32];
+        let binding = LinkHandshakeBinding::peer_id(test_peer_id(0x01));
         let mut rng = OsRng;
         let (init_sk, init_msg) = link_handshake_init_write(&mut rng);
         let init = parse_link_handshake_init(&init_msg).unwrap();
         let (resp_sk, resp_msg) = link_handshake_resp_write(&mut rng);
         let resp = parse_link_handshake_resp(&resp_msg).unwrap();
         let transcript = LinkHandshakeTranscript::from_messages(&init, &resp);
-        let confirm = link_handshake_confirm_mac(&psk, &transcript);
-        let finish = link_handshake_finish_mac(&psk, &transcript);
-        let key_i =
-            link_handshake_initiator_finish(&psk, init_sk, &init, &resp_msg, &finish).unwrap().0;
-        let err = link_handshake_responder_finish(&wrong, resp_sk, &init, &resp, &confirm);
+        let confirm = link_handshake_confirm_mac(&psk, &transcript, Some(&binding));
+        let finish = link_handshake_finish_mac(&psk, &transcript, Some(&binding));
+        let key_i = link_handshake_initiator_finish(
+            &psk,
+            init_sk,
+            &init,
+            &resp_msg,
+            &finish,
+            Some(&binding),
+        )
+        .unwrap()
+        .0;
+        let err = link_handshake_responder_finish(
+            &wrong,
+            resp_sk,
+            &init,
+            &resp,
+            &confirm,
+            Some(&binding),
+        );
         assert!(matches!(err, Err(CryptoError::IntegrityFailure)));
         let _ = key_i;
     }
@@ -428,23 +568,32 @@ mod tests {
     fn handshake_rejects_wrong_psk_on_initiator_finish() {
         let psk = [0x42u8; 32];
         let wrong = [0x43u8; 32];
+        let binding = LinkHandshakeBinding::peer_id(test_peer_id(0x01));
         let mut rng = OsRng;
         let (init_sk, init_msg) = link_handshake_init_write(&mut rng);
         let init = parse_link_handshake_init(&init_msg).unwrap();
         let (_resp_sk, resp_msg) = link_handshake_resp_write(&mut rng);
         let resp = parse_link_handshake_resp(&resp_msg).unwrap();
         let transcript = LinkHandshakeTranscript::from_messages(&init, &resp);
-        let finish = link_handshake_finish_mac(&wrong, &transcript);
-        let err = link_handshake_initiator_finish(&psk, init_sk, &init, &resp_msg, &finish);
+        let finish = link_handshake_finish_mac(&wrong, &transcript, Some(&binding));
+        let err = link_handshake_initiator_finish(
+            &psk,
+            init_sk,
+            &init,
+            &resp_msg,
+            &finish,
+            Some(&binding),
+        );
         assert!(matches!(err, Err(CryptoError::IntegrityFailure)));
     }
 
     #[test]
     fn distinct_session_keys_per_connection() {
         let psk = [0x55u8; 32];
+        let binding = LinkHandshakeBinding::peer_id(test_peer_id(0x03));
         let mut rng = OsRng;
-        let (k1_i, _) = run_honest_handshake(psk, &mut rng);
-        let (k2_i, _) = run_honest_handshake(psk, &mut rng);
+        let (k1_i, _) = run_honest_handshake(psk, Some(binding.clone()), &mut rng);
+        let (k2_i, _) = run_honest_handshake(psk, Some(binding), &mut rng);
         assert_ne!(k1_i, k2_i);
     }
 
@@ -464,7 +613,8 @@ mod tests {
     fn session_key_seals_after_handshake() {
         let psk = [0x11u8; 32];
         let mut rng = OsRng;
-        let (key_i, key_r) = run_honest_handshake(psk, &mut rng);
+        let (key_i, key_r) =
+            run_honest_handshake(psk, Some(LinkHandshakeBinding::peer_id(test_peer_id(0x04))), &mut rng);
         let cell = Cell::zeroed();
         let frame = key_i.seal(&cell, &mut rng).unwrap();
         let opened = key_r.open(&frame).unwrap();

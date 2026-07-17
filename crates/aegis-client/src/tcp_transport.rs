@@ -35,6 +35,7 @@ impl TcpCellTransport {
         let session = LinkSession::connect(
             link.first_hop_addr,
             &link.link_key_bytes,
+            aegis_relay::RelayId::from(link.first_hop_relay_id),
             connect_rng,
             bridge_config,
         )

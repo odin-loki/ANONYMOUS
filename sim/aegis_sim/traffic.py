@@ -99,6 +99,26 @@ def load_trace_counts(events, slot_seconds, t0=None, t1=None):
     return counts
 
 
+def load_relay_forward_trace(path):
+    """Load relay post-forward trace CSV: timestamp,cell_count,event_type."""
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("timestamp,"):
+                continue
+            parts = line.split(",")
+            if len(parts) < 3:
+                continue
+            rows.append((float(parts[0]), int(parts[1]), parts[2]))
+    return rows
+
+
+def load_relay_forward_timestamps(path):
+    """Event timestamps from a relay post-forward trace file."""
+    return [ts for ts, _, _ in load_relay_forward_trace(path)]
+
+
 def synthetic_c2_like_counts(n_slots, mean=10.0, rng=None):
     """Synthetic stand-in for a real C2/telemetry trace: diurnal mean cycle +
     Pareto-ish burst multiplier + multiplicative jitter. Messier than the pure

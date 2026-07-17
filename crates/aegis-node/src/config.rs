@@ -39,6 +39,12 @@ pub struct NodeConfigFile {
     pub peers: Vec<PeerConfig>,
     #[serde(default)]
     pub link: LinkNetConfig,
+    /// Optional exit sink for terminal Sphinx peels (off by default; enable on exit relays only).
+    #[serde(default)]
+    pub exit: ExitConfig,
+    /// Optional post-forward timestamp trace (relay vantage, off by default).
+    #[serde(default)]
+    pub trace: TraceConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -49,6 +55,9 @@ pub struct LinkNetConfig {
     /// Maximum concurrent inbound TCP connections.
     #[serde(default = "default_max_inbound_connections")]
     pub max_inbound_connections: usize,
+    /// Bind handshake MACs to the peer roster relay id (recommended).
+    #[serde(default = "default_identity_binding")]
+    pub identity_binding: bool,
 }
 
 impl Default for LinkNetConfig {
@@ -56,8 +65,13 @@ impl Default for LinkNetConfig {
         Self {
             read_timeout_secs: default_link_read_timeout_secs(),
             max_inbound_connections: default_max_inbound_connections(),
+            identity_binding: default_identity_binding(),
         }
     }
+}
+
+fn default_identity_binding() -> bool {
+    true
 }
 
 fn default_link_read_timeout_secs() -> u64 {
@@ -91,6 +105,54 @@ pub struct PeerConfig {
     pub link_key: String,
 }
 
+/// Exit delivery for terminal Sphinx peels (`deliver_to` and/or `log_payloads`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExitConfig {
+    /// Log peeled payload size + hex preview to stderr when true.
+    #[serde(default)]
+    pub log_payloads: bool,
+    /// `"stdout"` or `"file:path"` — off when omitted.
+    #[serde(default)]
+    pub deliver_to: Option<String>,
+}
+
+impl ExitConfig {
+    pub fn into_settings(self) -> Result<crate::exit_sink::ExitSinkSettings, ConfigError> {
+        Ok(crate::exit_sink::ExitSinkSettings {
+            log_payloads: self.log_payloads,
+            deliver_to: self
+                .deliver_to
+                .map(|s| parse_exit_deliver_to(&s))
+                .transpose()?,
+        })
+    }
+}
+
+/// Relay-side post-shaping forward trace file.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TraceConfig {
+    /// Append `(timestamp, cell_count, event_type)` rows here when set.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+fn parse_exit_deliver_to(s: &str) -> Result<crate::exit_sink::ExitDeliverTarget, ConfigError> {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("stdout") {
+        return Ok(crate::exit_sink::ExitDeliverTarget::Stdout);
+    }
+    if let Some(path) = s.strip_prefix("file:") {
+        let path = path.trim();
+        if path.is_empty() {
+            return Err(ConfigError::Hex("exit.deliver_to file: requires a path"));
+        }
+        return Ok(crate::exit_sink::ExitDeliverTarget::File(path.into()));
+    }
+    Err(ConfigError::Hex(
+        "exit.deliver_to must be \"stdout\" or \"file:path\"",
+    ))
+}
+
 /// Parsed runtime configuration for one relay process.
 pub struct NodeRuntimeConfig {
     pub relay_id: RelayId,
@@ -100,6 +162,8 @@ pub struct NodeRuntimeConfig {
     pub ingress_link_key: Option<[u8; 32]>,
     pub peer_table: HashMap<RelayId, PeerInfo>,
     pub link_bridge_config: LinkBridgeConfig,
+    pub exit: ExitConfig,
+    pub trace: TraceConfig,
 }
 
 impl NodeConfigFile {
@@ -171,7 +235,10 @@ impl NodeConfigFile {
             link_bridge_config: LinkBridgeConfig {
                 read_timeout: std::time::Duration::from_secs(self.link.read_timeout_secs),
                 max_inbound_connections: self.link.max_inbound_connections,
+                identity_binding: self.link.identity_binding,
             },
+            exit: self.exit,
+            trace: self.trace,
         })
     }
 }

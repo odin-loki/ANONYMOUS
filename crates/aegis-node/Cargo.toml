@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "aegis_node"
+path = "src/lib.rs"
+
 [lints]
 workspace = true
 
@@ -24,6 +28,7 @@ thiserror.workspace = true
 rand_core = { workspace = true, features = ["getrandom"] }
 
 [dev-dependencies]
+aegis_node = { path = ".", package = "aegis-node" }
 aegis-crypto = { path = "../aegis-crypto" }
 aegis-relay = { path = "../aegis-relay" }
 aegis-client = { path = "../aegis-client" }

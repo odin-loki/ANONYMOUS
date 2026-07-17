@@ -1,17 +1,16 @@
 //! Runnable mix relay process: config file + TCP link bridge + [`RelayNode`].
 
-mod config;
-
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aegis_relay::{PeerHealthTracker, RelayNode, spawn_link_bridge};
+use aegis_node::{exit_sink, NodeConfigFile};
+use aegis_relay::{PeerHealthTracker, RelayForwardTrace, RelayNode, spawn_link_bridge};
 use aegis_trust::RelayPruningPolicy;
 use clap::Parser;
 use rand_core::OsRng;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc;
+use tokio::sync::Mutex;
 
 #[derive(Parser, Debug)]
 #[command(name = "aegis-node", about = "AEGIS mix relay node")]
@@ -32,8 +31,8 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let mut file = config::NodeConfigFile::load(&cli.config)?;
-    config::NodeConfigFile::load_or_init_kem(&cli.config, &mut file, &mut OsRng)?;
+    let mut file = NodeConfigFile::load(&cli.config)?;
+    NodeConfigFile::load_or_init_kem(&cli.config, &mut file, &mut OsRng)?;
     if let Some(listen) = cli.listen {
         file.listen = listen;
     }
@@ -71,21 +70,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (outbound_tx, outbound_rx) = mpsc::channel(64);
     let (cover_tx, cover_rx) = mpsc::channel(64);
 
+    let relay_id = runtime.relay_id;
     let node = RelayNode::new(
-        runtime.relay_id,
+        relay_id,
         runtime.kem_secret,
         runtime.relay_config,
     );
     let (handle, relay_task) = node.spawn(inbound_rx, outbound_tx, Some(cover_tx), OsRng);
 
+    let exit_settings = runtime.exit.into_settings()?;
+    let exit_tx = exit_sink::spawn_exit_sink(exit_settings);
+    let forward_trace = match runtime.trace.path {
+        Some(ref path) => Some(RelayForwardTrace::spawn(path)?),
+        None => None,
+    };
+
     let (_listener_task, _dispatcher_task) = spawn_link_bridge(
         runtime.listen,
+        relay_id,
         runtime.peer_table,
         runtime.ingress_link_key,
         inbound_tx,
         outbound_rx,
         Some(cover_rx),
-        None,
+        exit_tx,
+        forward_trace,
         OsRng,
         runtime.link_bridge_config,
         Some(peer_health),

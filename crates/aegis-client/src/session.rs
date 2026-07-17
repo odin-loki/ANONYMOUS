@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 
 use crate::driver::run_session_emitter_loop;
 use crate::emitter::{ConstantRateEmitter, EmitterConfig};
-use crate::send::{build_packet, ClientHop, ClientLink, SendError};
+use crate::send::{build_packet_with_options, BuildPacketOptions, ClientHop, ClientLink, SendError};
 use crate::tcp_transport::TcpCellTransport;
 use crate::transport::OutboundCell;
 
@@ -118,7 +118,23 @@ impl PacedSession {
         payload: &[u8],
         rng: &mut R,
     ) -> Result<SphinxPacket, SendError> {
-        let packet = build_packet(hops, payload, rng)?;
+        self.send_payload_via_session_with_options(
+            hops,
+            payload,
+            rng,
+            BuildPacketOptions::default(),
+        )
+    }
+
+    /// Like [`Self::send_payload_via_session`] with explicit roster binding policy.
+    pub fn send_payload_via_session_with_options<R: RngCore + CryptoRngCore>(
+        &self,
+        hops: &[ClientHop],
+        payload: &[u8],
+        rng: &mut R,
+        options: BuildPacketOptions,
+    ) -> Result<SphinxPacket, SendError> {
+        let packet = build_packet_with_options(hops, payload, rng, options)?;
         self.enqueue_packet(&packet, rng)?;
         Ok(packet)
     }

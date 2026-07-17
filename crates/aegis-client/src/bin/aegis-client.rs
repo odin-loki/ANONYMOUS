@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use aegis_client::driver::config_with_tau_secs;
-use aegis_client::send::{send_payload, ClientHop, ClientLink};
+use aegis_client::send::{BuildPacketOptions, ClientHop, ClientLink};
 use aegis_client::session::{PacedSession, PacedSessionConfig};
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_topology::types::KemPublicCommitment;
@@ -41,6 +41,14 @@ struct Cli {
     /// Slot period τ in seconds (spec worked example 0.35).
     #[arg(long, default_value_t = 0.35)]
     tau_secs: f64,
+
+    /// Require roster KEM commitment on every hop (default: on when any hop config includes `kem_commitment`).
+    #[arg(long)]
+    require_kem_binding: Option<bool>,
+
+    /// Allow hops without roster KEM commitments (dev/legacy only).
+    #[arg(long, conflicts_with = "require_kem_binding")]
+    no_require_kem_binding: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,14 +131,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let first_hop_addr: SocketAddr = file.first_hop_addr.parse()?;
+    let first_hop_relay_id = hops
+        .first()
+        .map(|hop| hop.id)
+        .ok_or("config must include at least one hop")?;
     let link = ClientLink {
         first_hop_addr,
+        first_hop_relay_id,
         link_key_bytes: parse_hex32(&file.ingress_link_key)?,
+    };
+
+    let require_kem_binding = if cli.no_require_kem_binding {
+        false
+    } else {
+        cli.require_kem_binding.unwrap_or_else(|| {
+            file.hops.iter().any(|hop| hop.kem_commitment.is_some())
+        })
+    };
+    let packet_options = BuildPacketOptions {
+        require_kem_binding,
     };
 
     let mut rng = OsRng;
     if cli.raw {
-        let packet = send_payload(&hops, &link, &payload, &mut rng).await?;
+        let packet =
+            aegis_client::send::send_payload_with_options(&hops, &link, &payload, &mut rng, packet_options)
+                .await?;
         eprintln!(
             "sent sphinx packet (raw/unpaced, {} B payload) to {}",
             payload.len(),
@@ -148,7 +174,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut rng,
         )
         .await?;
-        let packet = session.send_payload_via_session(&hops, &payload, &mut rng)?;
+        let packet = session.send_payload_via_session_with_options(
+            &hops,
+            &payload,
+            &mut rng,
+            packet_options,
+        )?;
         session.wait_idle_cover().await?;
         session.shutdown().await?;
         eprintln!(

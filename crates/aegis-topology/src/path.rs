@@ -13,7 +13,7 @@ use crate::guards::GuardSelector;
 use crate::layers::Topology;
 use crate::pruning::path_satisfies_pruning_policy;
 use crate::roster::RelayRoster;
-use crate::types::{JurisdictionId, RelayId};
+use crate::types::{JurisdictionId, RelayId, RelayRecord};
 
 /// Full-path compromise probability: `f^L` (spec §4.5, §6).
 pub fn path_compromise_probability(f: f64, l: usize) -> f64 {
@@ -202,6 +202,66 @@ pub fn select_path_reputation_weighted_pruned(
     })
 }
 
+/// Resolve each hop on `path` to an admitted [`RelayRecord`] (includes signed KEM commitment).
+pub fn relay_records_for_path(
+    path: &[RelayId],
+    roster: &RelayRoster,
+) -> Result<Vec<RelayRecord>, TopologyError> {
+    path.iter()
+        .map(|id| {
+            roster
+                .get(*id)
+                .cloned()
+                .ok_or(TopologyError::RelayNotFound { relay: *id })
+        })
+        .collect()
+}
+
+/// Production helper: pruned path selection plus roster record lookup with KEM commitments.
+///
+/// Composes [`select_path_reputation_weighted_pruned`] and [`relay_records_for_path`].
+/// Callers attach live KEM public keys in `aegis-client` via [`hops_from_bound_path`].
+pub fn build_bound_path_pruned(
+    topology: &Topology,
+    roster: &RelayRoster,
+    guards: Option<&GuardSelector>,
+    policy: &RelayPruningPolicy,
+    min_reputation: f64,
+    max_attempts: usize,
+) -> Result<Vec<RelayRecord>, TopologyError> {
+    let path = select_path_reputation_weighted_pruned(
+        topology,
+        roster,
+        guards,
+        policy,
+        min_reputation,
+        max_attempts,
+    )?;
+    relay_records_for_path(&path, roster)
+}
+
+/// Like [`build_bound_path_pruned`] but also enforces jurisdiction diversity.
+pub fn build_bound_path_diverse_pruned(
+    topology: &Topology,
+    roster: &RelayRoster,
+    guards: Option<&GuardSelector>,
+    jurisdiction: &JurisdictionPolicy,
+    policy: &RelayPruningPolicy,
+    min_reputation: f64,
+    max_attempts: usize,
+) -> Result<Vec<RelayRecord>, TopologyError> {
+    let path = select_diverse_reputation_path_pruned(
+        topology,
+        roster,
+        guards,
+        jurisdiction,
+        policy,
+        min_reputation,
+        max_attempts,
+    )?;
+    relay_records_for_path(&path, roster)
+}
+
 /// Like [`select_diverse_reputation_path`] but also applies
 /// [`RelayPruningPolicy::is_eligible`] on every hop.
 pub fn select_diverse_reputation_path_pruned(
@@ -313,6 +373,38 @@ mod tests {
                 !path.contains(&bad),
                 "demoted relay must never appear on pruned path"
             );
+        }
+    }
+
+    #[test]
+    fn build_bound_path_pruned_excludes_demoted_and_returns_commitments() {
+        let roster = sample_roster(24, &["US", "DE", "FR", "UK", "JP", "CA"]);
+        let topo = build_topology(&roster, 1, &TopologyConfig::high_threat(), 0).unwrap();
+        let bad = RelayId::from_u64(1);
+        let policy = demote_via_anomaly(bad);
+
+        for _ in 0..200 {
+            let records = build_bound_path_pruned(
+                &topo,
+                &roster,
+                None,
+                &policy,
+                DEFAULT_PATH_REPUTATION_FLOOR,
+                50,
+            )
+            .unwrap();
+            assert_eq!(records.len(), topo.layer_count);
+            assert!(
+                !records.iter().any(|r| r.id == bad),
+                "demoted relay must never appear on bound path"
+            );
+            for record in &records {
+                assert_eq!(
+                    record.kem_public_commitment,
+                    roster.get(record.id).unwrap().kem_public_commitment,
+                    "bound path must carry roster KEM commitments"
+                );
+            }
         }
     }
 

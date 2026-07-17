@@ -30,8 +30,8 @@ use aegis_crypto::link::{
     link_handshake_confirm_mac, link_handshake_finish_mac, link_handshake_init_write,
     link_handshake_resp_write, link_handshake_responder_finish, parse_link_handshake_init,
     parse_link_handshake_mac, parse_link_handshake_resp, verify_link_handshake_confirm_mac,
-    verify_link_handshake_finish_mac, LinkHandshakeTranscript, LinkKey, LINK_FRAME_LEN,
-    LINK_HANDSHAKE_CONFIRM_LEN, LINK_HANDSHAKE_FINISH_LEN, LINK_HANDSHAKE_INIT_LEN,
+    verify_link_handshake_finish_mac, LinkHandshakeBinding, LinkHandshakeTranscript, LinkKey,
+    LINK_FRAME_LEN, LINK_HANDSHAKE_CONFIRM_LEN, LINK_HANDSHAKE_FINISH_LEN, LINK_HANDSHAKE_INIT_LEN,
     LINK_HANDSHAKE_RESP_LEN,
 };
 use aegis_crypto::sphinx::SphinxPacket;
@@ -48,6 +48,7 @@ use crate::cover_flow::is_relay_cover_fragment;
 use crate::node::ForwardedPacket;
 use crate::peer_health::PeerHealthTracker;
 use crate::relay_id::RelayId;
+use crate::trace::RelayForwardTrace;
 
 /// Default per-read timeout: slow-loris peers cannot hold a task indefinitely.
 pub const DEFAULT_LINK_READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -60,6 +61,8 @@ pub const DEFAULT_MAX_INBOUND_CONNECTIONS: usize = 256;
 pub struct LinkBridgeConfig {
     pub read_timeout: Duration,
     pub max_inbound_connections: usize,
+    /// When true, bind the peer roster relay id into handshake MAC inputs.
+    pub identity_binding: bool,
 }
 
 impl Default for LinkBridgeConfig {
@@ -67,8 +70,24 @@ impl Default for LinkBridgeConfig {
         Self {
             read_timeout: DEFAULT_LINK_READ_TIMEOUT,
             max_inbound_connections: DEFAULT_MAX_INBOUND_CONNECTIONS,
+            identity_binding: true,
         }
     }
+}
+
+fn link_handshake_binding(
+    config: &LinkBridgeConfig,
+    peer_relay_id: RelayId,
+    kem_public_commitment: Option<[u8; 32]>,
+) -> Option<LinkHandshakeBinding> {
+    if !config.identity_binding {
+        return None;
+    }
+    let mut binding = LinkHandshakeBinding::peer_id(*peer_relay_id.as_bytes());
+    if let Some(commitment) = kem_public_commitment {
+        binding = binding.with_kem_commitment(commitment);
+    }
+    Some(binding)
 }
 
 /// A remote peer reachable over TCP with a pre-shared hop link key.
@@ -119,12 +138,14 @@ pub enum NetError {
 /// Returns join handles for the listener and dispatcher tasks.
 pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
     listen_addr: SocketAddr,
+    local_relay_id: RelayId,
     peer_table: HashMap<RelayId, PeerInfo>,
     ingress_link_key: Option<[u8; 32]>,
     inbound_tx: mpsc::Sender<SphinxPacket>,
     outbound_rx: mpsc::Receiver<ForwardedPacket>,
     cover_rx: Option<mpsc::Receiver<Vec<Cell>>>,
     exit_tx: Option<ExitSink>,
+    forward_trace: Option<RelayForwardTrace>,
     rng: R,
     bridge_config: LinkBridgeConfig,
     peer_health: Option<Arc<PeerHealthTracker>>,
@@ -132,6 +153,7 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
     let rng = Arc::new(Mutex::new(rng));
     let listener = spawn_inbound_listener(
         listen_addr,
+        local_relay_id,
         peer_table.clone(),
         ingress_link_key,
         inbound_tx,
@@ -141,6 +163,7 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
         spawn_cover_dispatcher(
             cover_rx,
             peer_table.clone(),
+            forward_trace.clone(),
             Arc::clone(&rng),
             bridge_config.clone(),
             peer_health.clone(),
@@ -150,6 +173,7 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
         outbound_rx,
         peer_table,
         exit_tx,
+        forward_trace,
         Arc::clone(&rng),
         bridge_config,
         peer_health,
@@ -183,12 +207,20 @@ impl LinkSession {
     pub async fn connect<R: RngCore + CryptoRngCore>(
         addr: SocketAddr,
         psk: &[u8; 32],
+        peer_relay_id: RelayId,
         rng: &mut R,
         bridge_config: &LinkBridgeConfig,
     ) -> Result<Self, NetError> {
         let mut stream = TcpStream::connect(addr).await?;
-        let session_key =
-            run_initiator_handshake(&mut stream, psk, rng, bridge_config.read_timeout).await?;
+        let session_key = run_initiator_handshake(
+            &mut stream,
+            psk,
+            peer_relay_id,
+            None,
+            rng,
+            bridge_config,
+        )
+        .await?;
         Ok(Self {
             stream,
             session_key,
@@ -216,11 +248,12 @@ impl LinkSession {
 pub async fn send_sphinx_packet<R: RngCore + CryptoRngCore>(
     addr: SocketAddr,
     psk: &[u8; 32],
+    peer_relay_id: RelayId,
     packet: &SphinxPacket,
     rng: &mut R,
     bridge_config: &LinkBridgeConfig,
 ) -> Result<(), NetError> {
-    let mut session = LinkSession::connect(addr, psk, rng, bridge_config).await?;
+    let mut session = LinkSession::connect(addr, psk, peer_relay_id, rng, bridge_config).await?;
     write_packet_on_session(&mut session, packet, rng).await
 }
 
@@ -302,9 +335,15 @@ async fn write_all_timeout(
 pub async fn run_initiator_handshake<R: RngCore + CryptoRngCore>(
     stream: &mut TcpStream,
     psk: &[u8; 32],
+    peer_relay_id: RelayId,
+    kem_public_commitment: Option<[u8; 32]>,
     rng: &mut R,
-    read_timeout: Duration,
+    bridge_config: &LinkBridgeConfig,
 ) -> Result<LinkKey, NetError> {
+    let binding = link_handshake_binding(bridge_config, peer_relay_id, kem_public_commitment);
+    let binding_ref = binding.as_ref();
+    let read_timeout = bridge_config.read_timeout;
+
     let (init_sk, init_msg) = link_handshake_init_write(rng);
     let init = parse_link_handshake_init(&init_msg)?;
     write_all_timeout(stream, &init_msg, read_timeout).await?;
@@ -313,13 +352,13 @@ pub async fn run_initiator_handshake<R: RngCore + CryptoRngCore>(
     read_exact_timeout(stream, &mut resp_msg, read_timeout).await?;
     let resp = parse_link_handshake_resp(&resp_msg)?;
     let transcript = LinkHandshakeTranscript::from_messages(&init, &resp);
-    let confirm = link_handshake_confirm_mac(psk, &transcript);
+    let confirm = link_handshake_confirm_mac(psk, &transcript, binding_ref);
     write_all_timeout(stream, &confirm, read_timeout).await?;
 
     let mut finish_msg = [0u8; LINK_HANDSHAKE_FINISH_LEN];
     read_exact_timeout(stream, &mut finish_msg, read_timeout).await?;
     let finish = parse_link_handshake_mac(&finish_msg)?;
-    if !verify_link_handshake_finish_mac(psk, &transcript, &finish) {
+    if !verify_link_handshake_finish_mac(psk, &transcript, binding_ref, &finish) {
         return Err(NetError::Crypto(CryptoError::IntegrityFailure));
     }
     Ok(aegis_crypto::link::derive_link_session_key(
@@ -332,11 +371,14 @@ pub async fn run_initiator_handshake<R: RngCore + CryptoRngCore>(
 /// Responder-side link handshake; identifies which configured PSK matched.
 pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
     stream: &mut TcpStream,
+    local_relay_id: RelayId,
     ingress_link_key: Option<[u8; 32]>,
     peer_table: &HashMap<RelayId, PeerInfo>,
     rng: &mut R,
-    read_timeout: Duration,
+    bridge_config: &LinkBridgeConfig,
 ) -> Result<LinkKey, NetError> {
+    let read_timeout = bridge_config.read_timeout;
+
     let mut init_msg = [0u8; LINK_HANDSHAKE_INIT_LEN];
     read_exact_timeout(stream, &mut init_msg, read_timeout).await?;
     let init = parse_link_handshake_init(&init_msg)?;
@@ -352,10 +394,18 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
     let transcript = LinkHandshakeTranscript::from_messages(&init, &resp);
 
     if let Some(psk) = ingress_link_key {
-        if verify_link_handshake_confirm_mac(&psk, &transcript, &confirm) {
-            let session =
-                link_handshake_responder_finish(&psk, resp_sk, &init, &resp, &confirm_msg)?;
-            let finish = link_handshake_finish_mac(&psk, &transcript);
+        let binding = link_handshake_binding(bridge_config, local_relay_id, None);
+        let binding_ref = binding.as_ref();
+        if verify_link_handshake_confirm_mac(&psk, &transcript, binding_ref, &confirm) {
+            let session = link_handshake_responder_finish(
+                &psk,
+                resp_sk,
+                &init,
+                &resp,
+                &confirm_msg,
+                binding_ref,
+            )?;
+            let finish = link_handshake_finish_mac(&psk, &transcript, binding_ref);
             write_all_timeout(stream, &finish, read_timeout).await?;
             return Ok(session);
         }
@@ -363,10 +413,18 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
 
     for (id, peer) in peer_table {
         let psk = peer.link_key_bytes;
-        if verify_link_handshake_confirm_mac(&psk, &transcript, &confirm) {
-            let session =
-                link_handshake_responder_finish(&psk, resp_sk, &init, &resp, &confirm_msg)?;
-            let finish = link_handshake_finish_mac(&psk, &transcript);
+        let binding = link_handshake_binding(bridge_config, local_relay_id, None);
+        let binding_ref = binding.as_ref();
+        if verify_link_handshake_confirm_mac(&psk, &transcript, binding_ref, &confirm) {
+            let session = link_handshake_responder_finish(
+                &psk,
+                resp_sk,
+                &init,
+                &resp,
+                &confirm_msg,
+                binding_ref,
+            )?;
+            let finish = link_handshake_finish_mac(&psk, &transcript, binding_ref);
             write_all_timeout(stream, &finish, read_timeout).await?;
             let _ = id;
             return Ok(session);
@@ -378,6 +436,7 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
 
 fn spawn_inbound_listener(
     listen_addr: SocketAddr,
+    local_relay_id: RelayId,
     peer_table: HashMap<RelayId, PeerInfo>,
     ingress_link_key: Option<[u8; 32]>,
     inbound_tx: mpsc::Sender<SphinxPacket>,
@@ -411,10 +470,18 @@ fn spawn_inbound_listener(
             let ingress = ingress_link_key;
             let inbound_tx = inbound_tx.clone();
             let cfg = bridge_config.clone();
+            let local_id = local_relay_id;
             tokio::spawn(async move {
                 let _permit = permit;
-                if let Err(e) =
-                    run_inbound_connection(stream, peer_table, ingress, inbound_tx, &cfg).await
+                if let Err(e) = run_inbound_connection(
+                    stream,
+                    local_id,
+                    peer_table,
+                    ingress,
+                    inbound_tx,
+                    &cfg,
+                )
+                .await
                 {
                     eprintln!("aegis-relay net: inbound connection ended: {e}");
                 }
@@ -425,6 +492,7 @@ fn spawn_inbound_listener(
 
 async fn run_inbound_connection(
     mut stream: TcpStream,
+    local_relay_id: RelayId,
     peer_table: HashMap<RelayId, PeerInfo>,
     ingress_link_key: Option<[u8; 32]>,
     inbound_tx: mpsc::Sender<SphinxPacket>,
@@ -433,10 +501,11 @@ async fn run_inbound_connection(
     let mut rng = rand_core::OsRng;
     let session_key = run_responder_handshake(
         &mut stream,
+        local_relay_id,
         ingress_link_key,
         &peer_table,
         &mut rng,
-        bridge_config.read_timeout,
+        bridge_config,
     )
     .await?;
 
@@ -475,6 +544,7 @@ fn pick_cover_egress(peer_table: &HashMap<RelayId, PeerInfo>) -> Option<(RelayId
 fn spawn_cover_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
     cover_rx: mpsc::Receiver<Vec<Cell>>,
     peer_table: HashMap<RelayId, PeerInfo>,
+    forward_trace: Option<RelayForwardTrace>,
     rng: Arc<Mutex<R>>,
     bridge_config: LinkBridgeConfig,
     peer_health: Option<Arc<PeerHealthTracker>>,
@@ -495,7 +565,7 @@ fn spawn_cover_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
                 }
             };
             let mut guard = rng.lock().await;
-            if let Err(e) = write_cover_cells(
+            match write_cover_cells(
                 &pool,
                 peer_id,
                 &peer,
@@ -506,7 +576,14 @@ fn spawn_cover_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
             )
             .await
             {
-                eprintln!("aegis-relay net: cover egress to {:?}: {e}", peer.addr);
+                Ok(()) => {
+                    if let Some(ref trace) = forward_trace {
+                        trace.record_cover(cells.len() as u32);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("aegis-relay net: cover egress to {:?}: {e}", peer.addr);
+                }
             }
         }
     });
@@ -523,7 +600,7 @@ async fn write_cover_cells<R: RngCore + CryptoRngCore>(
 ) -> Result<(), NetError> {
     let conn = match {
         let mut pool = pool.lock().await;
-        pool.get_or_handshake(peer, rng, bridge_config).await
+        pool.get_or_handshake(peer_id, peer, rng, bridge_config).await
     } {
         Ok(c) => c,
         Err(e) => {
@@ -550,7 +627,7 @@ async fn write_cover_cells<R: RngCore + CryptoRngCore>(
             drop(guard);
             let conn = match {
                 let mut pool = pool.lock().await;
-                pool.reconnect(peer, rng, bridge_config).await
+                pool.reconnect(peer_id, peer, rng, bridge_config).await
             } {
                 Ok(c) => c,
                 Err(e) => {
@@ -619,6 +696,7 @@ impl ConnectionPool {
 
     async fn get_or_handshake<R: RngCore + CryptoRngCore>(
         &mut self,
+        peer_id: RelayId,
         peer: &PeerInfo,
         rng: &mut R,
         bridge_config: &LinkBridgeConfig,
@@ -630,8 +708,10 @@ impl ConnectionPool {
         let session_key = run_initiator_handshake(
             &mut stream,
             &peer.link_key_bytes,
+            peer_id,
+            None,
             rng,
-            bridge_config.read_timeout,
+            bridge_config,
         )
         .await?;
         let shared = Arc::new(Mutex::new(PooledConnection { stream, session_key }));
@@ -641,12 +721,13 @@ impl ConnectionPool {
 
     async fn reconnect<R: RngCore + CryptoRngCore>(
         &mut self,
+        peer_id: RelayId,
         peer: &PeerInfo,
         rng: &mut R,
         bridge_config: &LinkBridgeConfig,
     ) -> Result<Arc<Mutex<PooledConnection>>, NetError> {
         self.connections.remove(&peer.addr);
-        self.get_or_handshake(peer, rng, bridge_config).await
+        self.get_or_handshake(peer_id, peer, rng, bridge_config).await
     }
 }
 
@@ -654,6 +735,7 @@ fn spawn_outbound_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
     outbound_rx: mpsc::Receiver<ForwardedPacket>,
     peer_table: HashMap<RelayId, PeerInfo>,
     exit_tx: Option<ExitSink>,
+    forward_trace: Option<RelayForwardTrace>,
     rng: Arc<Mutex<R>>,
     bridge_config: LinkBridgeConfig,
     peer_health: Option<Arc<PeerHealthTracker>>,
@@ -664,6 +746,9 @@ fn spawn_outbound_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
         while let Some(fwd) = outbound_rx.recv().await {
             if let Some(ref tx) = exit_tx {
                 if peer_table.get(&fwd.next_hop).is_none() {
+                    if let Some(ref trace) = forward_trace {
+                        trace.record_exit(SPHINX_FRAGMENT_COUNT as u32);
+                    }
                     let _ = tx.send(fwd.packet).await;
                     continue;
                 }
@@ -677,7 +762,7 @@ fn spawn_outbound_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
                 }
             };
             let mut guard = rng.lock().await;
-            if let Err(e) = forward_to_peer(
+            match forward_to_peer(
                 &pool,
                 fwd.next_hop,
                 &peer,
@@ -688,7 +773,14 @@ fn spawn_outbound_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
             )
             .await
             {
-                eprintln!("aegis-relay net: forward to {:?}: {e}", fwd.next_hop);
+                Ok(()) => {
+                    if let Some(ref trace) = forward_trace {
+                        trace.record_forward(SPHINX_FRAGMENT_COUNT as u32);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("aegis-relay net: forward to {:?}: {e}", fwd.next_hop);
+                }
             }
         }
     })
@@ -705,7 +797,7 @@ async fn forward_to_peer<R: RngCore + CryptoRngCore>(
 ) -> Result<(), NetError> {
     let conn = match {
         let mut pool = pool.lock().await;
-        pool.get_or_handshake(peer, rng, bridge_config).await
+        pool.get_or_handshake(peer_id, peer, rng, bridge_config).await
     } {
         Ok(c) => c,
         Err(e) => {
@@ -732,7 +824,7 @@ async fn forward_to_peer<R: RngCore + CryptoRngCore>(
             drop(guard);
             let conn = match {
                 let mut pool = pool.lock().await;
-                pool.reconnect(peer, rng, bridge_config).await
+                pool.reconnect(peer_id, peer, rng, bridge_config).await
             } {
                 Ok(c) => c,
                 Err(e) => {
@@ -797,31 +889,40 @@ mod tests {
         k
     }
 
+    fn test_relay_id(tag: u8) -> RelayId {
+        let mut id = [0u8; 32];
+        id[0] = tag;
+        RelayId(id)
+    }
+
     #[tokio::test]
     async fn link_session_sends_cells_one_at_a_time() {
         use aegis_crypto::cell::Cell;
 
         let psk = test_psk(0xCD);
+        let relay_id = test_relay_id(0xCD);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let cfg = LinkBridgeConfig::default();
+        let cfg_server = cfg.clone();
 
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut rng = OsRng;
             let key = run_responder_handshake(
                 &mut stream,
+                relay_id,
                 Some(psk),
                 &HashMap::new(),
                 &mut rng,
-                cfg.read_timeout,
+                &cfg_server,
             )
             .await
             .unwrap();
 
             let mut frame = [0u8; LINK_FRAME_LEN];
             for _ in 0..3 {
-                read_exact_timeout(&mut stream, &mut frame, cfg.read_timeout)
+                read_exact_timeout(&mut stream, &mut frame, cfg_server.read_timeout)
                     .await
                     .unwrap();
                 let cell = key.open(&frame).unwrap();
@@ -830,7 +931,7 @@ mod tests {
         });
 
         let mut rng = OsRng;
-        let mut session = LinkSession::connect(addr, &psk, &mut rng, &cfg)
+        let mut session = LinkSession::connect(addr, &psk, relay_id, &mut rng, &cfg)
             .await
             .unwrap();
         for i in 0..3u8 {
@@ -845,44 +946,101 @@ mod tests {
     #[tokio::test]
     async fn initiator_responder_handshake_roundtrip() {
         let psk = test_psk(0xAB);
+        let relay_id = test_relay_id(0xAB);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let cfg = LinkBridgeConfig::default();
+        let cfg_server = cfg.clone();
 
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut rng = OsRng;
-            run_responder_handshake(&mut stream, Some(psk), &HashMap::new(), &mut rng, cfg.read_timeout)
-                .await
-                .unwrap()
+            run_responder_handshake(
+                &mut stream,
+                relay_id,
+                Some(psk),
+                &HashMap::new(),
+                &mut rng,
+                &cfg_server,
+            )
+            .await
+            .unwrap()
         });
 
         let mut client = TcpStream::connect(addr).await.unwrap();
         let mut rng = OsRng;
-        let key_i =
-            run_initiator_handshake(&mut client, &psk, &mut rng, cfg.read_timeout).await.unwrap();
+        let key_i = run_initiator_handshake(&mut client, &psk, relay_id, None, &mut rng, &cfg)
+            .await
+            .unwrap();
         let key_r = server.await.unwrap();
         assert_eq!(key_i, key_r);
+    }
+
+    #[tokio::test]
+    async fn wrong_peer_id_handshake_rejected() {
+        let psk = test_psk(0x11);
+        let expected = test_relay_id(0x11);
+        let wrong = test_relay_id(0x22);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = LinkBridgeConfig::default();
+        let cfg_server = cfg.clone();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            run_responder_handshake(
+                &mut stream,
+                expected,
+                Some(psk),
+                &HashMap::new(),
+                &mut rng,
+                &cfg_server,
+            )
+            .await
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let mut rng = OsRng;
+        let err =
+            run_initiator_handshake(&mut client, &psk, wrong, None, &mut rng, &cfg).await;
+        assert!(matches!(
+            err,
+            Err(NetError::ReadTimeout(_))
+                | Err(NetError::Io(_))
+                | Err(NetError::Crypto(CryptoError::IntegrityFailure))
+        ));
+        let server_err = server.await.unwrap();
+        assert!(matches!(server_err, Err(NetError::UnidentifiedInbound)));
     }
 
     #[tokio::test]
     async fn wrong_psk_handshake_rejected() {
         let psk = test_psk(0x01);
         let wrong = test_psk(0x02);
+        let relay_id = test_relay_id(0x01);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let cfg = LinkBridgeConfig::default();
+        let cfg_server = cfg.clone();
 
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut rng = OsRng;
-            run_responder_handshake(&mut stream, Some(wrong), &HashMap::new(), &mut rng, cfg.read_timeout)
-                .await
+            run_responder_handshake(
+                &mut stream,
+                relay_id,
+                Some(wrong),
+                &HashMap::new(),
+                &mut rng,
+                &cfg_server,
+            )
+            .await
         });
 
         let mut client = TcpStream::connect(addr).await.unwrap();
         let mut rng = OsRng;
-        let err = run_initiator_handshake(&mut client, &psk, &mut rng, cfg.read_timeout).await;
+        let err = run_initiator_handshake(&mut client, &psk, relay_id, None, &mut rng, &cfg).await;
         assert!(matches!(
             err,
             Err(NetError::ReadTimeout(_))
@@ -904,23 +1062,21 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let cfg = LinkBridgeConfig::default();
-
-        let mut peer_id = [0u8; 32];
-        peer_id[0] = 9;
-        let peer_table = HashMap::from([(
-            RelayId(peer_id),
-            PeerInfo::new(addr, psk),
-        )]);
+        let cfg_server = cfg.clone();
+        let peer_id = test_relay_id(9);
+        let local_id = test_relay_id(0xEE);
+        let peer_table = HashMap::from([(peer_id, PeerInfo::new(addr, psk))]);
 
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut rng = OsRng;
             let key = run_responder_handshake(
                 &mut stream,
+                peer_id,
                 Some(psk),
                 &HashMap::new(),
                 &mut rng,
-                cfg.read_timeout,
+                &cfg_server,
             )
             .await
             .unwrap();
@@ -928,7 +1084,7 @@ mod tests {
             let mut frame = [0u8; LINK_FRAME_LEN];
             let mut frames = 0usize;
             for _ in 0..SPHINX_FRAGMENT_COUNT {
-                read_exact_timeout(&mut stream, &mut frame, cfg.read_timeout)
+                read_exact_timeout(&mut stream, &mut frame, cfg_server.read_timeout)
                     .await
                     .unwrap();
                 let cell = key.open(&frame).unwrap();
@@ -941,14 +1097,16 @@ mod tests {
         let (cover_tx, cover_rx) = mpsc::channel(4);
         let (_listener_task, _dispatcher_task) = spawn_link_bridge(
             "127.0.0.1:0".parse().unwrap(),
+            local_id,
             peer_table,
             None,
             mpsc::channel(1).0,
             mpsc::channel(1).1,
             Some(cover_rx),
             None,
+            None,
             OsRng,
-            cfg.clone(),
+            cfg,
             None,
         );
 
@@ -973,8 +1131,15 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut rng = OsRng;
-            run_responder_handshake(&mut stream, None, &HashMap::new(), &mut rng, cfg.read_timeout)
-                .await
+            run_responder_handshake(
+                &mut stream,
+                test_relay_id(0x01),
+                None,
+                &HashMap::new(),
+                &mut rng,
+                &cfg,
+            )
+            .await
         });
 
         let mut client = TcpStream::connect(addr).await.unwrap();
@@ -992,11 +1157,13 @@ mod tests {
         let (inbound_tx, mut inbound_rx) = mpsc::channel(4);
         let (_listener_task, _dispatcher_task) = spawn_link_bridge(
             "127.0.0.1:0".parse().unwrap(),
+            test_relay_id(0x01),
             HashMap::new(),
             None,
             inbound_tx,
             mpsc::channel(1).1,
             Some(cover_rx),
+            None,
             None,
             OsRng,
             LinkBridgeConfig::default(),
@@ -1021,6 +1188,7 @@ mod tests {
         use aegis_negotiator::cover::CoverRequirement;
 
         let psk = test_psk(0xCF);
+        let relay_id = test_relay_id(0xCF);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let cfg = LinkBridgeConfig::default();
@@ -1029,7 +1197,15 @@ mod tests {
         let server_cfg = cfg.clone();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            run_inbound_connection(stream, HashMap::new(), Some(psk), inbound_tx, &server_cfg).await
+            run_inbound_connection(
+                stream,
+                relay_id,
+                HashMap::new(),
+                Some(psk),
+                inbound_tx,
+                &server_cfg,
+            )
+            .await
         });
 
         let gen = CoverFlowGenerator::new(CoverRequirement::new(1));
@@ -1039,7 +1215,9 @@ mod tests {
             let mut stream = TcpStream::connect(addr).await.unwrap();
             let mut rng = OsRng;
             let session_key =
-                run_initiator_handshake(&mut stream, &psk, &mut rng, cfg.read_timeout).await.unwrap();
+                run_initiator_handshake(&mut stream, &psk, relay_id, None, &mut rng, &cfg)
+                    .await
+                    .unwrap();
             write_cells_on_stream(
                 &mut stream,
                 &session_key,
@@ -1068,10 +1246,12 @@ mod tests {
         let (outbound_tx, outbound_rx) = mpsc::channel(4);
         let (_listener_task, dispatcher_task) = spawn_link_bridge(
             "127.0.0.1:0".parse().unwrap(),
+            test_relay_id(0x01),
             HashMap::new(),
             None,
             mpsc::channel(1).0,
             outbound_rx,
+            None,
             None,
             None,
             OsRng,

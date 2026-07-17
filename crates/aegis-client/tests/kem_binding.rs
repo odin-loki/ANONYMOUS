@@ -52,6 +52,36 @@ fn build_packet_allows_missing_commitment() {
 }
 
 #[test]
+fn build_packet_require_bindings_rejects_missing_commitment() {
+    let mut rng = OsRng;
+    let hops = vec![sample_hop(1), sample_hop(2)];
+    let err = aegis_client::send::build_packet_require_bindings(&hops, b"prod", &mut rng).unwrap_err();
+    assert!(matches!(err, SendError::MissingKemCommitment { .. }));
+}
+
+#[test]
+fn build_packet_require_bindings_accepts_roster_hops() {
+    let mut rng = OsRng;
+    let (_sec0, pk0) = RelayKemSecret::generate(&mut rng);
+    let (_sec1, pk1) = RelayKemSecret::generate(&mut rng);
+    let record0 = RelayRecord::new(
+        RelayId::from_u64(1),
+        JurisdictionId::new("US"),
+        &pk0,
+    );
+    let record1 = RelayRecord::new(
+        RelayId::from_u64(2),
+        JurisdictionId::new("DE"),
+        &pk1,
+    );
+    let hop0 = ClientHop::from_relay_record(&record0, pk0, None);
+    let hop1 = ClientHop::from_relay_record(&record1, pk1, None);
+    assert!(
+        aegis_client::send::build_packet_require_bindings(&[hop0, hop1], b"prod", &mut rng).is_ok()
+    );
+}
+
+#[test]
 fn with_commitment_accepts_matching_key() {
     let mut rng = OsRng;
     let (_sec, pk) = RelayKemSecret::generate(&mut rng);

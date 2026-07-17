@@ -137,11 +137,13 @@ impl TcpTestnet {
 
             let net_tasks = spawn_link_bridge(
                 listen_addrs[i],
+                id,
                 peer_table,
                 ingress,
                 inbound_tx,
                 outbound_rx,
                 Some(cover_rx),
+                None,
                 None,
                 OsRng,
                 LinkBridgeConfig::default(),
@@ -173,6 +175,7 @@ impl TcpTestnet {
 
         let client_link = ClientLink {
             first_hop_addr: listen_addrs[0],
+            first_hop_relay_id: hops[0].id,
             link_key_bytes: client_ingress_key,
         };
 

@@ -8,7 +8,8 @@ use aegis_client::send::{send_payload, ClientHop, ClientLink};
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_crypto::sphinx::{build, PathHop, SphinxPacket};
 use aegis_relay::{
-    packet_delta, spawn_link_bridge, LinkBridgeConfig, PeerInfo, RelayConfig, RelayId, RelayNode,
+    load_trace_timestamps, packet_delta, spawn_link_bridge, LinkBridgeConfig, PeerInfo,
+    RelayConfig, RelayForwardTrace, RelayId, RelayNode,
 };
 use rand_core::OsRng;
 use tokio::net::TcpListener;
@@ -46,7 +47,11 @@ struct TcpTestnet {
 }
 
 impl TcpTestnet {
-    async fn build(path_len: usize, exit_tx: Option<mpsc::Sender<SphinxPacket>>) -> Self {
+    async fn build(
+        path_len: usize,
+        exit_tx: Option<mpsc::Sender<SphinxPacket>>,
+        ingress_trace: Option<RelayForwardTrace>,
+    ) -> Self {
         let mut rng = OsRng;
         let mut secrets = Vec::with_capacity(path_len);
         let mut publics = Vec::with_capacity(path_len);
@@ -110,12 +115,18 @@ impl TcpTestnet {
 
             let net_tasks = spawn_link_bridge(
                 listen_addrs[i],
+                id,
                 peer_table,
                 ingress,
                 inbound_tx,
                 outbound_rx,
                 Some(cover_rx),
                 exit,
+                if i == 0 {
+                    ingress_trace.clone()
+                } else {
+                    None
+                },
                 OsRng,
                 LinkBridgeConfig::default(),
                 None,
@@ -147,6 +158,7 @@ impl TcpTestnet {
 
         let client_link = ClientLink {
             first_hop_addr: listen_addrs[0],
+            first_hop_relay_id: hops[0].id,
             link_key_bytes: client_ingress_key,
         };
 
@@ -165,7 +177,7 @@ impl TcpTestnet {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tcp_testnet_paced_send_delivers_payload() {
     let (exit_tx, mut exit_rx) = mpsc::channel(1);
-    let testnet = TcpTestnet::build(PATH_LEN, Some(exit_tx)).await;
+    let testnet = TcpTestnet::build(PATH_LEN, Some(exit_tx), None).await;
 
     let mut rng = OsRng;
     let tau = Duration::from_millis(25);
@@ -197,7 +209,7 @@ async fn tcp_testnet_paced_send_delivers_payload() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tcp_testnet_routes_sphinx_over_real_sockets() {
     let (exit_tx, mut exit_rx) = mpsc::channel(1);
-    let testnet = TcpTestnet::build(PATH_LEN, Some(exit_tx)).await;
+    let testnet = TcpTestnet::build(PATH_LEN, Some(exit_tx), None).await;
 
     let mut rng = OsRng;
     send_payload(&testnet.hops, &testnet.client_link, PAYLOAD, &mut rng)
@@ -228,6 +240,91 @@ async fn tcp_testnet_routes_sphinx_over_real_sockets() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tcp_testnet_exit_sink_file_receives_payload() {
+    use aegis_node::exit_sink::{spawn_exit_sink, ExitDeliverTarget, ExitSinkSettings};
+    use std::fs;
+
+    let dir = std::env::temp_dir().join(format!("aegis_exit_{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("temp dir");
+    let exit_path = dir.join("exit_payloads.log");
+
+    let exit_tx = spawn_exit_sink(ExitSinkSettings {
+        log_payloads: false,
+        deliver_to: Some(ExitDeliverTarget::File(exit_path.clone())),
+    })
+    .expect("file exit sink enabled");
+
+    let testnet = TcpTestnet::build(PATH_LEN, Some(exit_tx), None).await;
+    let mut rng = OsRng;
+    send_payload(&testnet.hops, &testnet.client_link, PAYLOAD, &mut rng)
+        .await
+        .expect("client send");
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let log = fs::read_to_string(&exit_path).expect("exit log");
+    let expected_hex: String = PAYLOAD.iter().map(|b| format!("{b:02x}")).collect();
+    assert!(
+        log.contains(&expected_hex),
+        "exit file should contain payload hex; got:\n{log}"
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tcp_testnet_relay_forward_trace_records_events() {
+    use aegis_crypto::fragment::SPHINX_FRAGMENT_COUNT;
+    use std::fs;
+
+    let dir = std::env::temp_dir().join(format!("aegis_rtrace_{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("temp dir");
+    let trace_path = dir.join("relay_trace.csv");
+    let trace = RelayForwardTrace::spawn(&trace_path).expect("spawn trace");
+
+    let testnet = TcpTestnet::build(PATH_LEN, None, Some(trace.clone())).await;
+    send_payload(
+        &testnet.hops,
+        &testnet.client_link,
+        PAYLOAD,
+        &mut OsRng,
+    )
+    .await
+    .expect("send");
+
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if fs::read_to_string(&trace_path)
+            .map(|t| t.contains(&format!(",{SPHINX_FRAGMENT_COUNT},forward")))
+            .unwrap_or(false)
+        {
+            break;
+        }
+    }
+    drop(trace);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let text = fs::read_to_string(&trace_path).expect("trace file");
+    assert!(text.contains("timestamp,cell_count,event_type"));
+    assert!(
+        text.contains(&format!(",{SPHINX_FRAGMENT_COUNT},forward")),
+        "ingress relay should record post-forward event:\n{text}"
+    );
+    let timestamps = load_trace_timestamps(&trace_path).expect("parse");
+    assert!(!timestamps.is_empty());
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn exit_config_defaults_off() {
+    use aegis_node::ExitConfig;
+    let cfg = ExitConfig::default();
+    assert!(!cfg.log_payloads);
+    assert!(cfg.deliver_to.is_none());
+    let settings = cfg.into_settings().expect("parse");
+    assert!(!settings.enabled());
+}
+
 #[test]
 fn tcp_testnet_uses_os_assigned_tcp_listener() {
     // Document the real-socket requirement for the gate report.
@@ -242,7 +339,7 @@ fn tcp_testnet_uses_os_assigned_tcp_listener() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tcp_path_build_matches_direct_peel() {
-    let testnet = TcpTestnet::build(PATH_LEN, None).await;
+    let testnet = TcpTestnet::build(PATH_LEN, None, None).await;
     let path: Vec<PathHop> = testnet
         .hops
         .iter()

@@ -62,6 +62,8 @@ impl ClientHop {
 #[derive(Clone, Debug)]
 pub struct ClientLink {
     pub first_hop_addr: SocketAddr,
+    /// Expected first-hop relay id for the link handshake.
+    pub first_hop_relay_id: [u8; 32],
     pub link_key_bytes: [u8; 32],
 }
 
@@ -69,6 +71,8 @@ pub struct ClientLink {
 pub enum SendError {
     #[error("path must have at least 2 hops")]
     PathTooShort,
+    #[error("bound path record count ({records}) does not match public key count ({publics})")]
+    BoundPathLengthMismatch { records: usize, publics: usize },
     #[error("first hop missing TCP address")]
     MissingFirstHopAddr,
     #[error("crypto: {0}")]
@@ -82,19 +86,60 @@ pub enum SendError {
         hop_id: u8,
         hop_id_tail: u8,
     },
+    #[error("missing roster KEM commitment for hop {hop_id:02x}{hop_id_tail:02x}… (production mode)")]
+    MissingKemCommitment {
+        hop_id: u8,
+        hop_id_tail: u8,
+    },
+}
+
+/// Options for [`build_packet_with_options`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BuildPacketOptions {
+    /// When true, every hop must carry a roster KEM commitment before encapsulation.
+    pub require_kem_binding: bool,
 }
 
 /// Build a Sphinx packet along `hops` carrying `payload`.
+///
+/// When a hop carries a roster commitment, verifies it matches `kem_public`.
+/// Use [`build_packet_require_bindings`] for production paths built from roster records.
 pub fn build_packet<R: RngCore + CryptoRngCore>(
     hops: &[ClientHop],
     payload: &[u8],
     rng: &mut R,
 ) -> Result<SphinxPacket, SendError> {
+    build_packet_with_options(hops, payload, rng, BuildPacketOptions::default())
+}
+
+/// Like [`build_packet`] but requires a roster KEM commitment on every hop.
+pub fn build_packet_require_bindings<R: RngCore + CryptoRngCore>(
+    hops: &[ClientHop],
+    payload: &[u8],
+    rng: &mut R,
+) -> Result<SphinxPacket, SendError> {
+    build_packet_with_options(
+        hops,
+        payload,
+        rng,
+        BuildPacketOptions {
+            require_kem_binding: true,
+        },
+    )
+}
+
+/// Build a Sphinx packet with explicit binding policy.
+pub fn build_packet_with_options<R: RngCore + CryptoRngCore>(
+    hops: &[ClientHop],
+    payload: &[u8],
+    rng: &mut R,
+    options: BuildPacketOptions,
+) -> Result<SphinxPacket, SendError> {
     if hops.len() < 2 {
         return Err(SendError::PathTooShort);
     }
     for hop in hops {
-        verify_kem_binding(hop)?;
+        verify_kem_binding(hop, options.require_kem_binding)?;
     }
     let path: Vec<PathHop> = hops
         .iter()
@@ -113,10 +158,22 @@ pub async fn send_payload<R: RngCore + CryptoRngCore>(
     payload: &[u8],
     rng: &mut R,
 ) -> Result<SphinxPacket, SendError> {
-    let packet = build_packet(hops, payload, rng)?;
+    send_payload_with_options(hops, link, payload, rng, BuildPacketOptions::default()).await
+}
+
+/// Like [`send_payload`] with explicit roster binding policy.
+pub async fn send_payload_with_options<R: RngCore + CryptoRngCore>(
+    hops: &[ClientHop],
+    link: &ClientLink,
+    payload: &[u8],
+    rng: &mut R,
+    options: BuildPacketOptions,
+) -> Result<SphinxPacket, SendError> {
+    let packet = build_packet_with_options(hops, payload, rng, options)?;
     send_sphinx_packet(
         link.first_hop_addr,
         &link.link_key_bytes,
+        aegis_relay::RelayId::from(link.first_hop_relay_id),
         &packet,
         rng,
         &LinkBridgeConfig::default(),
@@ -218,14 +275,50 @@ pub fn hops_from_records(
         .collect()
 }
 
-fn verify_kem_binding(hop: &ClientHop) -> Result<(), SendError> {
-    if let Some(expected) = hop.kem_commitment {
-        if expected != KemPublicCommitment::from_public(&hop.kem_public) {
+/// Map a pruned bound path from [`aegis_topology::build_bound_path_pruned`] to client hops.
+///
+/// Verifies each live KEM public key matches the signed roster commitment before returning hops
+/// suitable for [`build_packet_require_bindings`].
+pub fn hops_from_bound_path(
+    records: &[RelayRecord],
+    publics: &[RelayKemPublic],
+    addrs: &HashMap<[u8; 32], SocketAddr>,
+) -> Result<Vec<ClientHop>, SendError> {
+    if records.len() != publics.len() {
+        return Err(SendError::BoundPathLengthMismatch {
+            records: records.len(),
+            publics: publics.len(),
+        });
+    }
+    for (record, pk) in records.iter().zip(publics.iter()) {
+        if !record.binds_kem_public(pk) {
+            let id = record.id.as_bytes();
             return Err(SendError::KemBindingMismatch {
+                hop_id: id[0],
+                hop_id_tail: id[1],
+            });
+        }
+    }
+    Ok(hops_from_records(records, publics, addrs))
+}
+
+fn verify_kem_binding(hop: &ClientHop, require: bool) -> Result<(), SendError> {
+    match hop.kem_commitment {
+        Some(expected) => {
+            if expected != KemPublicCommitment::from_public(&hop.kem_public) {
+                return Err(SendError::KemBindingMismatch {
+                    hop_id: hop.id[0],
+                    hop_id_tail: hop.id[1],
+                });
+            }
+        }
+        None if require => {
+            return Err(SendError::MissingKemCommitment {
                 hop_id: hop.id[0],
                 hop_id_tail: hop.id[1],
             });
         }
+        None => {}
     }
     Ok(())
 }
