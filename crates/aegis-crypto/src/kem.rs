@@ -23,7 +23,9 @@
 
 use curve25519_dalek::{montgomery::MontgomeryPoint, scalar::Scalar};
 use kem_api::{Decapsulate, Encapsulate};
-use ml_kem::{kem::DecapsulationKey, kem::EncapsulationKey, Ciphertext, KemCore, MlKem768};
+use ml_kem::{
+    kem::DecapsulationKey, kem::EncapsulationKey, Ciphertext, EncodedSizeUser, KemCore, MlKem768,
+};
 use rand_core::CryptoRngCore;
 use sha3::{Digest, Sha3_256};
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
@@ -80,11 +82,36 @@ pub struct RelayKemSecret {
     mlkem: DecapsulationKey<ml_kem::MlKem768Params>,
 }
 
+/// Canonical prefix for hybrid relay KEM public-key bytes (X25519 || ML-KEM-768 EK).
+pub const RELAY_KEM_CANONICAL_PREFIX: &[u8] = b"aegis-relay-kem-v1";
+
 /// A relay's advertised KEM public key.
 #[derive(Clone)]
 pub struct RelayKemPublic {
     x25519: PublicKey,
     mlkem: EncapsulationKey<ml_kem::MlKem768Params>,
+}
+
+impl RelayKemPublic {
+    /// Canonical encoding for roster admission binding (domain-separated).
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mlkem_bytes = self.mlkem.as_bytes();
+        let mut out = Vec::with_capacity(RELAY_KEM_CANONICAL_PREFIX.len() + 32 + mlkem_bytes.len());
+        out.extend_from_slice(RELAY_KEM_CANONICAL_PREFIX);
+        out.extend_from_slice(self.x25519.as_bytes());
+        out.extend_from_slice(mlkem_bytes.as_ref());
+        out
+    }
+
+    /// SHA3-256 commitment to [`Self::canonical_bytes`] for signed roster records.
+    pub fn commitment(&self) -> [u8; 32] {
+        kem_public_commitment(self)
+    }
+}
+
+/// SHA3-256 commitment to a relay hybrid KEM public key.
+pub fn kem_public_commitment(pk: &RelayKemPublic) -> [u8; 32] {
+    Sha3_256::digest(pk.canonical_bytes()).into()
 }
 
 impl RelayKemSecret {
@@ -174,5 +201,12 @@ mod tests {
         let (_dk, ek) = MlKem768::generate(&mut rng);
         let (ct, _) = Encapsulate::encapsulate(&ek, &mut rng).unwrap();
         assert_eq!(ct.len(), MLKEM768_CT_LEN);
+    }
+
+    #[test]
+    fn kem_public_commitment_is_stable() {
+        let (_sk, pk) = RelayKemSecret::generate_deterministic([7u8; 32], [8u8; 32], [9u8; 32]);
+        assert_eq!(pk.commitment(), kem_public_commitment(&pk));
+        assert_ne!(pk.commitment(), kem_public_commitment(&RelayKemSecret::generate_deterministic([1u8; 32], [2u8; 32], [3u8; 32]).1));
     }
 }

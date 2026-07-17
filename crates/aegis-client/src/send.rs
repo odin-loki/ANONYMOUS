@@ -8,12 +8,11 @@ use aegis_crypto::fragment::{fragment_with_random_id, SPHINX_FRAGMENT_COUNT};
 use aegis_crypto::kem::RelayKemPublic;
 use aegis_crypto::sphinx::{build, PathHop, SphinxPacket};
 use aegis_relay::{send_sphinx_packet, LinkBridgeConfig};
-use rand_core::{CryptoRngCore, OsRng, RngCore};
+use rand_core::{CryptoRngCore, RngCore};
 use thiserror::Error;
 
-use crate::emitter::{ConstantRateEmitter, EmitterConfig};
-use crate::tcp_transport::{run_paced_ticks, TcpCellTransport};
-use crate::transport::OutboundCell;
+use crate::emitter::EmitterConfig;
+use crate::session::{PacedSession, PacedSessionConfig};
 
 /// One hop in an explicit client path (id + KEM public key + optional TCP addr).
 #[derive(Clone)]
@@ -41,6 +40,8 @@ pub enum SendError {
     Crypto(#[from] aegis_crypto::CryptoError),
     #[error("network: {0}")]
     Net(#[from] aegis_relay::NetError),
+    #[error("paced session closed")]
+    SessionClosed,
 }
 
 /// Build a Sphinx packet along `hops` carrying `payload`.
@@ -83,8 +84,10 @@ pub async fn send_payload<R: RngCore + CryptoRngCore>(
 
 /// Build, fragment, and emit a Sphinx packet at constant rate τ over TCP (Mode 1 path).
 ///
-/// Connects and handshakes once, then sends exactly one sealed link frame per emitter
-/// tick until all [`SPHINX_FRAGMENT_COUNT`] fragments are on the wire.
+/// Opens one paced session, enqueues all [`SPHINX_FRAGMENT_COUNT`] fragments, waits for
+/// the queue to drain, then shuts down. Pass `cover_after_send` to keep dummy cover
+/// after the last fragment (production default via CLI); `Duration::ZERO` preserves the
+/// legacy exactly-18-ticks behavior.
 pub async fn send_payload_paced<R: RngCore + CryptoRngCore>(
     hops: &[ClientHop],
     link: &ClientLink,
@@ -92,19 +95,21 @@ pub async fn send_payload_paced<R: RngCore + CryptoRngCore>(
     rng: &mut R,
     emitter_config: Option<EmitterConfig>,
     bridge_config: &LinkBridgeConfig,
+    cover_after_send: Duration,
 ) -> Result<SphinxPacket, SendError> {
-    let packet = build_packet(hops, payload, rng)?;
-    let (fragments, _) = fragment_with_random_id(&packet, rng);
-
-    let config = emitter_config.unwrap_or_default();
-    let mut emitter = ConstantRateEmitter::new(config, OsRng);
-    for cell in fragments {
-        emitter.enqueue_cell(OutboundCell(cell));
-    }
-
-    let transport = TcpCellTransport::connect(link, bridge_config, rng).await?;
-    run_paced_ticks(&mut emitter, &transport, SPHINX_FRAGMENT_COUNT).await;
-
+    let mut session = PacedSession::connect(
+        link,
+        bridge_config,
+        PacedSessionConfig {
+            emitter_config: emitter_config.unwrap_or_default(),
+            cover_after_send,
+        },
+        rng,
+    )
+    .await?;
+    let packet = session.send_payload_via_session(hops, payload, rng)?;
+    session.wait_idle_cover().await?;
+    session.shutdown().await?;
     Ok(packet)
 }
 
@@ -122,6 +127,7 @@ pub async fn send_payload_paced_default<R: RngCore + CryptoRngCore>(
         rng,
         None,
         &LinkBridgeConfig::default(),
+        Duration::ZERO,
     )
     .await
 }

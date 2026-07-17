@@ -60,4 +60,13 @@ pub enum RosterError {
         max_per_window: usize,
         window_secs: u64,
     },
+
+    #[error("insufficient consortium signatures: got {got}, need {need}")]
+    InsufficientSignatures { got: usize, need: usize },
+
+    #[error("duplicate admission signature from the same consortium authority")]
+    DuplicateAuthority,
+
+    #[error("admission signature from unknown consortium authority")]
+    UnknownAuthority,
 }

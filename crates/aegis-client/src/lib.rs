@@ -16,6 +16,7 @@ pub mod driver;
 pub mod emitter;
 pub mod padding;
 pub mod send;
+pub mod session;
 pub mod tcp_transport;
 pub mod transport;
 
@@ -31,5 +32,6 @@ pub use send::{
     build_packet, send_payload, send_payload_paced, send_payload_paced_default, hops_from_keys,
     ClientHop, ClientLink, SendError,
 };
+pub use session::{PacedSession, PacedSessionConfig};
 pub use tcp_transport::TcpCellTransport;
 pub use transport::{ObserverRecord, OutboundCell, Transport};

@@ -1,11 +1,11 @@
 //! Permissioned relay admission (spec §4.9).
 //!
-//! Production admission requires a consortium admission authority signature on each
-//! [`RelayRecord`]. Multi-party threshold governance (e.g. M-of-N consortium votes to
-//! admit) is future work; this pass uses a single consortium admission-signing key.
-//! Signed rosters persist to JSON on disk.
+//! Production admission requires M-of-N consortium authority signatures on each
+//! [`RelayRecord`], including a SHA3-256 commitment to the relay's hybrid KEM public key.
+//! A single [`ConsortiumKey`] remains available as a 1-of-1 dev/convenience path via
+//! [`SignedRelayRecord`] and [`ThresholdConsortium::single`]. Signed rosters persist to JSON.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -36,18 +36,105 @@ impl ConsortiumKey {
         self.0.verifying_key()
     }
 
-    /// Sign a relay record for admission.
-    pub fn sign_record(&self, record: &RelayRecord) -> SignedRelayRecord {
+    /// Produce one authority signature over `record` (including KEM binding).
+    pub fn sign_authority(&self, record: &RelayRecord) -> AuthorityAdmissionSignature {
         let signature = self.0.sign(&canonical_record_bytes(record));
+        AuthorityAdmissionSignature {
+            authority_pubkey: self.verifying_key().to_bytes(),
+            signature: signature.to_bytes().to_vec(),
+        }
+    }
+
+    /// Sign a relay record for single-authority (1-of-1) admission.
+    pub fn sign_record(&self, record: &RelayRecord) -> SignedRelayRecord {
+        let authority = self.sign_authority(record);
         SignedRelayRecord {
             record: record.clone(),
-            signature: signature.to_bytes().to_vec(),
-            authority_pubkey: self.verifying_key().to_bytes(),
+            signature: authority.signature.clone(),
+            authority_pubkey: authority.authority_pubkey,
         }
     }
 }
 
-/// A relay admission record plus its consortium authority signature.
+/// One consortium authority's Ed25519 signature over a relay admission record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityAdmissionSignature {
+    pub authority_pubkey: [u8; 32],
+    pub signature: Vec<u8>,
+}
+
+impl AuthorityAdmissionSignature {
+    fn verify(&self, record: &RelayRecord, authority: &VerifyingKey) -> Result<(), RosterError> {
+        if self.authority_pubkey != authority.to_bytes() {
+            return Err(RosterError::AuthorityMismatch);
+        }
+        let sig = Signature::from_slice(&self.signature)
+            .map_err(|_| RosterError::InvalidSignature { relay: record.id })?;
+        authority
+            .verify(&canonical_record_bytes(record), &sig)
+            .map_err(|_| RosterError::InvalidSignature {
+                relay: record.id,
+            })
+    }
+}
+
+/// A relay admission record plus M-of-N consortium authority signatures.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThresholdSignedRelayRecord {
+    pub record: RelayRecord,
+    pub signatures: Vec<AuthorityAdmissionSignature>,
+}
+
+impl ThresholdSignedRelayRecord {
+    pub fn new(record: RelayRecord) -> Self {
+        Self {
+            record,
+            signatures: Vec::new(),
+        }
+    }
+
+    pub fn with_signature(mut self, signature: AuthorityAdmissionSignature) -> Self {
+        self.signatures.push(signature);
+        self
+    }
+
+    /// Verify at least `consortium.threshold` distinct valid signatures from configured authorities.
+    pub fn verify_threshold(&self, consortium: &ThresholdConsortium) -> Result<(), RosterError> {
+        let mut distinct_valid = HashSet::new();
+        for sig in &self.signatures {
+            if distinct_valid.contains(&sig.authority_pubkey) {
+                continue;
+            }
+            let authority = consortium
+                .authority_for_pubkey(&sig.authority_pubkey)
+                .ok_or(RosterError::UnknownAuthority)?;
+            sig.verify(&self.record, authority)?;
+            distinct_valid.insert(sig.authority_pubkey);
+        }
+
+        if distinct_valid.len() < consortium.threshold {
+            return Err(RosterError::InsufficientSignatures {
+                got: distinct_valid.len(),
+                need: consortium.threshold,
+            });
+        }
+        Ok(())
+    }
+}
+
+impl From<SignedRelayRecord> for ThresholdSignedRelayRecord {
+    fn from(single: SignedRelayRecord) -> Self {
+        Self {
+            record: single.record,
+            signatures: vec![AuthorityAdmissionSignature {
+                authority_pubkey: single.authority_pubkey,
+                signature: single.signature,
+            }],
+        }
+    }
+}
+
+/// A relay admission record plus its consortium authority signature (1-of-1 convenience).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedRelayRecord {
     pub record: RelayRecord,
@@ -69,21 +156,76 @@ impl SignedRelayRecord {
                 relay: self.record.id,
             })
     }
+
+    /// Lift to threshold form for M-of-N APIs.
+    pub fn into_threshold(self) -> ThresholdSignedRelayRecord {
+        self.into()
+    }
 }
 
-/// Canonical byte encoding signed by the consortium admission authority.
+/// Configured M-of-N consortium admission authorities.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThresholdConsortium {
+    pub threshold: usize,
+    authorities: Vec<VerifyingKey>,
+    by_pubkey: HashMap<[u8; 32], VerifyingKey>,
+}
+
+impl ThresholdConsortium {
+    /// Build an M-of-N consortium from `threshold` and `authorities` (must be non-empty, `m <= n`).
+    pub fn new(threshold: usize, authorities: Vec<VerifyingKey>) -> Result<Self, RosterError> {
+        if authorities.is_empty() {
+            return Err(RosterError::InsufficientSignatures { got: 0, need: threshold.max(1) });
+        }
+        if threshold == 0 || threshold > authorities.len() {
+            return Err(RosterError::InsufficientSignatures {
+                got: authorities.len(),
+                need: threshold,
+            });
+        }
+        let mut by_pubkey = HashMap::with_capacity(authorities.len());
+        for pk in &authorities {
+            by_pubkey.insert(pk.to_bytes(), *pk);
+        }
+        if by_pubkey.len() != authorities.len() {
+            return Err(RosterError::DuplicateAuthority);
+        }
+        Ok(Self {
+            threshold,
+            authorities,
+            by_pubkey,
+        })
+    }
+
+    /// 1-of-1 consortium for dev / legacy single-key admission.
+    pub fn single(authority: VerifyingKey) -> Self {
+        Self::new(1, vec![authority]).expect("single authority is valid 1-of-1")
+    }
+
+    /// All configured verifying keys (stable insertion order).
+    pub fn authorities(&self) -> &[VerifyingKey] {
+        &self.authorities
+    }
+
+    pub fn authority_for_pubkey(&self, pubkey: &[u8; 32]) -> Option<&VerifyingKey> {
+        self.by_pubkey.get(pubkey)
+    }
+}
+
+/// Canonical byte encoding signed by consortium admission authorities.
 fn canonical_record_bytes(record: &RelayRecord) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(32 + record.jurisdiction.0.len());
+    let mut bytes = Vec::with_capacity(32 + record.jurisdiction.0.len() + 32);
     bytes.extend_from_slice(&record.id.0);
     bytes.extend_from_slice(record.jurisdiction.0.as_bytes());
+    bytes.extend_from_slice(&record.kem_public_commitment.0);
     bytes
 }
 
 /// Rate limit for signed relay admissions on this roster instance.
 ///
 /// Timestamps are roster-local bookkeeping (not part of the signed wire format).
-/// Default: 5 new admissions per 24 hours — slows Sybil flooding from a single
-/// compromised consortium key while allowing normal consortium churn.
+/// Default: 5 new admissions per 24 hours — slows Sybil flooding from compromised
+/// consortium keys while allowing normal consortium churn.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RosterAdmissionPolicy {
     pub max_admissions_per_window: usize,
@@ -112,8 +254,27 @@ impl RosterAdmissionPolicy {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct RosterEntry {
     record: RelayRecord,
-    /// Present when admitted via [`RelayRoster::admit_signed`]; absent for test-only admits.
+    /// Present when admitted via signed path; legacy v1 single signature.
+    #[serde(default)]
     signed_admission: Option<SignedRelayRecord>,
+    /// M-of-N threshold admission (preferred persisted form).
+    #[serde(default)]
+    threshold_admission: Option<ThresholdSignedRelayRecord>,
+}
+
+impl RosterEntry {
+    fn admission(&self) -> Option<ThresholdSignedRelayRecord> {
+        if let Some(threshold) = &self.threshold_admission {
+            Some(threshold.clone())
+        } else {
+            self.signed_admission.clone().map(ThresholdSignedRelayRecord::from)
+        }
+    }
+
+    fn set_admission(&mut self, admission: ThresholdSignedRelayRecord) {
+        self.threshold_admission = Some(admission);
+        self.signed_admission = None;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,32 +360,11 @@ impl RelayRoster {
             .as_secs()
     }
 
-    /// Admit a relay without cryptographic authorization.
-    ///
-    /// **Test-only / no authentication.** Do not use in production deployments;
-    /// prefer [`Self::admit_signed`] with a [`ConsortiumKey`] signature.
-    pub fn admit(&mut self, relay: RelayRecord) {
-        self.relays.insert(
-            relay.id,
-            RosterEntry {
-                record: relay,
-                signed_admission: None,
-            },
-        );
-    }
-
-    /// Admit a relay after verifying its consortium authority signature.
-    ///
-    /// New relays are seeded at [`ReputationScore::PROBATIONARY`] on `ledger` and
-    /// count toward the roster's admission rate limit. Re-admitting an existing
-    /// relay id updates the record but does not re-seed reputation or consume quota.
-    pub fn admit_signed(
+    fn admit_verified(
         &mut self,
-        signed: SignedRelayRecord,
-        authority_pubkey: &VerifyingKey,
+        signed: ThresholdSignedRelayRecord,
         ledger: &mut ReputationLedger,
     ) -> Result<(), RosterError> {
-        signed.verify(authority_pubkey)?;
         let id = signed.record.id;
         let is_new = !self.relays.contains_key(&id);
 
@@ -239,10 +379,55 @@ impl RelayRoster {
             id,
             RosterEntry {
                 record: signed.record.clone(),
-                signed_admission: Some(signed),
+                signed_admission: None,
+                threshold_admission: Some(signed),
             },
         );
         Ok(())
+    }
+
+    /// Admit a relay without cryptographic authorization.
+    ///
+    /// **Test-only / no authentication.** Do not use in production deployments;
+    /// prefer [`Self::admit_threshold_signed`] with consortium signatures.
+    pub fn admit(&mut self, relay: RelayRecord) {
+        self.relays.insert(
+            relay.id,
+            RosterEntry {
+                record: relay,
+                signed_admission: None,
+                threshold_admission: None,
+            },
+        );
+    }
+
+    /// Admit a relay after verifying M-of-N consortium authority signatures.
+    ///
+    /// New relays are seeded at [`ReputationScore::PROBATIONARY`] on `ledger` and
+    /// count toward the roster's admission rate limit. Re-admitting an existing
+    /// relay id updates the record but does not re-seed reputation or consume quota.
+    pub fn admit_threshold_signed(
+        &mut self,
+        signed: ThresholdSignedRelayRecord,
+        consortium: &ThresholdConsortium,
+        ledger: &mut ReputationLedger,
+    ) -> Result<(), RosterError> {
+        signed.verify_threshold(consortium)?;
+        self.admit_verified(signed, ledger)
+    }
+
+    /// Admit a relay after verifying a single consortium authority signature (1-of-1).
+    ///
+    /// Convenience wrapper around [`Self::admit_threshold_signed`] for dev and legacy callers.
+    pub fn admit_signed(
+        &mut self,
+        signed: SignedRelayRecord,
+        authority_pubkey: &VerifyingKey,
+        ledger: &mut ReputationLedger,
+    ) -> Result<(), RosterError> {
+        signed.verify(authority_pubkey)?;
+        let consortium = ThresholdConsortium::single(*authority_pubkey);
+        self.admit_threshold_signed(signed.into_threshold(), &consortium, ledger)
     }
 
     /// Remove a relay; returns `true` if it was present.
@@ -258,10 +443,23 @@ impl RelayRoster {
         self.relays.get(&id).map(|e| &e.record)
     }
 
-    pub fn get_signed(&self, id: RelayId) -> Option<&SignedRelayRecord> {
-        self.relays
-            .get(&id)
-            .and_then(|e| e.signed_admission.as_ref())
+    pub fn get_threshold_signed(&self, id: RelayId) -> Option<ThresholdSignedRelayRecord> {
+        self.relays.get(&id).and_then(|e| e.admission())
+    }
+
+    pub fn get_signed(&self, id: RelayId) -> Option<SignedRelayRecord> {
+        self.get_threshold_signed(id).and_then(|threshold| {
+            if threshold.signatures.len() == 1 {
+                let sig = &threshold.signatures[0];
+                Some(SignedRelayRecord {
+                    record: threshold.record,
+                    signature: sig.signature.clone(),
+                    authority_pubkey: sig.authority_pubkey,
+                })
+            } else {
+                None
+            }
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -301,7 +499,7 @@ impl RelayRoster {
         let mut entries: Vec<_> = self.relays.values().cloned().collect();
         entries.sort_by_key(|e| e.record.id);
         let persisted = PersistedRoster {
-            version: 1,
+            version: 2,
             entries,
         };
         let json = serde_json::to_string_pretty(&persisted)
@@ -314,22 +512,37 @@ impl RelayRoster {
         Self::load_from_file_verified(path, None)
     }
 
-    /// Load from JSON and optionally re-verify every signed admission.
+    /// Load from JSON and optionally re-verify every signed admission against a 1-of-1 authority.
     pub fn load_from_file_verified(
         path: &Path,
         authority_pubkey: Option<&VerifyingKey>,
+    ) -> std::io::Result<Self> {
+        let consortium = authority_pubkey.map(|pk| ThresholdConsortium::single(*pk));
+        Self::load_from_file_verified_threshold(path, consortium.as_ref())
+    }
+
+    /// Load from JSON and optionally re-verify every threshold admission.
+    pub fn load_from_file_verified_threshold(
+        path: &Path,
+        consortium: Option<&ThresholdConsortium>,
     ) -> std::io::Result<Self> {
         let bytes = std::fs::read(path)?;
         let persisted: PersistedRoster = serde_json::from_slice(&bytes).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
         })?;
         let mut roster = RelayRoster::new();
-        for entry in persisted.entries {
-            if let (Some(signed), Some(pk)) = (&entry.signed_admission, authority_pubkey) {
-                signed.verify(pk).map_err(|e| match e {
-                    RosterError::Io(err) => err,
-                    other => std::io::Error::new(std::io::ErrorKind::InvalidData, other.to_string()),
+        for mut entry in persisted.entries {
+            if let Some(consortium) = consortium {
+                let admission = entry.admission().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "unsigned roster entry in verified load",
+                    )
                 })?;
+                admission.verify_threshold(consortium).map_err(|e| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
+                })?;
+                entry.set_admission(admission);
             }
             roster.relays.insert(entry.record.id, entry);
         }
@@ -340,18 +553,34 @@ impl RelayRoster {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::JurisdictionId;
+    use crate::types::{test_relay_record, test_kem_public_for_id, JurisdictionId, KemPublicCommitment};
     use rand::rngs::OsRng;
 
     fn sample_record(id: u64, jurisdiction: &str) -> RelayRecord {
-        RelayRecord {
-            id: RelayId::from_u64(id),
-            jurisdiction: JurisdictionId::new(jurisdiction),
-        }
+        test_relay_record(id, jurisdiction)
     }
 
     fn test_ledger() -> ReputationLedger {
         ReputationLedger::new(0.9).expect("ledger")
+    }
+
+    fn threshold_sign(
+        record: &RelayRecord,
+        keys: &[ConsortiumKey],
+    ) -> ThresholdSignedRelayRecord {
+        let mut signed = ThresholdSignedRelayRecord::new(record.clone());
+        for key in keys {
+            signed = signed.with_signature(key.sign_authority(record));
+        }
+        signed
+    }
+
+    fn make_consortium(threshold: usize, keys: &[ConsortiumKey]) -> ThresholdConsortium {
+        ThresholdConsortium::new(
+            threshold,
+            keys.iter().map(|k| k.verifying_key()).collect(),
+        )
+        .expect("consortium")
     }
 
     #[test]
@@ -369,11 +598,106 @@ mod tests {
             .expect("admit");
 
         assert!(roster.is_admitted(record.id));
-        assert_eq!(roster.get_signed(record.id), Some(&signed));
+        assert_eq!(roster.get_signed(record.id), Some(signed));
         assert_eq!(
             ledger.score(*record.id.as_bytes()).0,
             aegis_trust::reputation::ReputationScore::PROBATIONARY.0
         );
+    }
+
+    #[test]
+    fn threshold_admission_succeeds_with_m_valid_signatures() {
+        let mut rng = OsRng;
+        let keys: Vec<_> = (0..3).map(|_| ConsortiumKey::generate(&mut rng)).collect();
+        let consortium = make_consortium(2, &keys);
+        let record = sample_record(42, "DE");
+        let signed = threshold_sign(&record, &keys[..2]);
+
+        let mut roster = RelayRoster::new();
+        let mut ledger = test_ledger();
+        roster
+            .admit_threshold_signed(signed, &consortium, &mut ledger)
+            .expect("admit");
+        assert!(roster.is_admitted(record.id));
+    }
+
+    #[test]
+    fn threshold_admission_fails_with_m_minus_one_signatures() {
+        let mut rng = OsRng;
+        let keys: Vec<_> = (0..3).map(|_| ConsortiumKey::generate(&mut rng)).collect();
+        let consortium = make_consortium(2, &keys);
+        let record = sample_record(43, "FR");
+        let signed = threshold_sign(&record, &keys[..1]);
+
+        let mut roster = RelayRoster::new();
+        let mut ledger = test_ledger();
+        let err = roster
+            .admit_threshold_signed(signed, &consortium, &mut ledger)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            RosterError::InsufficientSignatures { got: 1, need: 2 }
+        ));
+    }
+
+    #[test]
+    fn duplicate_signer_does_not_count_twice_toward_threshold() {
+        let mut rng = OsRng;
+        let keys: Vec<_> = (0..2).map(|_| ConsortiumKey::generate(&mut rng)).collect();
+        let consortium = make_consortium(2, &keys);
+        let record = sample_record(44, "UK");
+        let mut signed = threshold_sign(&record, &keys[..1]);
+        signed = signed.with_signature(keys[0].sign_authority(&record));
+
+        let mut roster = RelayRoster::new();
+        let mut ledger = test_ledger();
+        let err = roster
+            .admit_threshold_signed(signed, &consortium, &mut ledger)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            RosterError::InsufficientSignatures { got: 1, need: 2 }
+        ));
+    }
+
+    #[test]
+    fn threshold_admission_fails_with_wrong_authority_set() {
+        let mut rng = OsRng;
+        let keys: Vec<_> = (0..2).map(|_| ConsortiumKey::generate(&mut rng)).collect();
+        let outsider = ConsortiumKey::generate(&mut rng);
+        let consortium = make_consortium(2, &keys);
+        let record = sample_record(45, "JP");
+        let signed = threshold_sign(&record, &[keys[0].clone(), outsider]);
+
+        let mut roster = RelayRoster::new();
+        let mut ledger = test_ledger();
+        let err = roster
+            .admit_threshold_signed(signed, &consortium, &mut ledger)
+            .unwrap_err();
+        assert!(matches!(err, RosterError::UnknownAuthority));
+    }
+
+    #[test]
+    fn kem_binding_rejects_mismatched_public_key() {
+        let record = sample_record(5, "US");
+        let wrong_pk = test_kem_public_for_id(999);
+        assert!(!record.binds_kem_public(&wrong_pk));
+        assert!(record.binds_kem_public(&test_kem_public_for_id(5)));
+    }
+
+    #[test]
+    fn tampered_kem_commitment_fails_verification() {
+        let mut rng = OsRng;
+        let authority = ConsortiumKey::generate(&mut rng);
+        let pk = authority.verifying_key();
+        let record = sample_record(1, "US");
+        let mut signed = authority.sign_record(&record);
+        signed.record.kem_public_commitment = KemPublicCommitment([1u8; 32]);
+
+        let mut roster = RelayRoster::new();
+        let mut ledger = test_ledger();
+        let err = roster.admit_signed(signed, &pk, &mut ledger).unwrap_err();
+        assert!(matches!(err, RosterError::InvalidSignature { .. }));
     }
 
     #[test]
@@ -416,6 +740,7 @@ mod tests {
         let mut rng = OsRng;
         let authority = ConsortiumKey::generate(&mut rng);
         let pk = authority.verifying_key();
+        let consortium = ThresholdConsortium::single(pk);
 
         let mut roster = RelayRoster::new();
         let mut ledger = test_ledger();
@@ -433,13 +758,13 @@ mod tests {
 
         roster.save_to_file(&path).expect("save");
         let loaded =
-            RelayRoster::load_from_file_verified(&path, Some(&pk)).expect("load verified");
+            RelayRoster::load_from_file_verified_threshold(&path, Some(&consortium)).expect("load verified");
 
         assert_eq!(loaded, roster);
         for id in [1, 2, 3] {
             let relay_id = RelayId::from_u64(id);
-            let signed = loaded.get_signed(relay_id).expect("signed entry");
-            signed.verify(&pk).expect("reloaded signature still valid");
+            let signed = loaded.get_threshold_signed(relay_id).expect("signed entry");
+            signed.verify_threshold(&consortium).expect("reloaded signature still valid");
         }
 
         let _ = std::fs::remove_file(&path);
@@ -506,6 +831,37 @@ mod tests {
     }
 
     #[test]
+    fn threshold_admission_rate_limit_still_applies() {
+        let mut rng = OsRng;
+        let keys: Vec<_> = (0..3).map(|_| ConsortiumKey::generate(&mut rng)).collect();
+        let consortium = make_consortium(2, &keys);
+        let policy = RosterAdmissionPolicy {
+            max_admissions_per_window: 2,
+            window: Duration::from_secs(3600),
+        };
+        let mut roster = RelayRoster::with_admission_policy(policy);
+        let mut ledger = test_ledger();
+
+        for id in 1..=2u64 {
+            let record = sample_record(id, "US");
+            let signed = threshold_sign(&record, &keys[..2]);
+            roster
+                .admit_threshold_signed(signed, &consortium, &mut ledger)
+                .expect("first two admit");
+        }
+
+        let record = sample_record(3, "US");
+        let signed = threshold_sign(&record, &keys[..2]);
+        let err = roster
+            .admit_threshold_signed(signed, &consortium, &mut ledger)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            RosterError::AdmissionRateLimitExceeded { max_per_window: 2, .. }
+        ));
+    }
+
+    #[test]
     fn re_admit_same_relay_does_not_consume_rate_limit() {
         let mut rng = OsRng;
         let authority = ConsortiumKey::generate(&mut rng);
@@ -532,6 +888,7 @@ mod tests {
         let mut rng = OsRng;
         let authority = ConsortiumKey::generate(&mut rng);
         let pk = authority.verifying_key();
+        let consortium = ThresholdConsortium::single(pk);
         let signed = authority.sign_record(&sample_record(4, "UK"));
 
         let dir = std::env::temp_dir().join(format!(
@@ -548,10 +905,11 @@ mod tests {
 
         let mut value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("parse");
-        value["entries"][0]["signed_admission"]["signature"][0] = serde_json::json!(255);
+        value["entries"][0]["threshold_admission"]["signatures"][0]["signature"][0] =
+            serde_json::json!(255);
         std::fs::write(&path, value.to_string()).expect("write tampered");
 
-        let err = RelayRoster::load_from_file_verified(&path, Some(&pk)).unwrap_err();
+        let err = RelayRoster::load_from_file_verified_threshold(&path, Some(&consortium)).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
 
         let _ = std::fs::remove_file(&path);

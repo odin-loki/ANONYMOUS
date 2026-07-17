@@ -156,15 +156,12 @@ mod tests {
     use super::*;
     use crate::layers::build_topology;
     use crate::roster::RelayRoster;
-    use crate::types::{JurisdictionId, RelayId, RelayRecord, TopologyConfig};
+    use crate::types::{test_relay_record, RelayId, TopologyConfig};
 
     fn sample_roster(n: u64) -> RelayRoster {
         let mut roster = RelayRoster::new();
         for i in 0..n {
-            roster.admit(RelayRecord {
-                id: RelayId::from_u64(i + 1),
-                jurisdiction: JurisdictionId::new("US"),
-            });
+            roster.admit(test_relay_record(i + 1, "US"));
         }
         roster
     }

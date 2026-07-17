@@ -13,10 +13,10 @@
 
 | # | Finding | Crate / location | Severity |
 |---|---------|------------------|----------|
-| 1 | **Raw `send_payload` bypasses constant-rate emitter** — testnet and CLI paths send at application cadence; GPA at client ingress sees burst shape unless `ConstantRateEmitter` is wired. | `aegis-client::send`, `aegis-node/tests/trace_capture.rs` | **High** (metadata) |
-| 2 | **~~No admission rate limit~~** — ~~compromised consortium signing key ⇒ unlimited signed Sybil relays; fresh Sybils get NEUTRAL reputation (0.5) and pass the 0.3 floor immediately.~~ **Mitigated (2026-07-12):** probationary admission reputation (0.1) + configurable rate limit (default 5/24h). Residual: single-key governance, reputation `update()` wiring. | `aegis-topology::roster`, `aegis-trust::reputation` | **Medium** (was High) |
+| 1 | **`send_payload` / legacy paced send go quiet after 18 ticks** — unpaced burst and one-shot paced path expose true cadence at client TCP ingress. **Partial (2026-07-17):** default CLI uses `PacedSession` with continuous dummy cover + connection reuse; `--raw` and `send_payload` remain for trace capture. | `aegis-client::send`, `aegis-client::session`, CLI `--raw` | **Medium** (was High for default path) |
+| 2 | **~~No admission rate limit~~** — ~~compromised consortium signing key ⇒ unlimited signed Sybil relays; fresh Sybils get NEUTRAL reputation (0.5) and pass the 0.3 floor immediately.~~ **Mitigated (2026-07-12):** probationary admission reputation (0.1) + configurable rate limit (default 5/24h). **Mitigated (2026-07-17):** M-of-N threshold admission (`ThresholdConsortium` / `admit_threshold_signed`). Residual: consortium key ceremony out of band; reputation `update()` wiring. | `aegis-topology::roster`, `aegis-trust::reputation` | **Low–medium** (was High) |
 | 3 | **Pre-shared link keys, no handshake** — hop links authenticated only by static 32-byte keys in config; compromise of config file ⇒ full link spoof/tamper for that hop. | `aegis-relay::net`, `aegis-node::config` | **Medium** (active) |
-| 4 | **Relay error/load counters observable** — `RelayStats` (forwarded, integrity, replay, dropped) grows under flood; not wire-visible today but documents a GPA side-channel if exported. | `aegis-relay::node::RelayStats` | **Medium** (info leak) |
+| 4 | **Relay error/load counters observable** — fine-grained per-error counters remain available via [`RelayHandle::debug_stats`] for in-process tests only; external surfaces must use [`RelayHandle::coarse_stats`] (aggregated buckets). Residual GPA risk if coarse buckets are scraped at high frequency under flood. | `aegis-relay::node::RelayCoarseStats` | **Low–medium** (was Medium) |
 | 5 | **Replay cache FIFO eviction under sustained flood** — documented trade-off in `ReplayCache`; eviction before epoch rollover re-admits old tags. | `aegis-crypto::replay` | **Medium** (active) |
 
 ---
@@ -111,8 +111,8 @@ Simulations backing numeric claims:
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
 | Per-hop mixing delay sampled from Exp(μ) — timing visible to GPA on link. | `delay::sample_mixing_delay` | **By design** — delay is not the security primitive (spec §4.4); cover provides metadata hiding. | informational |
-| Cover flows are locally generated `Command::Drop` bursts — module docs admit GPA may distinguish from real bulk timing/shape. | `cover_flow.rs` L28–34 | **Open gap** (honestly documented). | Medium |
-| `RelayStats` counters expose load/error rates to operator; if exported to metrics, GPA at observation point learns "relay under load". | `node::RelayStats` | **Open gap** — side-channel under flood (see malicious trace). | Medium |
+| Cover flows are emitted as [`Command::SphinxFragment`] bursts on hop links (AEAD-sealed, same frame width as real bulk). Residual: random payload reassembles to invalid Sphinx at downstream peel; inter-cell timing and multi-hop semantics differ from genuine bulk. | `cover_flow.rs`, `node.rs` cover channel, `net.rs` cover dispatcher | **Partial** — wire volume/count padded; timing/shape GPA still possible. |
+| `RelayCoarseStats` exposes only aggregated `processed_ok` / `processed_fail` / `cover_emitted` for external export. Fine-grained per-error counters live in [`RelayHandle::debug_stats`] (documented internal-only). | `node::RelayCoarseStats`, `node::RelayDebugStats` | **Mitigated** for external metrics — do not export `debug_stats`. Residual if coarse buckets scraped under flood. | Low–medium |
 | `ForwardedPacket::delay_applied` records delay (internal struct). | `node::ForwardedPacket` | Low risk unless logged. | Low |
 
 ### Denial of service
@@ -140,8 +140,8 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| `RelayId::from_u64` is placeholder — not PK-derived from KEM keys. | `types::RelayId` | **Open gap** — admission record id can diverge from live relay key. | Medium |
-| Signed admission binds id + jurisdiction via ed25519. | `roster::admit_signed`, `SignedRelayRecord::verify` | **Mitigated** when production path used. | — |
+| `RelayId::from_u64` is placeholder — not PK-derived from KEM keys. | `types::RelayId` | **Partial** — signed admission now binds SHA3-256 KEM commitment (`RelayRecord::kem_public_commitment`, `binds_kem_public`); id field still opaque until PK-derived ids land. | Low–medium |
+| Signed admission binds id + jurisdiction + KEM commitment via ed25519. | `roster::admit_threshold_signed`, `RelayRecord::binds_kem_public` | **Mitigated** when production path used; path builders must call `binds_kem_public` before encapsulation. | — |
 | Test-only `RelayRoster::admit()` skips signature. | `roster.rs:105–117` | **Open gap** if used in prod — explicitly documented test-only. | High if misused |
 
 ### Tampering
@@ -155,7 +155,7 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| Single consortium signing key — no M-of-N admission votes yet. | `roster::ConsortiumKey` module docs | **Open gap** — governance repudiation out of scope but admission non-repudiation is single-point. | Medium |
+| Single consortium signing key — no M-of-N admission votes yet. | `roster::ConsortiumKey` module docs | **Mitigated (2026-07-17)** — `ThresholdConsortium` + `ThresholdSignedRelayRecord::verify_threshold` require M distinct authority signatures; `admit_signed` remains 1-of-1 convenience. Residual: authority key ceremony / PKI out of band. | Low |
 
 ### Information disclosure
 
@@ -177,7 +177,7 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| Compromised consortium key ⇒ arbitrary signed admissions. | `roster::ConsortiumKey::sign_record` | **Partial** — rate limit slows flood; M-of-N governance still future work. | **Medium** (was High) |
+| Compromised consortium key ⇒ arbitrary signed admissions. | `roster::ThresholdConsortium`, `admit_threshold_signed` | **Mitigated** — rate limit slows flood; M-of-N requires compromising ≥M distinct authorities. Residual: small M or correlated authority compromise. | **Low–medium** (was High) |
 | Reputation floor 0.3 does not block new Sybils (default NEUTRAL 0.5). | `aegis-trust::reputation` + `guards::new_reputation_weighted` | **Mitigated** — `admit_new_relay` seeds `PROBATIONARY` (0.1) at signed admission; Sybil sim rep-filtered path capture 0.0% vs ~45% pre-fix at 50% flood. | — |
 | Sybil flood raises guard capture to `1-(1-c)^g` with `c` = layer-1 Sybil fraction — matches formula but **breaks** vetted `c≈1%` assumption. | `guards::guard_exposure_plateau`, `tests/sybil_admission.rs` | Quantified — paper ~3% plateau holds only with honest vetted pool. | **High** |
 
@@ -378,7 +378,7 @@ Simulations backing numeric claims:
 | 24 + 96 Sybils (80% flood) | ~67% | **~66%** | **~0%** (was ~90%+ unfiltered) | >> 3% |
 | Rate-limited: 24 honest + 5 Sybils/window | ~0% | **~0%** | **~0%** (was unbounded 500 Sybils/admit batch) | — |
 
-**Fix (2026-07-12):** `ReputationScore::PROBATIONARY` (0.1) seeded at signed admission; `RosterAdmissionPolicy` default **5 admissions / 24h** (`AdmissionRateLimitExceeded`). Reputation-filtered path/guard selection now excludes fresh Sybils. **Residual risk:** single consortium admission key (no M-of-N); probation only effective when callers use reputation-aware `select_path*` / `new_reputation_weighted` with a ledger that received `admit_signed` seeding; unfiltered `select_path` / primary guard still tracks layer-1 Sybil fraction; `record_success`/`record_failure` wiring from live relays not yet automatic.
+**Fix (2026-07-12):** `ReputationScore::PROBATIONARY` (0.1) seeded at signed admission; `RosterAdmissionPolicy` default **5 admissions / 24h** (`AdmissionRateLimitExceeded`). Reputation-filtered path/guard selection now excludes fresh Sybils. **Fix (2026-07-17):** M-of-N threshold admission (`ThresholdConsortium`, default production path `admit_threshold_signed`); signed roster records include SHA3-256 hybrid KEM public-key commitments verified via `RelayRecord::binds_kem_public`. **Residual risk:** consortium authority key ceremony remains out of band; probation only effective when callers use reputation-aware `select_path*` / `new_reputation_weighted` with a ledger that received `admit_signed`/`admit_threshold_signed` seeding; unfiltered `select_path` / primary guard still tracks layer-1 Sybil fraction; `record_success`/`record_failure` wiring from live relays not yet automatic; path builders must enforce KEM binding at encapsulation time.
 
 **Conclusion:** The **closed-form plateau math exists** (`guard_exposure_plateau`) but **path selection uses only the primary guard**, so empirical exposure ≈ layer-1 Sybil fraction, not the g=3 paper plateau. The **vetted ~3% claim applies to the Python evidence-ledger model**, not literally to `select_path(..., Some(&guards))` today. **Admission rate limit** caps roster growth to 5 new relays per 24h per roster instance. **Reputation filtering blocks fresh Sybils** at the 0.3 floor when the shared ledger is wired through admission.
 
@@ -405,7 +405,7 @@ Simulations backing numeric claims:
 ## Cross-crate trust boundaries
 
 ```
-ConsortiumKey ──signs──► RelayRoster ──filters──► Topology ──feeds──► GuardSelector / select_path
+ConsortiumKey(s) ──M-of-N sign──► RelayRoster (+ KEM commitment) ──filters──► Topology ──feeds──► GuardSelector / select_path
                               ▲                           │
                               │                           └── ReputationLedger (optional floor)
 Client ──should use──► ConstantRateEmitter ──► Transport ──► mix
@@ -420,19 +420,20 @@ Relay ──peel──► sphinx::process ──delay──► forward (GPA sees
 - Hybrid PQ KEM + Sphinx integrity/replay handling (`aegis-crypto`)
 - Stable guards + plateau formula (`guards::guard_exposure_plateau`)
 - Hard-cap padding semantics (`aegis-client::padding`)
-- Permissioned admission **when** `admit_signed` used with guarded consortium key
+- Permissioned admission **when** `admit_threshold_signed` (or 1-of-1 `admit_signed`) used with configured consortium authorities
+- Roster↔KEM binding via signed `kem_public_commitment` (`RelayRecord::binds_kem_public`)
 - TEE-not-required path documented (`aegis-trust::tee`)
-- Honest bulk cover limitations documented (`aegis-relay::cover_flow`)
+- Honest bulk cover limitations documented (`aegis-relay::cover_flow`); cover bursts wired on hop links via cover outbound channel (`aegis-relay::net`)
 
 ---
 
 ## Future work (implementation)
 
-1. Wire **mandatory** `ConstantRateEmitter` on all client egress; reject/raw-ban direct `send_payload` in production builds.
-2. ~~**Admission rate limits** + M-of-N consortium signatures; initial reputation **below** guard floor until vetting period.~~ **Done (partial):** rate limits + `PROBATIONARY` admission seeding; M-of-N still open.
-3. **Roster↔KEM key binding** in signed admission record.
+1. Wire **mandatory** `ConstantRateEmitter` on all client egress via [`PacedSession`](../../crates/aegis-client/src/session.rs) (continuous dummy cover + one TCP link per session); keep raw `send_payload` / `--raw` for adversarial trace capture only. **Done (2026-07-17):** CLI default uses paced session with post-send cover; residual: initial TCP+handshake still visible once per session.
+2. ~~**Admission rate limits** + M-of-N consortium signatures; initial reputation **below** guard floor until vetting period.~~ **Done:** rate limits + `PROBATIONARY` admission seeding + `ThresholdConsortium` / `admit_threshold_signed` (2026-07-17).
+3. ~~**Roster↔KEM key binding** in signed admission record.~~ **Done (2026-07-17):** `RelayRecord::kem_public_commitment` signed in canonical admission bytes; verify with `binds_kem_public` at path-build. Residual: callers must invoke binding check; `RelayId` still opaque placeholder.
 4. Link-layer **mutual auth** or Noise handshake derived from roster keys.
-5. Export **coarse-grained** metrics only; avoid per-error-type telemetry visible to external GPA.
+5. Export **coarse-grained** metrics only via [`RelayHandle::coarse_stats`]; keep [`RelayHandle::debug_stats`] in-process. ~~Avoid per-error-type telemetry visible to external GPA.~~ **Done (2026-07-17):** `RelayCoarseStats` + documented `debug_stats` boundary.
 6. Constant-time replay cache or epoch-shortening under load (see crypto review).
 7. Wire `AnomalyDetector` to admission/pruning decisions.
 8. Relay-side timestamp instrumentation for shapeability at **post-shaping** vantage (Phase 8 notes §4 future work).
@@ -441,6 +442,6 @@ Relay ──peel──► sphinx::process ──delay──► forward (GPA sees
 
 ## Verification
 
-- `cargo test -p aegis-topology` — includes `sybil_admission` integration tests (+5 tests; +2 roster rate-limit unit tests).
+- `cargo test -p aegis-topology` — includes `sybil_admission` integration tests (+5 tests; +8 roster threshold/KEM unit tests).
 - `cargo test -p aegis-node --test trace_capture -- --ignored` — regenerates malicious CSV.
 - `cd sim && PYTHONPATH=. pytest -q` — includes `test_malicious_trace.py`.

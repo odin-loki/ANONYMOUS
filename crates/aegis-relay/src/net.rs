@@ -24,7 +24,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aegis_crypto::cell::Cell;
+use aegis_crypto::cell::{Cell, Command};
 use aegis_crypto::fragment::{fragment_with_random_id, SphinxReassembler, SPHINX_FRAGMENT_COUNT};
 use aegis_crypto::link::{
     link_handshake_confirm_mac, link_handshake_finish_mac, link_handshake_init_write,
@@ -106,6 +106,10 @@ pub enum NetError {
 
 /// Spawn inbound listener + outbound dispatcher bridging TCP and `RelayNode` channels.
 ///
+/// When `cover_rx` is set, a cover dispatcher seals synthetic cover cell bursts from
+/// [`crate::RelayNode::spawn`] and writes them on a hop link (same AEAD framing as
+/// real traffic).
+///
 /// Returns join handles for the listener and dispatcher tasks.
 pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
     listen_addr: SocketAddr,
@@ -113,6 +117,7 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
     ingress_link_key: Option<[u8; 32]>,
     inbound_tx: mpsc::Sender<SphinxPacket>,
     outbound_rx: mpsc::Receiver<ForwardedPacket>,
+    cover_rx: Option<mpsc::Receiver<Vec<Cell>>>,
     exit_tx: Option<ExitSink>,
     rng: R,
     bridge_config: LinkBridgeConfig,
@@ -125,6 +130,14 @@ pub fn spawn_link_bridge<R: RngCore + CryptoRngCore + Send + Sync + 'static>(
         inbound_tx,
         bridge_config.clone(),
     );
+    if let Some(cover_rx) = cover_rx {
+        spawn_cover_dispatcher(
+            cover_rx,
+            peer_table.clone(),
+            Arc::clone(&rng),
+            bridge_config.clone(),
+        );
+    }
     let dispatcher = spawn_outbound_dispatcher(
         outbound_rx,
         peer_table,
@@ -410,12 +423,106 @@ async fn run_inbound_connection(
     loop {
         read_exact_timeout(&mut stream, &mut frame, bridge_config.read_timeout).await?;
         let cell = session_key.open(&frame)?;
+        // Mode-1 cover / loop cells share the link with Sphinx fragments; discard
+        // them here so continuous dummy cover does not poison reassembly.
+        match Command::from_u8(cell.as_bytes()[0]) {
+            Some(Command::Drop) | Some(Command::LoopToSelf) => continue,
+            Some(Command::SphinxFragment) => {}
+            _ => continue,
+        }
         if let Some(packet) = reassembler.push(&cell)? {
             if inbound_tx.send(packet).await.is_err() {
                 break;
             }
         }
     }
+    Ok(())
+}
+
+fn pick_cover_egress(peer_table: &HashMap<RelayId, PeerInfo>) -> Option<PeerInfo> {
+    let mut peers: Vec<_> = peer_table.values().cloned().collect();
+    peers.sort_by_key(|p| p.addr);
+    peers.into_iter().next()
+}
+
+fn spawn_cover_dispatcher<R: RngCore + CryptoRngCore + Send + 'static>(
+    cover_rx: mpsc::Receiver<Vec<Cell>>,
+    peer_table: HashMap<RelayId, PeerInfo>,
+    rng: Arc<Mutex<R>>,
+    bridge_config: LinkBridgeConfig,
+) {
+    tokio::spawn(async move {
+        let pool = Arc::new(Mutex::new(ConnectionPool::new()));
+        let mut cover_rx = cover_rx;
+        while let Some(cells) = cover_rx.recv().await {
+            let peer = match pick_cover_egress(&peer_table) {
+                Some(p) => p,
+                None => continue,
+            };
+            let mut guard = rng.lock().await;
+            if let Err(e) =
+                write_cover_cells(&pool, &peer, &cells, &mut *guard, &bridge_config).await
+            {
+                eprintln!("aegis-relay net: cover egress to {:?}: {e}", peer.addr);
+            }
+        }
+    });
+}
+
+async fn write_cover_cells<R: RngCore + CryptoRngCore>(
+    pool: &Arc<Mutex<ConnectionPool>>,
+    peer: &PeerInfo,
+    cells: &[Cell],
+    rng: &mut R,
+    bridge_config: &LinkBridgeConfig,
+) -> Result<(), NetError> {
+    let conn = {
+        let mut pool = pool.lock().await;
+        pool.get_or_handshake(peer, rng, bridge_config).await?
+    };
+    let mut guard = conn.lock().await;
+    let session_key = LinkKey::new(*guard.session_key.as_bytes());
+    match write_cells_on_stream(
+        &mut guard.stream,
+        &session_key,
+        cells,
+        rng,
+        bridge_config.read_timeout,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(NetError::Io(_)) | Err(NetError::ReadTimeout(_)) => {
+            drop(guard);
+            let mut pool = pool.lock().await;
+            let conn = pool.reconnect(peer, rng, bridge_config).await?;
+            let mut guard = conn.lock().await;
+            let session_key = LinkKey::new(*guard.session_key.as_bytes());
+            write_cells_on_stream(
+                &mut guard.stream,
+                &session_key,
+                cells,
+                rng,
+                bridge_config.read_timeout,
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    }
+}
+
+async fn write_cells_on_stream<R: RngCore + CryptoRngCore>(
+    stream: &mut TcpStream,
+    link_key: &LinkKey,
+    cells: &[Cell],
+    rng: &mut R,
+    read_timeout: Duration,
+) -> Result<(), NetError> {
+    for cell in cells {
+        let frame = link_key.seal(cell, rng)?;
+        write_all_timeout(stream, &frame, read_timeout).await?;
+    }
+    stream.flush().await?;
     Ok(())
 }
 
@@ -670,6 +777,73 @@ mod tests {
         ));
         let server_err = server.await.unwrap();
         assert!(matches!(server_err, Err(NetError::UnidentifiedInbound)));
+    }
+
+    #[tokio::test]
+    async fn cover_dispatcher_writes_sealed_frames() {
+        use aegis_crypto::cell::Command;
+        use aegis_crypto::fragment::SPHINX_FRAGMENT_COUNT;
+        use crate::cover_flow::CoverFlowGenerator;
+        use aegis_negotiator::cover::CoverRequirement;
+
+        let psk = test_psk(0xEE);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = LinkBridgeConfig::default();
+
+        let mut peer_id = [0u8; 32];
+        peer_id[0] = 9;
+        let peer_table = HashMap::from([(
+            RelayId(peer_id),
+            PeerInfo::new(addr, psk),
+        )]);
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            let key = run_responder_handshake(
+                &mut stream,
+                Some(psk),
+                &HashMap::new(),
+                &mut rng,
+                cfg.read_timeout,
+            )
+            .await
+            .unwrap();
+
+            let mut frame = [0u8; LINK_FRAME_LEN];
+            let mut frames = 0usize;
+            for _ in 0..SPHINX_FRAGMENT_COUNT {
+                read_exact_timeout(&mut stream, &mut frame, cfg.read_timeout)
+                    .await
+                    .unwrap();
+                let cell = key.open(&frame).unwrap();
+                assert_eq!(cell.as_bytes()[0], Command::SphinxFragment as u8);
+                frames += 1;
+            }
+            frames
+        });
+
+        let (cover_tx, cover_rx) = mpsc::channel(4);
+        let (_listener_task, _dispatcher_task) = spawn_link_bridge(
+            "127.0.0.1:0".parse().unwrap(),
+            peer_table,
+            None,
+            mpsc::channel(1).0,
+            mpsc::channel(1).1,
+            Some(cover_rx),
+            None,
+            OsRng,
+            cfg.clone(),
+        );
+
+        let gen = CoverFlowGenerator::new(CoverRequirement::new(4));
+        let flow = gen.generate(1, &mut OsRng).into_iter().next().unwrap();
+        cover_tx.send(flow.cells).await.unwrap();
+        drop(cover_tx);
+
+        let frames = server.await.unwrap();
+        assert_eq!(frames, SPHINX_FRAGMENT_COUNT);
     }
 
     #[tokio::test]

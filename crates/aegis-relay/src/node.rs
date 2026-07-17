@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use aegis_crypto::cell::Cell;
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_crypto::replay::ReplayCache;
 use aegis_crypto::sphinx::{self, Processed, SphinxPacket};
@@ -28,12 +29,40 @@ pub struct ForwardedPacket {
     pub delay_applied: Duration,
 }
 
+/// GPA-safe aggregate counters for external-facing surfaces (metrics, health checks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayCoarseStats {
+    /// Successfully processed ingress packets (forwarded, loop-returned, or dropped cover).
+    pub processed_ok: u64,
+    /// Failed peel/decrypt (integrity, replay, and other errors aggregated).
+    pub processed_fail: u64,
+    /// Synthetic cover flows emitted on the wire during bulk rounds.
+    pub cover_emitted: u64,
+}
+
+/// Fine-grained relay counters — **internal / test only**.
+///
+/// Do not export to untrusted observers (metrics scrapers, external APIs). Per-error-type
+/// breakdown enables GPA load inference under flood (see threat model §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayDebugStats {
+    pub loop_return_count: u64,
+    pub dropped_count: u64,
+    pub cover_flow_count: u64,
+    pub cover_cell_count: u64,
+    pub integrity_error_count: u64,
+    pub replay_error_count: u64,
+    pub other_error_count: u64,
+    pub forwarded_count: u64,
+}
+
 /// Lightweight observability counters (internal only — not a wire signal).
 #[derive(Debug)]
-pub struct RelayStats {
+struct RelayStats {
     loop_return_count: AtomicU64,
     dropped_count: AtomicU64,
     cover_flow_count: AtomicU64,
+    cover_cell_count: AtomicU64,
     integrity_error_count: AtomicU64,
     replay_error_count: AtomicU64,
     other_error_count: AtomicU64,
@@ -46,6 +75,7 @@ impl RelayStats {
             loop_return_count: AtomicU64::new(0),
             dropped_count: AtomicU64::new(0),
             cover_flow_count: AtomicU64::new(0),
+            cover_cell_count: AtomicU64::new(0),
             integrity_error_count: AtomicU64::new(0),
             replay_error_count: AtomicU64::new(0),
             other_error_count: AtomicU64::new(0),
@@ -53,31 +83,31 @@ impl RelayStats {
         }
     }
 
-    /// Loop-cover cells that returned to this relay (§4.6 hook; full detection is future work).
-    pub fn loop_return_count(&self) -> u64 {
-        self.loop_return_count.load(Ordering::Relaxed)
+    fn coarse(&self) -> RelayCoarseStats {
+        let loop_return = self.loop_return_count.load(Ordering::Relaxed);
+        let dropped = self.dropped_count.load(Ordering::Relaxed);
+        let forwarded = self.forwarded_count.load(Ordering::Relaxed);
+        let integrity = self.integrity_error_count.load(Ordering::Relaxed);
+        let replay = self.replay_error_count.load(Ordering::Relaxed);
+        let other = self.other_error_count.load(Ordering::Relaxed);
+        RelayCoarseStats {
+            processed_ok: forwarded + loop_return + dropped,
+            processed_fail: integrity + replay + other,
+            cover_emitted: self.cover_flow_count.load(Ordering::Relaxed),
+        }
     }
 
-    /// Cover/dummy cells silently discarded at this relay.
-    pub fn dropped_count(&self) -> u64 {
-        self.dropped_count.load(Ordering::Relaxed)
-    }
-
-    /// Synthetic cover flows emitted by this relay to pad bulk rounds (§5.2 L2).
-    pub fn cover_flow_count(&self) -> u64 {
-        self.cover_flow_count.load(Ordering::Relaxed)
-    }
-
-    pub fn integrity_error_count(&self) -> u64 {
-        self.integrity_error_count.load(Ordering::Relaxed)
-    }
-
-    pub fn replay_error_count(&self) -> u64 {
-        self.replay_error_count.load(Ordering::Relaxed)
-    }
-
-    pub fn forwarded_count(&self) -> u64 {
-        self.forwarded_count.load(Ordering::Relaxed)
+    fn debug(&self) -> RelayDebugStats {
+        RelayDebugStats {
+            loop_return_count: self.loop_return_count.load(Ordering::Relaxed),
+            dropped_count: self.dropped_count.load(Ordering::Relaxed),
+            cover_flow_count: self.cover_flow_count.load(Ordering::Relaxed),
+            cover_cell_count: self.cover_cell_count.load(Ordering::Relaxed),
+            integrity_error_count: self.integrity_error_count.load(Ordering::Relaxed),
+            replay_error_count: self.replay_error_count.load(Ordering::Relaxed),
+            other_error_count: self.other_error_count.load(Ordering::Relaxed),
+            forwarded_count: self.forwarded_count.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -108,24 +138,17 @@ pub struct RelayHandle {
 }
 
 impl RelayHandle {
-    pub fn loop_return_count(&self) -> u64 {
-        self.stats.loop_return_count()
+    /// Aggregate counters safe for external export (no per-error-type breakdown).
+    pub fn coarse_stats(&self) -> RelayCoarseStats {
+        self.stats.coarse()
     }
 
-    pub fn dropped_count(&self) -> u64 {
-        self.stats.dropped_count()
-    }
-
-    pub fn cover_flow_count(&self) -> u64 {
-        self.stats.cover_flow_count()
-    }
-
-    pub fn integrity_error_count(&self) -> u64 {
-        self.stats.integrity_error_count()
-    }
-
-    pub fn forwarded_count(&self) -> u64 {
-        self.stats.forwarded_count()
+    /// Fine-grained counters for tests and in-process diagnostics only.
+    ///
+    /// **Do not export to untrusted observers** — per-error-type fields enable GPA
+    /// load inference under flood.
+    pub fn debug_stats(&self) -> RelayDebugStats {
+        self.stats.debug()
     }
 
     /// Declare an L2 (or other dial) bulk round with target observed flow count.
@@ -144,8 +167,8 @@ impl RelayHandle {
 
     /// Close the active bulk round and emit synthetic cover flows if required.
     ///
-    /// Does not return until the relay loop has applied the close and updated
-    /// [`RelayStats::cover_flow_count`]/[`RelayStats::dropped_count`].
+    /// Does not return until the relay loop has applied the close, emitted cover on
+    /// the optional outbound channel, and updated cover counters.
     pub async fn end_bulk_round(&self) -> Result<(), RelayStoppedError> {
         self.send_round_cmd(BulkRoundCommand::EndRound).await
     }
@@ -175,12 +198,15 @@ impl RelayNode {
     /// Spawn the async relay loop on the current tokio runtime.
     ///
     /// `inbound` receives raw Sphinx packets; `outbound` emits peeled packets after
-    /// the per-hop Exp(μ) mixing delay. Bulk cover padding is driven via
+    /// the per-hop Exp(μ) mixing delay. When `cover_tx` is set, synthetic cover cell
+    /// bursts from [`RelayHandle::end_bulk_round`] are sent there for link-layer sealing
+    /// (see [`crate::net::spawn_link_bridge`]). Bulk cover padding is driven via
     /// [`RelayHandle::begin_bulk_round`] / [`RelayHandle::end_bulk_round`].
     pub fn spawn<R: RngCore + CryptoRngCore + Send + 'static>(
         self,
         inbound: mpsc::Receiver<SphinxPacket>,
         outbound: mpsc::Sender<ForwardedPacket>,
+        cover_tx: Option<mpsc::Sender<Vec<Cell>>>,
         mut rng: R,
     ) -> (RelayHandle, JoinHandle<()>) {
         let stats = Arc::new(RelayStats::new());
@@ -211,8 +237,15 @@ impl RelayNode {
                                         .cover_flow_count
                                         .fetch_add(result.cover_flow_count as u64, Ordering::Relaxed);
                                     stats
-                                        .dropped_count
-                                        .fetch_add(result.drop_cell_count, Ordering::Relaxed);
+                                        .cover_cell_count
+                                        .fetch_add(result.cover_cell_count, Ordering::Relaxed);
+                                    if let Some(ref tx) = cover_tx {
+                                        for flow in result.cover_flows {
+                                            if tx.send(flow.cells).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                    }
                                 }
                                 let _ = ack.send(());
                             }
@@ -312,6 +345,8 @@ pub fn packet_delta(packet: &SphinxPacket) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aegis_crypto::cell::Command;
+    use aegis_crypto::fragment::SPHINX_FRAGMENT_COUNT;
     use aegis_crypto::kem::RelayKemSecret;
     use aegis_crypto::sphinx::{build, PathHop};
     use aegis_negotiator::cover::CoverRequirement;
@@ -365,7 +400,7 @@ mod tests {
             relay_test_path(&mut rng);
 
         let node = RelayNode::new(guard_id, guard_sec, RelayConfig::default());
-        let (handle, _task) = node.spawn(inbound_rx, outbound_tx, OsRng);
+        let (handle, _task) = node.spawn(inbound_rx, outbound_tx, None, OsRng);
 
         // Round 1: L2, target 3, one real flow -> 2 cover flows.
         handle
@@ -377,8 +412,9 @@ mod tests {
         let _ = outbound_rx.recv().await;
         handle.end_bulk_round().await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(handle.cover_flow_count(), 2);
-        assert_eq!(handle.forwarded_count(), 1);
+        assert_eq!(handle.debug_stats().cover_flow_count, 2);
+        assert_eq!(handle.coarse_stats().cover_emitted, 2);
+        assert_eq!(handle.debug_stats().forwarded_count, 1);
 
         // Round 2: L0 — no cover even when under target.
         handle
@@ -390,7 +426,11 @@ mod tests {
         let _ = outbound_rx.recv().await;
         handle.end_bulk_round().await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(handle.cover_flow_count(), 2, "L0 must not add cover flows");
+        assert_eq!(
+            handle.debug_stats().cover_flow_count,
+            2,
+            "L0 must not add cover flows"
+        );
 
         // Round 3: L2, target 2, two real flows -> 0 cover.
         handle
@@ -404,7 +444,69 @@ mod tests {
         }
         handle.end_bulk_round().await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(handle.cover_flow_count(), 2);
-        assert_eq!(handle.forwarded_count(), 4);
+        assert_eq!(handle.debug_stats().cover_flow_count, 2);
+        assert_eq!(handle.debug_stats().forwarded_count, 4);
+    }
+
+    #[tokio::test]
+    async fn end_bulk_round_emits_cover_cells_on_outbound_channel() {
+        let mut rng = OsRng;
+        let (guard_sec, guard_id, path, inbound_tx, inbound_rx, outbound_tx, mut outbound_rx) =
+            relay_test_path(&mut rng);
+
+        let (cover_tx, mut cover_rx) = mpsc::channel(8);
+        let node = RelayNode::new(guard_id, guard_sec, RelayConfig::default());
+        let (handle, _task) = node.spawn(inbound_rx, outbound_tx, Some(cover_tx), OsRng);
+
+        handle
+            .begin_bulk_round(SecurityDial::L2UniformBatched, CoverRequirement::new(4))
+            .await
+            .unwrap();
+        let packet = build(&path, b"cover-wire", &mut rng).unwrap();
+        inbound_tx.send(packet).await.unwrap();
+        let _ = outbound_rx.recv().await;
+
+        handle.end_bulk_round().await.unwrap();
+
+        let mut cover_bursts = 0usize;
+        let mut cover_cells = 0usize;
+        while let Ok(cells) = cover_rx.try_recv() {
+            cover_bursts += 1;
+            assert_eq!(cells.len(), SPHINX_FRAGMENT_COUNT);
+            assert!(
+                cells
+                    .iter()
+                    .all(|c| c.as_bytes()[0] == Command::SphinxFragment as u8)
+            );
+            cover_cells += cells.len();
+        }
+        assert_eq!(cover_bursts, 3, "target 4 with 1 real flow => 3 cover bursts");
+        assert_eq!(
+            cover_cells,
+            3 * SPHINX_FRAGMENT_COUNT,
+            "every cover flow must hit the outbound channel"
+        );
+        assert_eq!(handle.debug_stats().cover_cell_count, cover_cells as u64);
+    }
+
+    #[tokio::test]
+    async fn coarse_stats_aggregate_without_error_breakdown() {
+        let mut rng = OsRng;
+        let (guard_sec, guard_id, path, inbound_tx, inbound_rx, outbound_tx, mut outbound_rx) =
+            relay_test_path(&mut rng);
+
+        let node = RelayNode::new(guard_id, guard_sec, RelayConfig::default());
+        let (handle, _task) = node.spawn(inbound_rx, outbound_tx, None, OsRng);
+
+        let packet = build(&path, b"ok", &mut rng).unwrap();
+        inbound_tx.send(packet).await.unwrap();
+        let _ = outbound_rx.recv().await;
+
+        let coarse = handle.coarse_stats();
+        assert_eq!(coarse.processed_ok, 1);
+        assert_eq!(coarse.processed_fail, 0);
+        assert_eq!(coarse.cover_emitted, 0);
+        // Fine-grained fields remain available via debug_stats only.
+        assert_eq!(handle.debug_stats().forwarded_count, 1);
     }
 }

@@ -59,7 +59,7 @@ impl Testnet {
 
             let (outbound_tx, outbound_rx) = mpsc::channel(64);
             let node = RelayNode::new(id, secret, RelayConfig::new(mu));
-            let (handle, task) = node.spawn(inbound_rx, outbound_tx, OsRng);
+            let (handle, task) = node.spawn(inbound_rx, outbound_tx, None, OsRng);
 
             relays.push(RelaySlot {
                 handle,
@@ -177,7 +177,7 @@ async fn testnet_routes_sphinx_e2e_payload_and_latency() {
     );
 
     assert_eq!(
-        testnet.relay_handle(0).forwarded_count(),
+        testnet.relay_handle(0).debug_stats().forwarded_count,
         1,
         "first relay should have forwarded once"
     );
@@ -231,17 +231,17 @@ async fn tampered_packet_rejected_without_forward() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     assert_eq!(
-        testnet.relay_handle(0).integrity_error_count(),
+        testnet.relay_handle(0).debug_stats().integrity_error_count,
         1,
         "tampered packet should increment integrity error count"
     );
     assert_eq!(
-        testnet.relay_handle(0).forwarded_count(),
+        testnet.relay_handle(0).debug_stats().forwarded_count,
         0,
         "tampered packet must not be forwarded"
     );
     assert_eq!(
-        testnet.relay_handle(1).forwarded_count(),
+        testnet.relay_handle(1).debug_stats().forwarded_count,
         0,
         "downstream relay must not see traffic"
     );

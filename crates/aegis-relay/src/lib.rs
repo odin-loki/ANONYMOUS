@@ -14,9 +14,11 @@
 //!
 //! ## Bulk cover-flow padding (spec §5.2 L2, §5.3)
 //!
-//! [`cover_flow`] synthesizes `Command::Drop` cell bursts so observed bulk flow count
-//! reaches the negotiator target. Use [`RelayHandle::begin_bulk_round`] /
-//! [`RelayHandle::end_bulk_round`] to open and close a counting window.
+//! [`cover_flow`] synthesizes [`aegis_crypto::cell::Command::SphinxFragment`] cell bursts
+//! so observed bulk flow count reaches the negotiator target. Use
+//! [`RelayHandle::begin_bulk_round`] / [`RelayHandle::end_bulk_round`] to open and close a
+//! counting window; cover bursts are emitted on the optional cover outbound channel and
+//! sealed by [`net::spawn_link_bridge`].
 //!
 //! ## TCP link bridge
 //!
@@ -42,5 +44,7 @@ pub use net::{
     PeerInfo, ExitSink, spawn_link_bridge, run_initiator_handshake, run_responder_handshake,
     DEFAULT_LINK_READ_TIMEOUT, DEFAULT_MAX_INBOUND_CONNECTIONS,
 };
-pub use node::{packet_delta, ForwardedPacket, RelayHandle, RelayNode};
+pub use node::{
+    packet_delta, ForwardedPacket, RelayCoarseStats, RelayDebugStats, RelayHandle, RelayNode,
+};
 pub use relay_id::RelayId;

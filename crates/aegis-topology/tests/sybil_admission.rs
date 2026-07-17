@@ -13,7 +13,7 @@ use std::time::Duration;
 use aegis_topology::guards::{guard_exposure_plateau, GuardConfig, GuardSelector};
 use aegis_topology::path::{select_path, select_path_reputation_weighted};
 use aegis_topology::roster::{ConsortiumKey, RelayRoster, RosterAdmissionPolicy};
-use aegis_topology::types::{JurisdictionId, RelayId, RelayRecord, TopologyConfig};
+use aegis_topology::types::{test_relay_record, RelayId, RelayRecord, TopologyConfig};
 use aegis_topology::build_topology;
 use aegis_trust::reputation::{ReputationLedger, ReputationScore};
 use rand::rngs::OsRng;
@@ -33,17 +33,14 @@ mod baseline_pre_fix {
 }
 
 fn honest_record(id: u64) -> RelayRecord {
-    RelayRecord {
-        id: RelayId::from_u64(id),
-        jurisdiction: JurisdictionId::new(JURISDICTIONS[id as usize % JURISDICTIONS.len() as usize]),
-    }
+    test_relay_record(
+        id,
+        JURISDICTIONS[id as usize % JURISDICTIONS.len() as usize],
+    )
 }
 
 fn sybil_record(id: u64) -> RelayRecord {
-    RelayRecord {
-        id: RelayId::from_u64(id),
-        jurisdiction: JurisdictionId::new("SY"),
-    }
+    test_relay_record(id, "SY")
 }
 
 /// Permissive policy for scenarios that admit a large honest+sybil batch in one run.

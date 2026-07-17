@@ -97,9 +97,10 @@ impl TcpTestnet {
 
             let (inbound_tx, inbound_rx) = mpsc::channel(64);
             let (outbound_tx, outbound_rx) = mpsc::channel(64);
+            let (cover_tx, cover_rx) = mpsc::channel(64);
 
             let node = RelayNode::new(id, secrets.remove(0), RelayConfig::new(FAST_MU));
-            let (handle, relay_task) = node.spawn(inbound_rx, outbound_tx, OsRng);
+            let (handle, relay_task) = node.spawn(inbound_rx, outbound_tx, Some(cover_tx), OsRng);
 
             let exit = if i == path_len - 1 {
                 exit_tx.clone()
@@ -113,6 +114,7 @@ impl TcpTestnet {
                 ingress,
                 inbound_tx,
                 outbound_rx,
+                Some(cover_rx),
                 exit,
                 OsRng,
                 LinkBridgeConfig::default(),
@@ -172,6 +174,7 @@ async fn tcp_testnet_paced_send_delivers_payload() {
         &mut rng,
         Some(aegis_client::EmitterConfig { tau }),
         &LinkBridgeConfig::default(),
+        Duration::ZERO,
     )
     .await
     .expect("paced client send over TcpStream");
@@ -212,12 +215,12 @@ async fn tcp_testnet_routes_sphinx_over_real_sockets() {
     );
 
     assert_eq!(
-        testnet.relay_handle(0).forwarded_count(),
+        testnet.relay_handle(0).debug_stats().forwarded_count,
         1,
         "first relay should have forwarded once"
     );
     assert_eq!(
-        testnet.relay_handle(PATH_LEN - 1).forwarded_count(),
+        testnet.relay_handle(PATH_LEN - 1).debug_stats().forwarded_count,
         1,
         "exit relay should have peeled once"
     );
@@ -254,8 +257,8 @@ async fn tcp_path_build_matches_direct_peel() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
-        testnet.relay_handle(PATH_LEN - 1).forwarded_count() >= 1
-            || testnet.relay_handle(0).forwarded_count() >= 1,
+        testnet.relay_handle(PATH_LEN - 1).debug_stats().forwarded_count >= 1
+            || testnet.relay_handle(0).debug_stats().forwarded_count >= 1,
         "packet should traverse TCP links"
     );
     let _ = packet;

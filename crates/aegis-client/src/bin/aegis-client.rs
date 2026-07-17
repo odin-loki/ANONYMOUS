@@ -3,9 +3,13 @@
 use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
-use aegis_client::send::{send_payload, send_payload_paced_default, ClientHop, ClientLink};
+use aegis_client::driver::config_with_tau_secs;
+use aegis_client::send::{send_payload, ClientHop, ClientLink};
+use aegis_client::session::{PacedSession, PacedSessionConfig};
 use aegis_crypto::kem::RelayKemSecret;
+use aegis_relay::LinkBridgeConfig;
 use clap::Parser;
 use rand_core::OsRng;
 use serde::Deserialize;
@@ -28,6 +32,14 @@ struct Cli {
     /// Burst-send without constant-rate pacing (debug / trace capture only).
     #[arg(long)]
     raw: bool,
+
+    /// Seconds of dummy cover after the last fragment (Mode 1 default).
+    #[arg(long, default_value_t = 2.0)]
+    cover_secs: f64,
+
+    /// Slot period τ in seconds (spec worked example 0.35).
+    #[arg(long, default_value_t = 0.35)]
+    tau_secs: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,10 +127,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         let _ = packet;
     } else {
-        let packet = send_payload_paced_default(&hops, &link, &payload, &mut rng).await?;
+        let mut session = PacedSession::connect(
+            &link,
+            &LinkBridgeConfig::default(),
+            PacedSessionConfig {
+                emitter_config: config_with_tau_secs(cli.tau_secs),
+                cover_after_send: Duration::from_secs_f64(cli.cover_secs),
+            },
+            &mut rng,
+        )
+        .await?;
+        let packet = session.send_payload_via_session(&hops, &payload, &mut rng)?;
+        session.wait_idle_cover().await?;
+        session.shutdown().await?;
         eprintln!(
-            "sent sphinx packet (paced, {} B payload) to {}",
+            "sent sphinx packet (paced session, {} B payload, cover {}s) to {}",
             payload.len(),
+            cli.cover_secs,
             first_hop_addr
         );
         let _ = packet;

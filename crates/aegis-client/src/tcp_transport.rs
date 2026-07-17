@@ -19,6 +19,7 @@ struct LinkSessionState {
 }
 
 /// Sends shaped cells over an established first-hop TCP link session.
+#[derive(Clone)]
 pub struct TcpCellTransport {
     inner: Arc<Mutex<LinkSessionState>>,
     runtime: Handle,

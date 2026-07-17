@@ -46,13 +46,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (inbound_tx, inbound_rx) = mpsc::channel(64);
     let (outbound_tx, outbound_rx) = mpsc::channel(64);
+    let (cover_tx, cover_rx) = mpsc::channel(64);
 
     let node = RelayNode::new(
         runtime.relay_id,
         runtime.kem_secret,
         runtime.relay_config,
     );
-    let (handle, relay_task) = node.spawn(inbound_rx, outbound_tx, OsRng);
+    let (handle, relay_task) = node.spawn(inbound_rx, outbound_tx, Some(cover_tx), OsRng);
 
     let (_listener_task, _dispatcher_task) = spawn_link_bridge(
         runtime.listen,
@@ -60,14 +61,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime.ingress_link_key,
         inbound_tx,
         outbound_rx,
+        Some(cover_rx),
         None,
         OsRng,
         runtime.link_bridge_config,
     );
 
     eprintln!(
-        "relay listening; forwarded_count={}",
-        handle.forwarded_count()
+        "relay listening; coarse_stats={:?}",
+        handle.coarse_stats()
     );
 
     tokio::signal::ctrl_c().await?;

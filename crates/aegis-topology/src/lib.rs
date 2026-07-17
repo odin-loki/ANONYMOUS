@@ -14,6 +14,7 @@ pub mod error;
 pub mod guards;
 pub mod layers;
 pub mod path;
+pub mod pruning;
 pub mod roster;
 pub mod types;
 
@@ -29,8 +30,15 @@ pub use path::{
     select_diverse_path, select_diverse_reputation_path, select_path,
     select_path_reputation_weighted, JurisdictionPolicy,
 };
-pub use roster::{ConsortiumKey, RelayRoster, RosterAdmissionPolicy, SignedRelayRecord};
-pub use types::{JurisdictionId, RelayId, RelayRecord, TopologyConfig};
+pub use pruning::path_satisfies_pruning_policy;
+pub use roster::{
+    AuthorityAdmissionSignature, ConsortiumKey, RelayRoster, RosterAdmissionPolicy,
+    SignedRelayRecord, ThresholdConsortium, ThresholdSignedRelayRecord,
+};
+pub use types::{
+    test_kem_public_for_id, test_relay_record, JurisdictionId, KemPublicCommitment, RelayId,
+    RelayRecord, TopologyConfig,
+};
 
 #[cfg(test)]
 mod tests {
@@ -42,10 +50,7 @@ mod tests {
         let mut roster = RelayRoster::new();
         for i in 0..n {
             let j = jurisdictions[i as usize % jurisdictions.len()];
-            roster.admit(RelayRecord {
-                id: RelayId::from_u64(i + 1),
-                jurisdiction: JurisdictionId::new(j),
-            });
+            roster.admit(test_relay_record(i + 1, j));
         }
         roster
     }
@@ -155,10 +160,7 @@ mod tests {
     fn jurisdiction_check_rejects_concentrated_path() {
         let mut roster = RelayRoster::new();
         for i in 0..4 {
-            roster.admit(RelayRecord {
-                id: RelayId::from_u64(i),
-                jurisdiction: JurisdictionId::new("US"),
-            });
+            roster.admit(test_relay_record(i, "US"));
         }
         let path: Vec<_> = (0..4).map(RelayId::from_u64).collect();
         let policy = JurisdictionPolicy::default();
@@ -172,10 +174,7 @@ mod tests {
         let mut roster = RelayRoster::new();
         let jurisdictions = ["US", "DE", "FR", "UK"];
         for (i, j) in jurisdictions.iter().enumerate() {
-            roster.admit(RelayRecord {
-                id: RelayId::from_u64(i as u64),
-                jurisdiction: JurisdictionId::new(*j),
-            });
+            roster.admit(test_relay_record(i as u64, *j));
         }
         let path: Vec<_> = (0..4).map(RelayId::from_u64).collect();
         let policy = JurisdictionPolicy::default();

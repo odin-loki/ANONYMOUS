@@ -130,9 +130,10 @@ impl TcpTestnet {
 
             let (inbound_tx, inbound_rx) = mpsc::channel(64);
             let (outbound_tx, outbound_rx) = mpsc::channel(64);
+            let (cover_tx, cover_rx) = mpsc::channel(64);
 
             let node = RelayNode::new(id, secrets.remove(0), RelayConfig::new(FAST_MU));
-            let (handle, relay_task) = node.spawn(inbound_rx, outbound_tx, OsRng);
+            let (handle, relay_task) = node.spawn(inbound_rx, outbound_tx, Some(cover_tx), OsRng);
 
             let net_tasks = spawn_link_bridge(
                 listen_addrs[i],
@@ -140,6 +141,7 @@ impl TcpTestnet {
                 ingress,
                 inbound_tx,
                 outbound_rx,
+                Some(cover_rx),
                 None,
                 OsRng,
                 LinkBridgeConfig::default(),
@@ -220,7 +222,7 @@ async fn capture_burst_trace_to_csv() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
 
     assert!(
-        testnet.relay_handle(0).forwarded_count() >= N_SENDS as u64,
+        testnet.relay_handle(0).debug_stats().forwarded_count >= N_SENDS as u64,
         "ingress relay should have forwarded all sends"
     );
 
@@ -301,9 +303,10 @@ async fn capture_malicious_burst_trace_to_csv() {
     tokio::time::sleep(Duration::from_millis(3000)).await;
 
     let ingress = testnet.relay_handle(0);
-    let forwarded = ingress.forwarded_count();
-    let integrity_err = ingress.integrity_error_count();
-    let dropped = ingress.dropped_count();
+    let ingress_debug = ingress.debug_stats();
+    let forwarded = ingress_debug.forwarded_count;
+    let integrity_err = ingress_debug.integrity_error_count;
+    let dropped = ingress_debug.dropped_count;
 
     let out_path = workspace_malicious_trace_path();
     if let Some(parent) = out_path.parent() {

@@ -19,25 +19,36 @@
 //!
 //! ## Cover flow shape
 //!
-//! Each synthetic cover flow is a bounded burst of [`aegis_crypto::cell::Command::Drop`]
-//! cells — the same command byte real dummy/cover cells use — sized to one bulk packet's
-//! wire footprint ([`SPHINX_FRAGMENT_COUNT`] cells by default). The relay generates and
-//! locally discards them (incrementing [`crate::RelayStats::dropped_count`]), rather than
-//! receiving them from a client.
+//! Each synthetic cover flow is a bounded burst of
+//! [`aegis_crypto::cell::Command::SphinxFragment`] cells — the same command byte and
+//! [`SPHINX_FRAGMENT_COUNT`] as a real bulk Sphinx packet on the wire — with a random
+//! [`PacketId`] and CSPRNG payload slots. [`crate::RelayNode`] forwards the burst on the
+//! optional cover outbound channel; the link bridge seals each cell with hop AEAD before
+//! writing TCP frames.
 //!
 //! ## Honest limitation
 //!
 //! Cover padding holds **observed flow count and per-flow cell volume** at this relay,
-//! but does not replicate a real bulk flow's Sphinx ciphertext, inter-cell timing,
-//! multi-hop forwarding, or AEAD link framing. A GPA with deep inspection or timing
-//! analysis may distinguish locally-generated `Drop` bursts from genuine forwarded
-//! bulk traffic. This pass does not claim byte-level or timing indistinguishability.
+//! and each cover cell is a fixed-width AEAD link frame indistinguishable in length from
+//! real traffic. After decryption, cover fragments carry random payload bytes (not a valid
+//! Sphinx onion); downstream peers that reassemble and peel will reject them as integrity
+//! failures. Cover does not replicate inter-cell timing, multi-hop forwarding semantics,
+//! or valid Sphinx ciphertext. A GPA with deep timing analysis may still distinguish cover
+//! bursts from genuine bulk traffic.
 
 use aegis_crypto::cell::{Cell, Command, CELL_LEN};
-use aegis_crypto::fragment::SPHINX_FRAGMENT_COUNT;
+use aegis_crypto::fragment::{
+    PacketId, FRAGMENT_HEADER_LEN, FRAGMENT_PAYLOAD_LEN, LAST_FRAGMENT_DATA_LEN,
+    SPHINX_FRAGMENT_COUNT,
+};
 use aegis_negotiator::cover::{dial_needs_cover_plan, CoverRequirement};
 use aegis_negotiator::SecurityDial;
 use rand_core::{CryptoRngCore, RngCore};
+
+const OFF_COMMAND: usize = 0;
+const OFF_FRAG_IDX: usize = 1;
+const OFF_PACKET_ID: usize = 2;
+const OFF_PAYLOAD: usize = FRAGMENT_HEADER_LEN;
 
 /// Cells emitted per synthetic cover flow (one bulk Sphinx packet on the wire).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +64,7 @@ impl Default for CoverFlowConfig {
     }
 }
 
-/// One synthetic cover flow: a burst of `Command::Drop` cells.
+/// One synthetic cover flow: a burst of wire-shaped fragment cells.
 #[derive(Clone)]
 pub struct CoverFlow {
     pub cells: Vec<Cell>,
@@ -115,8 +126,10 @@ impl CoverFlowGenerator {
     }
 
     fn generate_one_flow<R: RngCore + CryptoRngCore>(&self, rng: &mut R) -> CoverFlow {
+        let mut packet_id = [0u8; 8];
+        rng.fill_bytes(&mut packet_id);
         let cells = (0..self.config.cells_per_flow)
-            .map(|_| encode_drop_cell(rng))
+            .map(|i| encode_cover_fragment_cell(rng, packet_id, i as u8))
             .collect();
         CoverFlow { cells }
     }
@@ -202,7 +215,7 @@ impl BulkRoundTracker {
         let generator = CoverFlowGenerator::with_config(self.requirement, *config);
         let cover_flows = generator.generate(real, rng);
         let cover_flow_count = cover_flows.len() as u32;
-        let drop_cell_count = cover_flows
+        let cover_cell_count = cover_flows
             .iter()
             .map(|f| f.cells.len())
             .sum::<usize>() as u64;
@@ -210,7 +223,7 @@ impl BulkRoundTracker {
         Some(CoverEmitResult {
             cover_flows,
             cover_flow_count,
-            drop_cell_count,
+            cover_cell_count,
         })
     }
 }
@@ -226,23 +239,37 @@ impl Default for BulkRoundTracker {
 pub struct CoverEmitResult {
     pub cover_flows: Vec<CoverFlow>,
     pub cover_flow_count: u32,
-    pub drop_cell_count: u64,
+    pub cover_cell_count: u64,
 }
 
 impl std::fmt::Debug for CoverEmitResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CoverEmitResult")
             .field("cover_flow_count", &self.cover_flow_count)
-            .field("drop_cell_count", &self.drop_cell_count)
+            .field("cover_cell_count", &self.cover_cell_count)
             .field("cover_flows_len", &self.cover_flows.len())
             .finish()
     }
 }
 
-fn encode_drop_cell<R: RngCore + CryptoRngCore>(rng: &mut R) -> Cell {
+/// One [`Command::SphinxFragment`] cell with random payload (invalid Sphinx after reassembly).
+fn encode_cover_fragment_cell<R: RngCore + CryptoRngCore>(
+    rng: &mut R,
+    packet_id: PacketId,
+    index: u8,
+) -> Cell {
     let mut buf = [0u8; CELL_LEN];
-    buf[0] = Command::Drop as u8;
-    rng.fill_bytes(&mut buf[1..]);
+    buf[OFF_COMMAND] = Command::SphinxFragment as u8;
+    buf[OFF_FRAG_IDX] = index;
+    buf[OFF_PACKET_ID..OFF_PACKET_ID + 8].copy_from_slice(&packet_id);
+    // reserved [OFF_RESERVED..OFF_PAYLOAD] stays zero
+
+    let copy_len = if usize::from(index) == SPHINX_FRAGMENT_COUNT - 1 {
+        LAST_FRAGMENT_DATA_LEN
+    } else {
+        FRAGMENT_PAYLOAD_LEN
+    };
+    rng.fill_bytes(&mut buf[OFF_PAYLOAD..OFF_PAYLOAD + copy_len]);
     Cell::from_bytes(buf)
 }
 
@@ -268,7 +295,16 @@ mod tests {
             assert_eq!(flows.len(), gen.cover_flows_needed(real) as usize);
             for flow in &flows {
                 assert_eq!(flow.cells.len(), SPHINX_FRAGMENT_COUNT);
-                assert!(flow.cells.iter().all(|c| c.as_bytes()[0] == Command::Drop as u8));
+                assert!(
+                    flow.cells
+                        .iter()
+                        .all(|c| c.as_bytes()[0] == Command::SphinxFragment as u8)
+                );
+                let pid = &flow.cells[0].as_bytes()[OFF_PACKET_ID..OFF_PACKET_ID + 8];
+                for (i, cell) in flow.cells.iter().enumerate() {
+                    assert_eq!(cell.as_bytes()[OFF_FRAG_IDX], i as u8);
+                    assert_eq!(&cell.as_bytes()[OFF_PACKET_ID..OFF_PACKET_ID + 8], pid);
+                }
             }
         }
     }
@@ -294,15 +330,11 @@ mod tests {
 
         tracker.begin(SecurityDial::L0Raw, CoverRequirement::new(8));
         tracker.observe_real_flow();
-        assert!(tracker
-            .close_and_emit(&mut rng, &config)
-            .is_none());
+        assert!(tracker.close_and_emit(&mut rng, &config).is_none());
 
         tracker.begin(SecurityDial::L1Bucketed, CoverRequirement::new(8));
         tracker.observe_real_flow();
-        assert!(tracker
-            .close_and_emit(&mut rng, &config)
-            .is_none());
+        assert!(tracker.close_and_emit(&mut rng, &config).is_none());
 
         tracker.begin(SecurityDial::L2UniformBatched, CoverRequirement::new(8));
         for _ in 0..3 {
@@ -313,7 +345,7 @@ mod tests {
             .expect("L2 under target should pad");
         assert_eq!(result.cover_flow_count, 5);
         assert_eq!(
-            result.drop_cell_count,
+            result.cover_cell_count,
             5 * SPHINX_FRAGMENT_COUNT as u64
         );
     }

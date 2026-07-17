@@ -21,13 +21,16 @@
 //! - [`anomaly`] — a generic EWMA/z-score anomaly detector as a stand-in for the
 //!   spec's Izaac/GRIA reference (NOT a reproduction of that specific published
 //!   method — see module docs).
+//! - [`policy`] — wires anomaly verdicts into reputation demotion for path pruning.
 
 pub mod anomaly;
+pub mod policy;
 pub mod reputation;
 pub mod tee;
 pub mod zk;
 
 pub use anomaly::{AnomalyDetector, AnomalyVerdict};
+pub use policy::{RelayPruningPolicy, DEFAULT_PATH_REPUTATION_FLOOR};
 pub use reputation::{ReputationError, ReputationLedger, ReputationScore};
 pub use tee::{core_gates_hold_under, TeeAssumption};
 pub use zk::{

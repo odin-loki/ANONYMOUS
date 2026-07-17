@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # Nightly fuzz smoke (Linux libFuzzer + sanitizers).
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: crates
+
+jobs:
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Policy check
+        run: cargo deny check
+
+  fuzz-smoke:
+    name: cargo-fuzz smoke (fuzz_link_open)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            crates
+            crates/aegis-crypto/fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Fuzz fuzz_link_open (30s)
+        working-directory: crates/aegis-crypto/fuzz
+        run: cargo +nightly fuzz run fuzz_link_open -- -max_total_time=30
