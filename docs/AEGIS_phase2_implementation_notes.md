@@ -62,5 +62,6 @@ AAD `b"aegis-link-v1"`.
 
 ## Tests
 
-- Gate: `crates/aegis-crypto/tests/vectors.rs` (4 tests, unignored).
-- Additional unit tests: `kem.rs`, `sphinx.rs`, `link.rs` (tamper offsets, multi-hop forward, link AEAD).
+- Gate: `crates/aegis-crypto/tests/vectors.rs` (gate + edge-case property/KAT tests, unignored).
+- Additional unit tests: `kem.rs`, `sphinx.rs` (peel-pad invariants, multi-hop forward, tamper offsets), `link.rs` (tamper offsets, link AEAD).
+- **Status (2026-07-18):** edge cases added (max hops, empty payload, hop-count boundaries, peel-pad invariants, seeded build KAT). Formal Sphinx proof remains spec §13 open item **[O]** — not claimed here.

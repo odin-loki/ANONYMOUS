@@ -343,7 +343,8 @@ pub fn process_cell(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kem::RelayKemSecret;
+    use crate::kem::{encapsulate, RelayKemSecret, SharedSecret};
+    use crate::replay::ReplayCache;
     use rand_core::OsRng;
 
     fn sample_path(n: usize) -> (Vec<PathHop>, Vec<RelayKemSecret>) {
@@ -400,5 +401,36 @@ mod tests {
         process(&packet, &secrets[0], &mut replay).unwrap();
         let err = process(&packet, &secrets[0], &mut replay).unwrap_err();
         assert!(matches!(err, CryptoError::Replay));
+    }
+
+    #[test]
+    fn peel_pad_is_deterministic_and_full_length() {
+        let mut rng = OsRng;
+        let (relay_sec, relay_pub) = RelayKemSecret::generate(&mut rng);
+        let (hdr, shared) = encapsulate(&relay_pub, &mut rng).unwrap();
+        assert_eq!(relay_sec.decapsulate(&hdr).unwrap().0, shared.0);
+        let sec = SharedSecret(shared.0);
+        let pad1 = peel_pad(&sec, ROUTING_SLOT_LEN);
+        let pad2 = peel_pad(&sec, ROUTING_SLOT_LEN);
+        assert_eq!(pad1, pad2);
+        assert_eq!(pad1.len(), ROUTING_SLOT_LEN);
+        assert_ne!(pad1, vec![0u8; ROUTING_SLOT_LEN]);
+    }
+
+    #[test]
+    fn consecutive_peels_preserve_packet_length() {
+        let (path, secrets) = sample_path(5);
+        let mut rng = OsRng;
+        let packet = build(&path, b"layer", &mut rng).unwrap();
+        let mut current = packet;
+        for hop in 0..4 {
+            let mut replay = ReplayCache::new();
+            let next = match process(&current, &secrets[hop], &mut replay).unwrap() {
+                Processed::Forward { packet: next, .. } => next,
+                other => panic!("expected forward at hop {hop}, got {other:?}"),
+            };
+            assert_eq!(next.as_bytes().len(), SPHINX_PACKET_LEN);
+            current = next;
+        }
     }
 }

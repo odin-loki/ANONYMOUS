@@ -27,3 +27,6 @@ Legend: **Done** = in-tree code + tests/docs as scoped · **Partial** = useful m
 Call-site profiling remains closed. Remaining blockers are operator/platform
 **External** only (TEE SDK, PKCS#11/HSM, multi-org BFT, interactive AC/real ZK,
 isolated dudect ≥10⁵). See also `docs/ops/DEPLOYMENT.md`.
+
+**Research backlog (honest §13 + External map):** [`RESEARCH_AGENDA.md`](RESEARCH_AGENDA.md)
+— scaffolding done, integration + science [O] items **not** claimed closed.

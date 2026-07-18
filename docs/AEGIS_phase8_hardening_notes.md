@@ -36,6 +36,11 @@ and §13 open items, and is intentionally honest about what remains open.
     epoch and shows cumulative exposure growing with horizon length EVEN
     against a stable guard set — i.e. guard *membership* stability alone does
     not neutralize an adversary that can move its compromise budget over time.
+  - `adaptive_guard_exposure_curve(...)` — long-horizon exposure curve + JSON
+    export helper.
+  - `combined_active_intersection(...)` / `_curve(...)` — spec §13 open item
+    "combined active(n-1)+intersection over long horizons on Mode 1"; fuses
+    cumulative-volume and sender-suppression scores on a shared timeline.
 
 `sim/tests/test_hardening.py` — regression tests for all of the above.
 
@@ -250,7 +255,8 @@ non-compiling (`Cell` lacks `Debug`).
 --------------------------------------------------------------------------------
 - "Adaptive adversary varying the compromised-mix set across epochs." [O -> O,
   QUANTIFIED] Simulated and shown to matter (long-horizon adaptive exposure is
-  substantial, see test_adaptive_adversary_increases_exposure_over_horizon).
+  substantial and grows monotonically to ~1.0 at E=2000 for c=0.015,g=3; see
+  `test_adaptive_*` and `sim/data/adaptive_guard_exposure.analysis.json`).
   NOT mitigated. A real mitigation needs a rate-limiting/detection mechanism
   for relay recompromise, which is future work (candidate: combine with the
   Izaac/GRIA anomaly detection mentioned for Phase 7).
@@ -260,10 +266,14 @@ non-compiling (`Cell` lacks `Debug`).
   `sim/data/real_testnet_trace.csv` and `sim/data/real_multiprocess_trace.csv`;
   see §4. Synthetic stand-in CV was close but slightly lower (1.25 vs 1.39–1.48
   real); synthetic overstated shaping cost (min_multiple 2.6 vs 1.1–1.2).
-- "Combined active(n-1)+intersection over long horizons on Mode 1." [O, NOT
-  ADDRESSED this pass] — would need a combined attack simulation (compose
-  `active_confirm` and `intersection` against the same synthetic population
-  over a shared epoch timeline); left for a future session.
+- "Combined active(n-1)+intersection over long horizons on Mode 1." [O -> O,
+  QUANTIFIED] `combined_active_intersection` / `_curve` in
+  `sim/aegis_sim/adversaries.py` fuses cumulative-volume (intersection under
+  constant-rate sender) with sender-suppression correlation on a shared timeline.
+  Hard-cap holds at baseline through E=800+; constant-only and pad-up degrade.
+  Artifacts: `sim/data/combined_active_intersection.analysis.json`; parameters
+  and limits in `docs/ops/research_open_items.md`. Does NOT close the item
+  (synthetic model; no crypto proof).
 - "Sphinx crypto correctness -- proof/test vectors, not simulation." [O ->
   partially addressed] — see `docs/AEGIS_phase2_implementation_notes.md` for
   the Phase 2 implementation's concrete packet layout and its test-vector

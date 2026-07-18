@@ -16,6 +16,7 @@ Modules:
 The regression suite in ../tests/test_evidence_ledger.py pins the evidence-ledger
 results so that any future change that weakens a defense fails a test.
 ../tests/test_hardening.py characterizes (does not close) the Phase 8 open items
-from spec §13: real-trace shapeability, and an adaptive adversary.
+from spec §13: real-trace shapeability, adaptive compromised-mix set, and
+combined active+intersection long-horizon attacks.
 """
 __all__ = ["traffic", "shaper", "adversaries", "metrics"]

@@ -1,0 +1,29 @@
+{
+  "tag": "spec_13_O_adaptive_compromised_mix_set",
+  "characterizes_not_closes": true,
+  "c": 0.015,
+  "g": 3,
+  "trials": 20000,
+  "static_plateau_closed_form": 0.044328375000000086,
+  "static_sim": 0.04505,
+  "epoch_grid": [
+    5,
+    20,
+    50,
+    100,
+    200,
+    500,
+    800,
+    2000
+  ],
+  "adaptive_by_epochs": {
+    "5": 0.20815,
+    "20": 0.5855,
+    "50": 0.89655,
+    "100": 0.9906,
+    "200": 0.9998,
+    "500": 1.0,
+    "800": 1.0,
+    "2000": 1.0
+  }
+}

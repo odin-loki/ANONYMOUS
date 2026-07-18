@@ -208,6 +208,153 @@ def adaptive_guard_exposure(c, g, epochs=50, mode="static", trials=2000, rng=Non
     return hits / trials
 
 
+def adaptive_guard_exposure_curve(c, g, epoch_grid=(5, 20, 50, 100, 200, 500, 800, 2000),
+                                  trials=20000, rng=None):
+    """Exposure vs horizon for static (plateau) vs adaptive (redrawn each epoch).
+
+    Returns a dict suitable for JSON commit under sim/data/. Tag [O]: characterizes
+    the open item; does not close it (real recompromise rate unknown).
+    """
+    rng = rng or np.random.default_rng(divmod(hash((c, g)), 2**32)[1])
+    static_plateau = 1 - (1 - c) ** g
+    static_sim = adaptive_guard_exposure(c, g, mode="static", trials=trials, rng=rng)
+    adaptive = {}
+    for e in epoch_grid:
+        adaptive[str(e)] = adaptive_guard_exposure(
+            c, g, epochs=e, mode="adaptive", trials=trials, rng=rng
+        )
+    return {
+        "tag": "spec_13_O_adaptive_compromised_mix_set",
+        "characterizes_not_closes": True,
+        "c": c,
+        "g": g,
+        "trials": trials,
+        "static_plateau_closed_form": static_plateau,
+        "static_sim": static_sim,
+        "epoch_grid": list(epoch_grid),
+        "adaptive_by_epochs": adaptive,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 (hardening) -- open item: "Combined active(n-1)+intersection over
+# long horizons on Mode 1" (spec §13). Composes the long-term cumulative-volume
+# statistic (intersection under constant-rate sender -- no per-epoch S signal)
+# with the active sender-suppression confirmation statistic on a SHARED synthetic
+# epoch timeline. Mode-1 schemes:
+#   constant_only — no receiver hard-cap (weak baseline; both components leak)
+#   pad_up        — observable=max(real,Q); fails both attacks individually
+#   hard_cap      — observable=Q always; Mode-1 core defense
+# Adversary fuses z-scored intersection + active ranks. Tag [O]: quantifies
+# limits; hard_cap remains at baseline; does not prove crypto correctness.
+# ---------------------------------------------------------------------------
+def _combined_obs_and_drop(scheme, real, Q):
+    """Observable counts and per-epoch drop signal for combined attack."""
+    if scheme == "constant_only":
+        obs = real.copy()
+        drop = real.mean(axis=0, keepdims=True) - real
+    elif scheme == "pad_up":
+        obs = np.maximum(real, Q)
+        drop = Q - obs
+    elif scheme == "hard_cap":
+        obs = np.full_like(real, float(Q))
+        drop = np.zeros_like(real)
+    else:
+        raise ValueError(f"unknown scheme {scheme!r}")
+    return obs, drop
+
+
+def _zscore(x):
+    s = float(x.std())
+    return (x - x.mean()) / (s + 1e-12)
+
+
+def combined_active_intersection(scheme, M=30, s_rate=3.0, bg=8.0, Q=25,
+                                 probe_frac=0.5, E=800, trials=200, rng=None):
+    """P(true receiver #1) under fused active+intersection attack. Baseline=1/M."""
+    rng = rng or np.random.default_rng(0)
+    hits = 0
+    for _ in range(trials):
+        R = rng.integers(M)
+        probe = rng.random(E) < probe_frac
+        s = rng.poisson(s_rate, E).astype(float)
+        s[probe] = 0
+        real = rng.poisson(bg, size=(E, M)).astype(float)
+        real[:, R] += s
+        obs, drop = _combined_obs_and_drop(scheme, real, Q)
+        cum_inter = obs.sum(axis=0)
+        p = probe.astype(float) - probe.mean()
+        active = np.abs((drop * p[:, None]).sum(axis=0))
+        combined = _zscore(cum_inter) + _zscore(active)
+        hits += (np.argmax(combined) == R)
+    return hits / trials
+
+
+def combined_active_intersection_curve(scheme, M=30, s_rate=3.0, bg=8.0, Q=25,
+                                       probe_frac=0.5,
+                                       epoch_grid=(50, 100, 200, 400, 800, 1600),
+                                       trials=200, rng=None):
+    """Long-horizon curve: P(confirm) vs epoch count for a fixed scheme."""
+    rng = rng or np.random.default_rng(0)
+    Emax = max(epoch_grid)
+    hits = {E: 0 for E in epoch_grid}
+    for _ in range(trials):
+        R = rng.integers(M)
+        probe = rng.random(Emax) < probe_frac
+        s = rng.poisson(s_rate, Emax).astype(float)
+        s[probe] = 0
+        real = rng.poisson(bg, size=(Emax, M)).astype(float)
+        real[:, R] += s
+        obs, drop = _combined_obs_and_drop(scheme, real, Q)
+        p_full = probe.astype(float) - probe.mean()
+        gi = 0
+        for e in range(Emax):
+            if e + 1 != epoch_grid[gi]:
+                continue
+            sl = slice(0, e + 1)
+            cum_inter = obs[sl].sum(axis=0)
+            p = p_full[sl] - p_full[sl].mean()
+            active = np.abs((drop[sl] * p[:, None]).sum(axis=0))
+            combined = _zscore(cum_inter) + _zscore(active)
+            if np.argmax(combined) == R:
+                hits[epoch_grid[gi]] += 1
+            gi += 1
+            if gi >= len(epoch_grid):
+                break
+    return {E: hits[E] / trials for E in epoch_grid}
+
+
+def combined_attack_report(M=30, s_rate=3.0, bg=8.0, Q=25, probe_frac=0.5,
+                           epoch_grid=(50, 100, 200, 400, 800, 1600),
+                           trials=200, rng=None):
+    """Analysis dict for JSON commit: combined attack curves per Mode-1 scheme."""
+    rng = rng or np.random.default_rng(0)
+    baseline = 1 / M
+    schemes = ("constant_only", "pad_up", "hard_cap")
+    curves = {}
+    for sch in schemes:
+        curves[sch] = {
+            str(E): round(p, 4)
+            for E, p in combined_active_intersection_curve(
+                sch, M=M, s_rate=s_rate, bg=bg, Q=Q, probe_frac=probe_frac,
+                epoch_grid=epoch_grid, trials=trials, rng=rng,
+            ).items()
+        }
+    return {
+        "tag": "spec_13_O_combined_active_intersection_mode1",
+        "characterizes_not_closes": True,
+        "M": M,
+        "baseline": baseline,
+        "s_rate": s_rate,
+        "bg": bg,
+        "Q": Q,
+        "probe_frac": probe_frac,
+        "trials": trials,
+        "epoch_grid": list(epoch_grid),
+        "curves": curves,
+    }
+
+
 def bulk_confirm(regime, M=30, s_rate=0.6, bg=2.0, R=400, probe=0.5, trials=200,
                  rng=None):
     """Bulk-plane confirmation via suppression.

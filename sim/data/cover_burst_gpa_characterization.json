@@ -1,0 +1,41 @@
+{
+  "disclaimer": "Partial characterization of inter-cell gaps \u2014 not info-theoretic indistinguishability or a formal Sphinx proof.",
+  "tau_secs": 0.35,
+  "n_sends": 4,
+  "paced_bulk_only": {
+    "mode": "paced_bulk_only",
+    "tau_secs": 0.35,
+    "n_sends": 4,
+    "n_cells": 72,
+    "n_gaps": 71,
+    "gap_mean_secs": 0.37112676056338023,
+    "gap_std_secs": 0.10058349899356132,
+    "gap_cv": 0.2710219517466267,
+    "gap_p95_secs": 0.3500000000000014,
+    "gap_max_secs": 0.8500000000000014,
+    "fraction_near_tau": 0.9577464788732394,
+    "cover_secs": 0.0,
+    "relay_cover_bursts_per_send": 0,
+    "disclaimer": "Partial characterization of inter-cell gaps \u2014 not info-theoretic indistinguishability or a formal Sphinx proof."
+  },
+  "paced_plus_tau_cover": {
+    "mode": "paced_plus_tau_cover",
+    "tau_secs": 0.35,
+    "n_sends": 4,
+    "n_cells": 164,
+    "n_gaps": 163,
+    "gap_mean_secs": 0.35920245398772993,
+    "gap_std_secs": 0.06720522177977493,
+    "gap_cv": 0.18709566439065453,
+    "gap_p95_secs": 0.3500000000000014,
+    "gap_max_secs": 0.8500000000000014,
+    "fraction_near_tau": 0.9815950920245399,
+    "cover_secs": 2.0,
+    "relay_cover_bursts_per_send": 1,
+    "disclaimer": "Partial characterization of inter-cell gaps \u2014 not info-theoretic indistinguishability or a formal Sphinx proof."
+  },
+  "delta": {
+    "extra_cells": 92,
+    "gap_cv_ratio_cover_over_bulk": 0.6903339865457346
+  }
+}
