@@ -75,10 +75,17 @@ cd sim && PYTHONPATH=. pytest -q tests/test_sphinx_oracle.py
 cargo test -p aegis-crypto --test vectors
 cargo test -p aegis-crypto python_oracle_shared_primitive_kats
 
-# Fuzz overnight (WSL/Linux; see crates/aegis-crypto/fuzz/README.md)
+# Fuzz evidence pack (WSL/Linux; prefer this over bare cargo-fuzz)
+# Evidence pointer: sim/sphinx_fuzz_evidence.txt (wave A6 deepen)
 python scripts/seed_sphinx_fuzz_corpus.py
-cd crates/aegis-crypto/fuzz && cargo +nightly fuzz run fuzz_sphinx_process -- -max_total_time=28800
+SPHINX_FUZZ_MODE=short bash scripts/run_sphinx_fuzz_evidence.sh          # ~12 min
+# SPHINX_FUZZ_MODE=overnight bash scripts/run_sphinx_fuzz_evidence.sh    # 8h
+# Windows host → WSL:
+#   powershell -File scripts/run_sphinx_fuzz_evidence.ps1 -Mode short
 ```
+
+**S1 fuzz evidence:** [`sim/sphinx_fuzz_evidence.txt`](../../sim/sphinx_fuzz_evidence.txt) · harness notes in `crates/aegis-crypto/fuzz/README.md`.  
+**Not claimed:** Mechanized Sphinx proof (crash/panic search only).
 
 ---
 

@@ -1,8 +1,9 @@
 #![no_main]
 
-//! Sphinx `process` crash harness (wave S1 deepen).
+//! Sphinx `process` crash harness (wave S1 / A6 deepen).
 //! Pads/truncates to `SPHINX_PACKET_LEN`; fixed deterministic relay key.
-//! Overnight recipe: `fuzz/README.md`. Not a formal proof.
+//! Evidence: `scripts/run_sphinx_fuzz_evidence.sh` · overnight: `fuzz/README.md`.
+//! Not a formal proof — panic/UB/crash search only.
 
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_crypto::replay::ReplayCache;
@@ -22,5 +23,9 @@ fuzz_target!(|data: &[u8]| {
         RelayKemSecret::generate_deterministic([0x01; 32], [0x02; 32], [0x03; 32]);
     // Bounded cache keeps overnight RSS stable under duplicate-tag floods.
     let mut replay = ReplayCache::with_capacity(256);
+    let _ = process(&packet, &relay_sec, &mut replay);
+
+    // Second call with the same bytes stresses replay-cache insert / reject paths
+    // without growing RSS (capacity capped).
     let _ = process(&packet, &relay_sec, &mut replay);
 });

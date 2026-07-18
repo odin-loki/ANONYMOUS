@@ -27,19 +27,32 @@ cargo install cargo-fuzz
 ```bash
 # from repo root
 python scripts/seed_sphinx_fuzz_corpus.py
+# python scripts/seed_sphinx_fuzz_corpus.py --list
 ```
 
-Writes a few fixed-size and truncated seeds under
-`crates/aegis-crypto/fuzz/corpus/fuzz_sphinx_process/`.
+Writes fixed-size, truncated, layout-boundary, and region-pattern seeds under
+`crates/aegis-crypto/fuzz/corpus/fuzz_sphinx_process/` (alpha/beta/gamma/delta).
 
-## Overnight Sphinx process fuzz (WSL / Linux)
+## Evidence pack (preferred)
+
+Agent-friendly timed run (~12 min) + honest summary under `sim/sphinx_fuzz_evidence.txt`:
 
 ```bash
-cd crates/aegis-crypto/fuzz
-# optional: seed first from Windows host or inside WSL
-python3 ../../../scripts/seed_sphinx_fuzz_corpus.py
+# WSL / Linux
+SPHINX_FUZZ_MODE=short bash scripts/run_sphinx_fuzz_evidence.sh
 
-# ~8h overnight; adjust -max_total_time=
+# Windows host → WSL
+powershell -File scripts/run_sphinx_fuzz_evidence.ps1 -Mode short
+```
+
+## Overnight Sphinx process fuzz (WSL / Linux) — 8h
+
+```bash
+SPHINX_FUZZ_MODE=overnight bash scripts/run_sphinx_fuzz_evidence.sh
+
+# or manually:
+cd crates/aegis-crypto/fuzz
+python3 ../../../scripts/seed_sphinx_fuzz_corpus.py
 cargo +nightly fuzz run fuzz_sphinx_process -- \
   -max_total_time=28800 \
   -rss_limit_mb=4096 \
@@ -47,7 +60,7 @@ cargo +nightly fuzz run fuzz_sphinx_process -- \
   -artifact_prefix=artifacts/fuzz_sphinx_process/
 ```
 
-Shorter smoke (5 minutes):
+Shorter manual smoke (5 minutes):
 
 ```bash
 cargo +nightly fuzz run fuzz_sphinx_process -- -max_total_time=300

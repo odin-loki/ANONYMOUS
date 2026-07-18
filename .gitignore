@@ -13,3 +13,5 @@ sim/data/pilot_configs/data/
 tools/dudect-upstream/
 tools/dudect/harness_*
 !tools/dudect/harness_*.c
+# Sphinx fuzz raw libFuzzer dump (summary is sim/sphinx_fuzz_evidence.txt)
+sim/sphinx_fuzz_raw.log
