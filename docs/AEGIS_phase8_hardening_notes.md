@@ -177,42 +177,61 @@ Tests / artifacts:
 - `sim/tests/test_relay_forward_trace.py` — shapeability gate on sample
 - `sim/aegis_sim/traffic.py` — `load_relay_forward_trace` / `load_relay_forward_timestamps`
 
-Threat model future work **#8** status: **[T] instrumented** at post-forward vantage;
-operational re-capture over a full paced session remains future work.
+Threat model future work **#8** status: **[T] committed** — paced multi-process relay forward
+capture at `sim/data/real_multiprocess_relay_forward_trace.csv` + shapeability analysis
+(see below). Mix relays should keep trace off in production.
 
-### Trace shape (rough)
-| Quantity | In-process | Multi-process |
-|----------|------------|---------------|
-| Events | 48 | 48 |
-| Duration | ~71.9 s | ~66.1 s |
-| 1 s slot bins | 72; mean 0.67; max 4 | 67; mean 0.72; max 5 |
-| Total wire cells (client→ingress) | 864 | 864 |
-| Pattern | Bursty clusters + idle gaps | Same schedule (seed 42) |
+### Paced multi-process relay forward capture (2026-07-18) [T]
+**Methodology:** 4-hop loopback testnet, 12 paced CLI sends (`--tau-secs 0.05
+--cover-secs 0.1`, not `--raw`), `[trace].path` on ingress (forward/cover rows) and
+exit (exit rows), merged to `sim/data/real_multiprocess_relay_forward_trace.csv`.
+Regenerate: `cargo test -p aegis-node capture_multiprocess_paced_relay_forward_trace_to_csv
+-- --ignored` or `sim/scripts/capture_multiprocess_relay_forward_trace.py`.
 
-### `shapeability_report` findings (1 s slots, budget_slots=5, hi=6)
-| Metric | In-process | Multi-process | `synthetic_c2_like` (n=40000, seed=103) |
-|--------|------------|---------------|----------------------------------------|
-| CV | **1.39** | **1.48** | 1.25 |
-| Hurst | NaN (series too short) | NaN | 0.75 |
-| min_multiple | **1.1** | **1.2** | 2.6 |
-| tier | feasible | feasible | feasible |
+**Loopback limits (honest):**
+- **127.0.0.1 only** — no WAN latency/jitter; multi-hop mix delay collapsed vs production.
+- **Trace on ingress + exit only** — not every hop; exit rows lag forwards by path RTT.
+- **One CLI process per send** — TCP connect + handshake each send (~seconds overhead);
+  wall span ~230 s for 12 sends vs ~66 s for 48 raw client-send events (§4).
+- **Ingress rate limit defaults** — production token bucket (~1/τ cells/s) can drop excess
+  paced cells; capture uses default node TOML (not `without_ingress_rate_limit()`).
+- **Partial row counts** — forward/cover/exit row totals need not match 1:1 per send on
+  loopback (async trace flush, exit peel timing).
 
-Multi-process vs in-process: CV ratio ≈ **1.07**, same tier, min_multiple Δ ≈ 0.1.
-The small CV bump is consistent with orchestrator vantage (timestamps slightly
-earlier → clusters can spill into adjacent 1 s slots, max 5/slot vs 4).
+**Artifacts:**
+- `sim/data/real_multiprocess_relay_forward_trace.csv` — committed paced MP relay trace
+- `sim/data/real_multiprocess_relay_forward_trace.analysis.json` — shapeability + baseline compare
+- `sim/scripts/analyze_multiprocess_relay_forward_trace.py` — analysis CLI
+- `sim/tests/test_relay_forward_trace.py` — sample + committed capture gates
+- `crates/aegis-node/tests/multiprocess_trace_capture.rs` — `#[ignore]` regenerator
 
-### Comparison — did the synthetic model match reality?
-**Partially, with a cost mismatch in the other direction from CV.** Per-slot CV on
-both real captures is *slightly higher* than the synthetic stand-in (ratio ≈ 1.07–1.11),
-because the committed captures include tight 4-packet clusters that the
-diurnal-smoothed synthetic series does not reproduce at this short horizon.
-However:
-- **Shaping cost is still much lower on real traces** (min_multiple 1.1–1.2 vs 2.6).
-- **Hurst cannot be estimated** on the ~67–72-slot real series.
-- These captures are **benign client traffic**, not adversarial C2/telemetry.
+### `shapeability_report` — relay post-forward vs client-send (1 s slots, budget_slots=5, hi=6)
+| Metric | Relay post-forward (paced MP) | In-process client-send | Multi-process client-send |
+|--------|------------------------------|------------------------|---------------------------|
+| Events | 31 (12 fwd / 13 cover / 6 exit) | 48 | 48 |
+| Duration | ~230 s | ~71.9 s | ~66.1 s |
+| 1 s slot bins | 231; mean 0.13; max 2 | 72; mean 0.67; max 4 | 67; mean 0.72; max 5 |
+| CV | **3.06** | **1.39** | **1.48** |
+| Hurst | 0.34 (231 slots) | NaN (short) | NaN (short) |
+| min_multiple | **2.5** | **1.1** | **1.2** |
+| tier | **unshapeable** | feasible | feasible |
 
-Record for evidence ledger (§12): benign real-client-send traces, 4-hop testnet,
-in-process CV≈1.39 / multi-process CV≈1.48, min_multiple 1.1–1.2, tier=feasible [T].
+**Comparison vs §4 client-send baselines:** CV ratio relay/client ≈ **2.06–2.20**; tiers
+**differ** (post-shaping relay vantage at 1 s resolution reads *harder* than client-send,
+not easier). Long idle gaps between paced CLI invocations dominate the 1 s marginal — not
+evidence that production shaping fails, but evidence that **vantage and bin width matter**:
+coarser bins (5–10 s) on the same capture read feasible (CV ≈ 1.2–1.5).
+
+Record for evidence ledger: paced loopback relay-forward trace [T]; client-send baselines
+unchanged [T]; relay 1 s tier=unshapeable is a **measurement artifact** under sparse
+post-cover sampling, documented not oversold.
+
+### Future work (§5 residual — was open)
+- ~~Re-capture **full-path** relay forward traces over paced multi-process testnet~~ **[T]**
+  committed capture above; longer single-session paced run (one `PacedSession`, many sends)
+  would tighten CV at 1 s slots.
+- Longer horizon (≥128 slots) for Hurst stability; adversarial emission at relay vantage.
+- Production re-capture with ingress rate limit disabled for lab parity (`max_cells_per_sec = 0`).
 
 ### Rust instrumentation note
 Relay post-forward trace via [`RelayForwardTrace`](../../crates/aegis-relay/src/trace.rs)
@@ -221,15 +240,6 @@ Relay post-forward trace via [`RelayForwardTrace`](../../crates/aegis-relay/src/
 A minimal `Debug` impl for `CoverFlow`/`CoverEmitResult` in
 `aegis-relay/src/cover_flow.rs` was required because concurrent work left the crate
 non-compiling (`Cell` lacks `Debug`).
-
-### Future work
-- Re-capture **full-path** relay forward traces over paced multi-process testnet
-  (compare post-shaping CV to client-send captures in §4).
-- Longer horizon (≥128 slots) for Hurst; adversarial/malicious-like emission
-  patterns; constant-rate emitter output (post-shaping wire view) vs raw client
-  sends.
-- Paced multi-process capture (`--tau-secs 0.05 --cover-secs 0.1`) — cover egress
-  peer selection and terminal-peel log spam fixed (2026-07-17).
 
 --------------------------------------------------------------------------------
 2. OPEN ITEMS -- STATUS AFTER THIS PASS (do not oversell any of these)

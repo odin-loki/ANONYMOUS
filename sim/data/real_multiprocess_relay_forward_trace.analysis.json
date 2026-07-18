@@ -1,0 +1,84 @@
+{
+  "relay_forward": {
+    "trace_file": "sim/data/real_multiprocess_relay_forward_trace.csv",
+    "meta": {
+      "path": "sim/data/real_multiprocess_relay_forward_trace.csv",
+      "vantage": "relay_post_forward",
+      "capture": "multiprocess_paced path_len=4 n_sends=12 tau_secs=0.05 cover_secs=0.1 ports=[64419, 64420, 64421, 64422]"
+    },
+    "n_events": 31,
+    "duration_seconds": 230.4083070755005,
+    "slot_seconds": 1.0,
+    "n_slots": 231,
+    "events_per_slot_mean": 0.1341991341991342,
+    "events_per_slot_max": 2.0,
+    "event_type_counts": {
+      "forward": 12,
+      "exit": 6,
+      "cover": 13
+    },
+    "total_cells_on_wire": 558,
+    "shapeability": {
+      "cv": 3.0555045770648745,
+      "hurst": 0.33959112706675343,
+      "min_multiple": 2.5,
+      "tier": "unshapeable"
+    }
+  },
+  "client_send_baselines": {
+    "in_process": {
+      "trace_file": "sim/data/real_testnet_trace.csv",
+      "meta": {
+        "path": "sim/data/real_testnet_trace.csv",
+        "vantage": "client_send_wall_clock",
+        "capture": "in_process_tcp_testnet path_len=4 n_sends=48"
+      },
+      "n_events": 48,
+      "duration_seconds": 71.88525104522705,
+      "n_slots": 72,
+      "events_per_slot_mean": 0.6666666666666666,
+      "events_per_slot_max": 4.0,
+      "shapeability": {
+        "cv": 1.3919410907054177,
+        "hurst": null,
+        "min_multiple": 1.1,
+        "tier": "feasible"
+      }
+    },
+    "multiprocess": {
+      "trace_file": "sim/data/real_multiprocess_trace.csv",
+      "meta": {
+        "path": "sim/data/real_multiprocess_trace.csv",
+        "vantage": "orchestrator_wall_clock_at_client_invoke",
+        "capture": "multiprocess_tcp_testnet path_len=4 n_sends=48 ports=[54047, 54048, 54049, 54050] relay_ids=['0100000000000000000000000000000000000000000000000000000000000000', '0200000000000000000000000000000000000000000000000000000000000000', '0300000000000000000000000000000000000000000000000000000000000000', '0400000000000000000000000000000000000000000000000000000000000000']"
+      },
+      "n_events": 48,
+      "duration_seconds": 66.08585691452026,
+      "n_slots": 67,
+      "events_per_slot_mean": 0.7164179104477612,
+      "events_per_slot_max": 5.0,
+      "shapeability": {
+        "cv": 1.4828299707707837,
+        "hurst": null,
+        "min_multiple": 1.2,
+        "tier": "feasible"
+      }
+    }
+  },
+  "comparison": {
+    "vs_in_process_client_send": {
+      "cv_ratio_relay_over_client": 2.195139289635012,
+      "same_tier": false,
+      "min_multiple_delta": 1.4
+    },
+    "vs_multiprocess_client_send": {
+      "cv_ratio_relay_over_client": 2.0605899781460484,
+      "same_tier": false,
+      "min_multiple_delta": 1.3
+    }
+  },
+  "loopback_limits": {
+    "note": "127.0.0.1 loopback testnet; paced CLI (tau/cover) not raw send; trace on ingress+exit only (not every hop); short horizon (~12 sends).",
+    "hurst_unreliable_below_128_slots": false
+  }
+}
