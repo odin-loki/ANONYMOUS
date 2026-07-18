@@ -1,0 +1,318 @@
+{
+  "tag": "leftovers_B3_joint_guard_gossip",
+  "characterizes_not_closes": true,
+  "status": "[O] QUANTIFIED",
+  "claim_closed": false,
+  "section_13_closed": false,
+  "wan_closed": false,
+  "multi_org_bft": "External",
+  "wave": "B3",
+  "c": 0.015,
+  "g": 3,
+  "n_neighbors": 8,
+  "f": 0.125,
+  "majority_k": 2,
+  "coupling": "boosted",
+  "trials": 200,
+  "epoch_grid": [
+    20,
+    50,
+    100,
+    200
+  ],
+  "joint_curves": {
+    "20": {
+      "p_adaptive_exposed": 0.595,
+      "p_gossip_success": 0.595,
+      "p_gossip_fp": 0.0,
+      "p_eclipse_any": 0.595,
+      "p_union_success": 0.595,
+      "p_joint_success": 0.595,
+      "mean_median_bias": 0.1161
+    },
+    "50": {
+      "p_adaptive_exposed": 0.93,
+      "p_gossip_success": 0.93,
+      "p_gossip_fp": 0.0,
+      "p_eclipse_any": 0.93,
+      "p_union_success": 0.93,
+      "p_joint_success": 0.93,
+      "mean_median_bias": 0.1158
+    },
+    "100": {
+      "p_adaptive_exposed": 1.0,
+      "p_gossip_success": 1.0,
+      "p_gossip_fp": 0.0,
+      "p_eclipse_any": 1.0,
+      "p_union_success": 1.0,
+      "p_joint_success": 1.0,
+      "mean_median_bias": 0.1158
+    },
+    "200": {
+      "p_adaptive_exposed": 1.0,
+      "p_gossip_success": 1.0,
+      "p_gossip_fp": 0.0,
+      "p_eclipse_any": 1.0,
+      "p_union_success": 1.0,
+      "p_joint_success": 1.0,
+      "mean_median_bias": 0.1158
+    }
+  },
+  "independent_coupling_curves": {
+    "20": {
+      "p_adaptive_exposed": 0.75,
+      "p_gossip_success": 0.0,
+      "p_gossip_fp": 0.0,
+      "p_eclipse_any": 0.0,
+      "p_union_success": 0.75,
+      "p_joint_success": 0.0,
+      "mean_median_bias": 0.1106
+    },
+    "50": {
+      "p_adaptive_exposed": 0.96,
+      "p_gossip_success": 0.0,
+      "p_gossip_fp": 0.0,
+      "p_eclipse_any": 0.0,
+      "p_union_success": 0.96,
+      "p_joint_success": 0.0,
+      "mean_median_bias": 0.1107
+    },
+    "100": {
+      "p_adaptive_exposed": 1.0,
+      "p_gossip_success": 0.0,
+      "p_gossip_fp": 0.0,
+      "p_eclipse_any": 0.0,
+      "p_union_success": 1.0,
+      "p_joint_success": 0.0,
+      "mean_median_bias": 0.1108
+    },
+    "200": {
+      "p_adaptive_exposed": 1.0,
+      "p_gossip_success": 0.0,
+      "p_gossip_fp": 0.0,
+      "p_eclipse_any": 0.0,
+      "p_union_success": 1.0,
+      "p_joint_success": 0.0,
+      "mean_median_bias": 0.1108
+    }
+  },
+  "coupling_model": "Per epoch: redraw g-guard compromise with prob c. Concurrent coordinated gossip eclipse on N=8 peers at baseline f=0.125, majority_k=2. Boosted coupling: dirty epochs raise effective f by seating compromised guards as eclipse reporters. Default f=0.125 (1 adv of 8) is below K=2 so solo eclipse needs the boost. Gossip success = eclipse_any OR false_probation.",
+  "honest_limits": [
+    "Synthetic independent per-epoch recompromise; field rate unknown.",
+    "Gossip twin of Rust merge math only; multi-org BFT still External.",
+    "Boosted coupling is a characterization aid, not measured field collusion.",
+    "Does not claim adaptive_v4 or stacked gossip product defenses closed \u00a713.",
+    "No Docker / WAN adversary; CI artifacts are sim-only."
+  ],
+  "field_residual": "Field recompromise rate and real peer-table eclipse incidence are unmeasured \u2014 sim c and f are free parameters. Operators should treat joint union curves as upper-bound characterization, not operational C2.",
+  "baselines_live": {
+    "adaptive_only": {
+      "20": 0.585,
+      "50": 0.8975,
+      "100": 0.985,
+      "200": 1.0
+    },
+    "gossip_only": {
+      "20": {
+        "false_probation_rate": 0.0,
+        "mean_eclipse_epoch_fraction": 0.0,
+        "mean_median_bias": 0.1106
+      },
+      "50": {
+        "false_probation_rate": 0.0,
+        "mean_eclipse_epoch_fraction": 0.0,
+        "mean_median_bias": 0.1107
+      },
+      "100": {
+        "false_probation_rate": 0.0,
+        "mean_eclipse_epoch_fraction": 0.0,
+        "mean_median_bias": 0.1107
+      },
+      "200": {
+        "false_probation_rate": 0.0,
+        "mean_eclipse_epoch_fraction": 0.0,
+        "mean_median_bias": 0.1107
+      }
+    },
+    "note": "Live recompute via public APIs (adaptive_guard_exposure, gossip_eclipse.profile_cell). Prefer committed artifacts for pinned numbers when present."
+  },
+  "baselines_committed": {
+    "adaptive_artifact": {
+      "path": "adaptive_guard_exposure.analysis.json",
+      "c": 0.015,
+      "g": 3,
+      "adaptive_by_epochs": {
+        "5": 0.20793333333333333,
+        "20": 0.5970666666666666,
+        "50": 0.8945333333333333,
+        "100": 0.9892666666666666,
+        "200": 0.9999333333333333,
+        "500": 1.0,
+        "800": 1.0,
+        "2000": 1.0
+      },
+      "mitigated_v4_by_epochs": null,
+      "characterizes_not_closes": true
+    },
+    "gossip_artifact": {
+      "path": "gossip_eclipse.analysis.json",
+      "status": "[O] QUANTIFIED",
+      "claim_closed": false,
+      "multi_org_bft": "External",
+      "highlights": {
+        "n8_f0125_k2": {
+          "n_neighbors": 8,
+          "f": 0.125,
+          "majority_k": 2,
+          "false_probation_rate": 0.0,
+          "mean_eclipse_epoch_fraction": 0.0,
+          "mean_median_bias": 0.11061337109206056
+        },
+        "n8_f025_k2": {
+          "n_neighbors": 8,
+          "f": 0.25,
+          "majority_k": 2,
+          "false_probation_rate": 0.0,
+          "mean_eclipse_epoch_fraction": 1.0,
+          "mean_median_bias": 0.22320616833050738
+        }
+      },
+      "highlight_n8_f025_k2": {
+        "n_neighbors": 8,
+        "f": 0.25,
+        "majority_k": 2,
+        "false_probation_rate": 0.0,
+        "mean_eclipse_epoch_fraction": 1.0,
+        "mean_median_bias": 0.22320616833050738
+      },
+      "characterizes_not_closes": true
+    },
+    "notes": []
+  },
+  "comparison_at_long_horizon": {
+    "E": 200,
+    "joint_p_union_success": 1.0,
+    "joint_p_joint_success": 1.0,
+    "joint_p_adaptive_exposed": 1.0,
+    "joint_p_gossip_success": 1.0,
+    "joint_p_gossip_fp": 0.0,
+    "joint_p_eclipse_any": 1.0,
+    "independent_p_union": 1.0,
+    "independent_p_gossip_success": 0.0,
+    "adaptive_only_live": 1.0,
+    "adaptive_only_committed": 0.9999333333333333,
+    "gossip_only_eclipse_frac_live": 0.0,
+    "gossip_only_fp_live": 0.0,
+    "gossip_committed_highlight_fp": 0.0,
+    "reading": "At f below solo-quorum (default 0.125 with K=2), independent gossip rarely eclipses; boosted dirty epochs seat compromised guards so adv\u2265K and eclipse rises with adaptive exposure \u2014 joint success tracks that unlock. Union \u2265 either surface. Stacked+v4 lowers mid-horizon rates; field c/f residual and \u00a713 remain open."
+  },
+  "joint_defense": {
+    "undefended_boosted": {
+      "20": {
+        "p_adaptive_exposed": 0.5167,
+        "p_gossip_success": 0.5167,
+        "p_gossip_fp": 0.0,
+        "p_eclipse_any": 0.5167,
+        "p_union_success": 0.5167,
+        "p_joint_success": 0.5167,
+        "mean_median_bias": 0.1149
+      },
+      "50": {
+        "p_adaptive_exposed": 0.8333,
+        "p_gossip_success": 0.8333,
+        "p_gossip_fp": 0.0,
+        "p_eclipse_any": 0.8333,
+        "p_union_success": 0.8333,
+        "p_joint_success": 0.8333,
+        "mean_median_bias": 0.1152
+      },
+      "100": {
+        "p_adaptive_exposed": 0.9833,
+        "p_gossip_success": 0.9833,
+        "p_gossip_fp": 0.0,
+        "p_eclipse_any": 0.9833,
+        "p_union_success": 0.9833,
+        "p_joint_success": 0.9833,
+        "mean_median_bias": 0.1154
+      },
+      "200": {
+        "p_adaptive_exposed": 1.0,
+        "p_gossip_success": 1.0,
+        "p_gossip_fp": 0.0,
+        "p_eclipse_any": 1.0,
+        "p_union_success": 1.0,
+        "p_joint_success": 1.0,
+        "mean_median_bias": 0.1156
+      }
+    },
+    "joint_v4_stacked": {
+      "20": {
+        "p_adaptive_exposed": 0.0833,
+        "p_gossip_success": 0.0,
+        "p_gossip_fp": 0.0,
+        "p_eclipse_any": 0.0,
+        "p_union_success": 0.0833,
+        "p_joint_success": 0.0,
+        "mean_median_bias": 0.001
+      },
+      "50": {
+        "p_adaptive_exposed": 0.1,
+        "p_gossip_success": 0.0,
+        "p_gossip_fp": 0.0,
+        "p_eclipse_any": 0.0,
+        "p_union_success": 0.1,
+        "p_joint_success": 0.0,
+        "mean_median_bias": 0.001
+      },
+      "100": {
+        "p_adaptive_exposed": 0.1167,
+        "p_gossip_success": 0.0,
+        "p_gossip_fp": 0.0,
+        "p_eclipse_any": 0.0,
+        "p_union_success": 0.1167,
+        "p_joint_success": 0.0,
+        "mean_median_bias": 0.0009
+      },
+      "200": {
+        "p_adaptive_exposed": 0.2,
+        "p_gossip_success": 0.0,
+        "p_gossip_fp": 0.0,
+        "p_eclipse_any": 0.0,
+        "p_union_success": 0.2,
+        "p_joint_success": 0.0,
+        "mean_median_bias": 0.0011
+      }
+    },
+    "deltas_undefended_minus_defended": {
+      "20": {
+        "delta_p_union": 0.4333,
+        "delta_p_joint": 0.5167,
+        "delta_p_adaptive": 0.4333,
+        "delta_p_gossip_success": 0.5167,
+        "delta_p_gossip_fp": 0.0
+      },
+      "50": {
+        "delta_p_union": 0.7333,
+        "delta_p_joint": 0.8333,
+        "delta_p_adaptive": 0.7333,
+        "delta_p_gossip_success": 0.8333,
+        "delta_p_gossip_fp": 0.0
+      },
+      "100": {
+        "delta_p_union": 0.8667,
+        "delta_p_joint": 0.9833,
+        "delta_p_adaptive": 0.8667,
+        "delta_p_gossip_success": 0.9833,
+        "delta_p_gossip_fp": 0.0
+      },
+      "200": {
+        "delta_p_union": 0.8,
+        "delta_p_joint": 1.0,
+        "delta_p_adaptive": 0.8,
+        "delta_p_gossip_success": 1.0,
+        "delta_p_gossip_fp": 0.0
+      }
+    },
+    "note": "joint_v4_stacked = adaptive mitigated_v4 dirtiness + stacked gossip defense (raised_k + min_orgs + eclipse_detect). Cuts joint/union at partial f; does not close \u00a713; f\u21921 still saturates gossip FP."
+  }
+}

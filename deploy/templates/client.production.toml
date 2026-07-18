@@ -32,6 +32,8 @@ authority_pubkeys = [
 # epoch_age = 7
 # anomaly_demotion_flag = false
 # peer_anomaly_count = 0
+# require_diverse_jurisdictions = true   # default off; soft path filter (not legal charter)
+# max_per_jurisdiction = 1
 
 # Production: omit ordered [[hops]] to build paths from roster + [guard_mitigation].
 # When using roster paths, list every admitted relay below as a KEM registry (keyed by id).

@@ -382,6 +382,43 @@ pub fn build_bound_path_pruned_with_guards_mitigated(
     Ok((guards, records))
 }
 
+/// Like [`build_bound_path_pruned_with_guards_mitigated`] but also enforces jurisdiction diversity.
+///
+/// Mitigation (pin mode / seed remix) runs first; the bound path is then sampled via
+/// [`build_bound_path_diverse_pruned`]. Opt-in from client `[path] require_diverse_jurisdictions`.
+pub fn build_bound_path_diverse_pruned_with_guards_mitigated(
+    topology: &Topology,
+    roster: &RelayRoster,
+    base_guard_config: &GuardConfig,
+    client_seed: u64,
+    mitigation: &GuardMitigationPolicy,
+    signals: &GuardMitigationSignals,
+    jurisdiction: &JurisdictionPolicy,
+    policy: &RelayPruningPolicy,
+    min_reputation: f64,
+    max_attempts: usize,
+) -> Result<(GuardSelector, Vec<RelayRecord>), TopologyError> {
+    let guard_config = mitigation.apply_to_config_with_signals(base_guard_config, signals);
+    let effective_seed = mitigation.client_seed_for_guards(client_seed, signals);
+    let guards = GuardSelector::new_reputation_weighted_pruned(
+        topology,
+        &guard_config,
+        effective_seed,
+        policy,
+        min_reputation,
+    )?;
+    let records = build_bound_path_diverse_pruned(
+        topology,
+        roster,
+        Some(&guards),
+        jurisdiction,
+        policy,
+        min_reputation,
+        max_attempts,
+    )?;
+    Ok((guards, records))
+}
+
 /// Like [`build_bound_path_pruned`] but also enforces jurisdiction diversity.
 pub fn build_bound_path_diverse_pruned(
     topology: &Topology,
@@ -581,5 +618,35 @@ mod tests {
             err,
             TopologyError::ReputationPathExhausted { attempts: 20 }
         ));
+    }
+
+    #[test]
+    fn diverse_mitigated_path_enforces_jurisdiction_and_mitigation() {
+        let roster = sample_roster(32, &["US", "DE", "FR", "UK", "JP", "CA", "AU", "SE"]);
+        let topo = build_topology(&roster, 0, &TopologyConfig::high_threat(), 0).unwrap();
+        let policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+        let jurisdiction = JurisdictionPolicy::default();
+        let mitigation = GuardMitigationPolicy::adaptive_v4();
+        let signals = GuardMitigationSignals {
+            epoch_age: 2,
+            anomaly_demotion_flag: true,
+            ..GuardMitigationSignals::default()
+        };
+        let (guards, records) = build_bound_path_diverse_pruned_with_guards_mitigated(
+            &topo,
+            &roster,
+            &GuardConfig::default(),
+            7,
+            &mitigation,
+            &signals,
+            &jurisdiction,
+            &policy,
+            DEFAULT_PATH_REPUTATION_FLOOR,
+            50,
+        )
+        .unwrap();
+        assert_eq!(guards.pin_mode, crate::guards::GuardPinMode::Rotate);
+        let path: Vec<_> = records.iter().map(|r| r.id).collect();
+        assert!(path_satisfies_jurisdiction(&path, &roster, &jurisdiction).unwrap());
     }
 }

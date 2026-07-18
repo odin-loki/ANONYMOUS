@@ -41,8 +41,9 @@ CI_SCHEMES: tuple[DefenseScheme, ...] = (
 
 DISCLAIMER = (
     "Partial multi-hop cover *defense* ranking — not info-theoretic cover "
-    "indistinguishability. Cover onions / matched discard are sim policies; "
-    "product still discards COVER_FRAGMENT_RESERVED before reassembly."
+    "indistinguishability. Sim cover onions model full-path continuity; product "
+    "opt-in cover_onions is terminal peel-then-sink (not client exit); scaffold "
+    "and COVER_FRAGMENT_RESERVED remain local-discard."
 )
 
 

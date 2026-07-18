@@ -26,13 +26,13 @@ use std::path::{Path, PathBuf};
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_negotiator::SecurityDial;
 use aegis_relay::{
-    BulkCoverConfig, CoverMultihopDefense, GossipMergePolicy, IngressRateLimitConfig,
-    LinkBridgeConfig, LinkHandshakeMode, MetricsExportConfig, PeerInfo, RelayConfig, RelayId,
-    DEFAULT_COVER_ONION_FLOWS, DEFAULT_COVER_ROUND_SECS, DEFAULT_COVER_TARGET_FLOW_COUNT,
-    DEFAULT_ECLIPSE_DETECT, DEFAULT_ECLIPSE_HONEST_BASELINE, DEFAULT_ECLIPSE_LOCAL_MIN_SAMPLES,
-    DEFAULT_ECLIPSE_MEDIAN_GAP, DEFAULT_GLOBAL_MAX_CELLS_PER_SEC, DEFAULT_GOSSIP_MIN_ORGS,
-    DEFAULT_INGRESS_BURST, DEFAULT_INGRESS_MAX_CELLS_PER_SEC, DEFAULT_MATCHED_COVER_FLOWS,
-    DEFAULT_MIN_SCRAPE_INTERVAL_SECS, DEFAULT_QUANTIZE_BUCKET,
+    BulkCoverConfig, CoverMultihopDefense, CoverOnionTerminal, GossipMergePolicy,
+    IngressRateLimitConfig, LinkBridgeConfig, LinkHandshakeMode, MetricsExportConfig, PeerInfo,
+    RelayConfig, RelayId, DEFAULT_COVER_ONION_FLOWS, DEFAULT_COVER_ROUND_SECS,
+    DEFAULT_COVER_TARGET_FLOW_COUNT, DEFAULT_ECLIPSE_DETECT, DEFAULT_ECLIPSE_HONEST_BASELINE,
+    DEFAULT_ECLIPSE_LOCAL_MIN_SAMPLES, DEFAULT_ECLIPSE_MEDIAN_GAP, DEFAULT_GLOBAL_MAX_CELLS_PER_SEC,
+    DEFAULT_GOSSIP_MIN_ORGS, DEFAULT_INGRESS_BURST, DEFAULT_INGRESS_MAX_CELLS_PER_SEC,
+    DEFAULT_MATCHED_COVER_FLOWS, DEFAULT_MIN_SCRAPE_INTERVAL_SECS, DEFAULT_QUANTIZE_BUCKET,
 };
 use aegis_topology::{
     GuardMitigationFileConfig, GuardMitigationPolicy, RelayRoster, RosterError, ThresholdConsortium,
@@ -347,7 +347,7 @@ impl ReputationConfig {
 
 /// TOML `[cover]` — bulk cover round auto-start / fail-closed policy.
 ///
-/// ## Multi-hop defense (opt-in, wave A3)
+/// ## Multi-hop defense (opt-in, wave A3 / B1)
 ///
 /// ```toml
 /// [cover]
@@ -356,9 +356,12 @@ impl ReputationConfig {
 /// # Prefer matched_local_discard to align discard volume across peer hops.
 /// multihop_defense = "matched_local_discard"
 /// matched_cover_flows = 2
-/// # Or scaffold only (still local-discard; no Sphinx continuity claim):
-/// # multihop_defense = "cover_onions_scaffold"
+/// # Peelable cover onions (valid Sphinx → terminal → sink discard):
+/// # multihop_defense = "cover_onions"
 /// # cover_onion_flows = 1
+/// # cover_onion_peer_id = "<64-hex peer id>"  # peer needs kem_* seeds
+/// # Scaffold only (still local-discard):
+/// # multihop_defense = "cover_onions_scaffold"
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CoverFileConfig {
@@ -377,15 +380,21 @@ pub struct CoverFileConfig {
     /// Multi-hop cover defense (`baseline_local_discard` default).
     ///
     /// Accepted: `baseline` / `baseline_local_discard`, `matched` /
-    /// `matched_local_discard`, `cover_onions` / `cover_onions_scaffold`.
+    /// `matched_local_discard`, `cover_onions` (peelable), `cover_onions_scaffold`.
     #[serde(default = "default_cover_multihop_defense")]
     pub multihop_defense: String,
     /// Fixed cover flows per round under matched local discard.
     #[serde(default = "default_matched_cover_flows")]
     pub matched_cover_flows: u32,
-    /// Scaffold cover-onion flows (still discarded before peel).
+    /// Cover-onion flow count under cover_onions / cover_onions_scaffold.
     #[serde(default = "default_cover_onion_flows")]
     pub cover_onion_flows: u32,
+    /// Optional peer id (64 hex) used as the peelable cover-onion terminal.
+    ///
+    /// That peer's `[[peers]]` entry must include lab KEM seed fields so the
+    /// public key can be derived. Without a terminal, peelable onions are not emitted.
+    #[serde(default)]
+    pub cover_onion_peer_id: Option<String>,
 }
 
 impl Default for CoverFileConfig {
@@ -398,6 +407,7 @@ impl Default for CoverFileConfig {
             multihop_defense: default_cover_multihop_defense(),
             matched_cover_flows: default_matched_cover_flows(),
             cover_onion_flows: default_cover_onion_flows(),
+            cover_onion_peer_id: None,
         }
     }
 }
@@ -406,7 +416,7 @@ impl CoverFileConfig {
     pub fn into_bulk_cover(self) -> Result<BulkCoverConfig, ConfigError> {
         let multihop_defense = CoverMultihopDefense::parse(&self.multihop_defense).ok_or(
             ConfigError::Hex(
-                "cover.multihop_defense must be baseline_local_discard | matched_local_discard | cover_onions_scaffold",
+                "cover.multihop_defense must be baseline_local_discard | matched_local_discard | cover_onions | cover_onions_scaffold",
             ),
         )?;
         Ok(BulkCoverConfig {
@@ -418,6 +428,7 @@ impl CoverFileConfig {
             multihop_defense,
             matched_cover_flows: self.matched_cover_flows,
             cover_onion_flows: self.cover_onion_flows,
+            cover_onion_terminal: None,
         })
     }
 }
@@ -766,6 +777,14 @@ pub struct PeerConfig {
     /// Optional jurisdiction label used when `org_id` is unset.
     #[serde(default)]
     pub jurisdiction: Option<String>,
+    /// Lab/pilot: deterministic KEM seed (with `kem_mlkem_d` / `kem_mlkem_z`) to derive
+    /// this peer's public key for peelable cover onions. Not a production PK distribution.
+    #[serde(default)]
+    pub kem_x25519_seed: Option<String>,
+    #[serde(default)]
+    pub kem_mlkem_d: Option<String>,
+    #[serde(default)]
+    pub kem_mlkem_z: Option<String>,
 }
 
 /// TOML `[health_gossip]` — signed `PeerHealthAdvert` exchange over hop links.
@@ -1131,6 +1150,8 @@ impl NodeConfigFile {
                 "link.require_ingress_kem_commitment requires top-level kem_commitment",
             ));
         }
+        let cover_onion_peer_id = self.cover.cover_onion_peer_id.clone();
+        let mut cover_onion_terminal: Option<CoverOnionTerminal> = None;
         let mut peer_table = HashMap::new();
         for peer in self.peers {
             let id = RelayId(parse_hex32(&peer.id)?);
@@ -1161,6 +1182,28 @@ impl NodeConfigFile {
                     info = info.with_jurisdiction(jur.to_string());
                 }
             }
+            // Lab KEM seeds → public for peelable cover-onion terminal.
+            if let (Some(x), Some(d), Some(z)) = (
+                peer.kem_x25519_seed.as_deref(),
+                peer.kem_mlkem_d.as_deref(),
+                peer.kem_mlkem_z.as_deref(),
+            ) {
+                let (_sec, pk) = RelayKemSecret::generate_deterministic(
+                    parse_hex32(x)?,
+                    parse_hex32(d)?,
+                    parse_hex32(z)?,
+                );
+                let terminal = CoverOnionTerminal::new(*id.as_bytes(), pk);
+                let matches_want = cover_onion_peer_id
+                    .as_deref()
+                    .map(|want| peer.id.trim().eq_ignore_ascii_case(want.trim()))
+                    .unwrap_or(false);
+                if matches_want {
+                    cover_onion_terminal = Some(terminal);
+                } else if cover_onion_peer_id.is_none() && cover_onion_terminal.is_none() {
+                    cover_onion_terminal = Some(terminal);
+                }
+            }
             peer_table.insert(id, info);
         }
         let roster = self
@@ -1187,10 +1230,16 @@ impl NodeConfigFile {
                 "link.noise_static_secret required when handshake = \"noise\"",
             ));
         }
+        let mut bulk_cover = self.cover.into_bulk_cover()?;
+        if bulk_cover.multihop_defense == CoverMultihopDefense::CoverOnions {
+            if let Some(terminal) = cover_onion_terminal {
+                bulk_cover = bulk_cover.with_cover_onion_terminal(terminal);
+            }
+        }
         Ok(NodeRuntimeConfig {
             relay_id,
             listen,
-            relay_config: RelayConfig::new(self.mu).with_bulk_cover(self.cover.into_bulk_cover()?),
+            relay_config: RelayConfig::new(self.mu).with_bulk_cover(bulk_cover),
             kem_secret,
             local_kem_commitment,
             ingress_link_key,
@@ -1358,6 +1407,31 @@ cover_onion_flows = 2
             CoverMultihopDefense::CoverOnionsScaffold
         );
         assert_eq!(bulk.cover_onion_flows, 2);
+    }
+
+    #[test]
+    fn cover_onions_toml_opt_in_distinct_from_scaffold() {
+        let file: NodeConfigFile = toml::from_str(
+            r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[cover]
+multihop_defense = "cover_onions"
+cover_onion_flows = 2
+cover_onion_peer_id = "0200000000000000000000000000000000000000000000000000000000000000"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            file.cover.cover_onion_peer_id.as_deref(),
+            Some("0200000000000000000000000000000000000000000000000000000000000000")
+        );
+        let bulk = file.cover.into_bulk_cover().unwrap();
+        assert_eq!(bulk.multihop_defense, CoverMultihopDefense::CoverOnions);
+        assert_eq!(bulk.cover_onion_flows, 2);
+        // Terminal is attached in into_runtime once peer kem seeds are present.
+        assert!(bulk.cover_onion_terminal.is_none());
     }
 
     #[test]

@@ -22,6 +22,8 @@ Modules:
                  - wave A5: cadence / quantize / suppress-drops ranked vs C5 scrape Pearson
     fused_adversary
                  - adaptive recompromise ∩ Mode-1 active/intersection coupling (C2)
+    joint_guard_gossip
+                 - leftovers B3: adaptive-guard × gossip-eclipse joint adversary
     faction_sybil_skew
                  - M-of-N faction / jurisdiction-skew roster admission (wave C3)
     ac_nullifier_unlinkability
@@ -54,6 +56,7 @@ __all__ = [
     "cover_multihop_defense",
     "metrics_scrape_defense",
     "fused_adversary",
+    "joint_guard_gossip",
     "faction_sybil_skew",
     "ac_nullifier_unlinkability",
     "gossip_eclipse",

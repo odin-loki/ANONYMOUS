@@ -5,7 +5,8 @@ use aegis_negotiator::cover::{l2_cover_requirement, CoverRequirement};
 use aegis_negotiator::dial::{dial_requires_relay_cover, SecurityDial, L2_BASELINE_CONCURRENCY};
 
 use crate::cover_flow::{
-    CoverFlowConfig, CoverMultihopDefense, DEFAULT_COVER_ONION_FLOWS, DEFAULT_MATCHED_COVER_FLOWS,
+    CoverFlowConfig, CoverMultihopDefense, CoverOnionTerminal, DEFAULT_COVER_ONION_FLOWS,
+    DEFAULT_MATCHED_COVER_FLOWS,
 };
 
 /// Default rate parameter for per-hop Exp(μ) mixing delay.
@@ -49,12 +50,13 @@ pub enum CoverPolicyError {
 ///
 /// ## Multi-hop defense (opt-in)
 ///
-/// [`Self::multihop_defense`] selects wave A3 productization of sim S4 rankings.
+/// [`Self::multihop_defense`] selects wave A3/B1 productization of sim S4 rankings.
 /// Default remains baseline local discard. Prefer
 /// [`CoverMultihopDefense::MatchedLocalDiscard`] to align cover discard volume across
-/// peer hops; [`CoverMultihopDefense::CoverOnionsScaffold`] is a tagged scaffold only
-/// (still discarded — no Sphinx continuity claim).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// peer hops. [`CoverMultihopDefense::CoverOnions`] emits valid Sphinx peel-to-sink
+/// onions when [`Self::cover_onion_terminal`] is set.
+/// [`CoverMultihopDefense::CoverOnionsScaffold`] remains a tagged local-discard scaffold.
+#[derive(Clone, Debug)]
 pub struct BulkCoverConfig {
     /// When true, open L2 bulk rounds and emit cover padding at round close.
     pub enabled: bool,
@@ -70,8 +72,10 @@ pub struct BulkCoverConfig {
     pub multihop_defense: CoverMultihopDefense,
     /// Fixed cover flows per round under matched local discard (peer-aligned).
     pub matched_cover_flows: u32,
-    /// Scaffold cover-onion flows under cover_onions_scaffold (still discarded).
+    /// Cover-onion flow count under cover_onions / cover_onions_scaffold.
     pub cover_onion_flows: u32,
+    /// Terminal hop KEM public for peelable [`CoverMultihopDefense::CoverOnions`].
+    pub cover_onion_terminal: Option<CoverOnionTerminal>,
 }
 
 impl Default for BulkCoverConfig {
@@ -86,6 +90,7 @@ impl Default for BulkCoverConfig {
             multihop_defense: CoverMultihopDefense::BaselineLocalDiscard,
             matched_cover_flows: DEFAULT_MATCHED_COVER_FLOWS,
             cover_onion_flows: DEFAULT_COVER_ONION_FLOWS,
+            cover_onion_terminal: None,
         }
     }
 }
@@ -114,7 +119,15 @@ impl BulkCoverConfig {
             multihop_defense: self.multihop_defense,
             matched_cover_flows: self.matched_cover_flows,
             cover_onion_flows: self.cover_onion_flows,
+            cover_onion_terminal: self.cover_onion_terminal.clone(),
         }
+    }
+
+    /// Attach the terminal hop used to build peelable cover onions.
+    #[must_use]
+    pub fn with_cover_onion_terminal(mut self, terminal: CoverOnionTerminal) -> Self {
+        self.cover_onion_terminal = Some(terminal);
+        self
     }
 
     /// Fail closed when cover is required but cannot be satisfied at spawn time.

@@ -1,6 +1,6 @@
 //! Client TOML configuration types.
 
-use aegis_topology::GuardMitigationFileConfig;
+use aegis_topology::{GuardMitigationFileConfig, JurisdictionPolicy};
 use serde::Deserialize;
 
 use crate::roster_load::RosterFileConfig;
@@ -29,7 +29,7 @@ pub struct ClientConfigFile {
 }
 
 /// Parameters for roster-driven bound-path construction.
-#[derive(Clone, Debug, Deserialize, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct PathFileConfig {
     /// Client seed for guard-set sampling (re-mixed when mitigation re-samples).
     #[serde(default)]
@@ -49,6 +49,45 @@ pub struct PathFileConfig {
     /// Mitigation signal: peer health spike count.
     #[serde(default)]
     pub peer_anomaly_count: u32,
+    /// When true, roster paths use diverse-pruned selection ([`JurisdictionPolicy`]).
+    /// Default **false** (safe off) — charter legal quotas remain External.
+    #[serde(default)]
+    pub require_diverse_jurisdictions: bool,
+    /// Max same-jurisdiction hops when [`Self::require_diverse_jurisdictions`] is set.
+    /// Defaults to 1 (matches [`JurisdictionPolicy::default`]); ignored when diversity is off.
+    #[serde(default = "default_max_per_jurisdiction")]
+    pub max_per_jurisdiction: usize,
+}
+
+fn default_max_per_jurisdiction() -> usize {
+    1
+}
+
+impl Default for PathFileConfig {
+    fn default() -> Self {
+        Self {
+            client_seed: 0,
+            epoch: 0,
+            topology_seed: 0,
+            epoch_age: 0,
+            anomaly_demotion_flag: false,
+            peer_anomaly_count: 0,
+            require_diverse_jurisdictions: false,
+            max_per_jurisdiction: default_max_per_jurisdiction(),
+        }
+    }
+}
+
+impl PathFileConfig {
+    /// Jurisdiction policy when diversity is enabled; `None` leaves path selection unchanged.
+    pub fn jurisdiction_policy(&self) -> Option<JurisdictionPolicy> {
+        if !self.require_diverse_jurisdictions {
+            return None;
+        }
+        Some(JurisdictionPolicy {
+            max_per_jurisdiction: self.max_per_jurisdiction.max(1),
+        })
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -189,5 +228,39 @@ epoch_age = 7
         .unwrap();
         let path = file.path.expect("path section");
         assert_eq!(path.epoch_age, 7);
+        assert!(!path.require_diverse_jurisdictions);
+        assert_eq!(path.max_per_jurisdiction, 1);
+        assert!(path.jurisdiction_policy().is_none());
+    }
+
+    #[test]
+    fn path_jurisdiction_diversity_knobs_parse_and_resolve() {
+        let file: ClientConfigFile = toml::from_str(
+            r#"
+first_hop_addr = "127.0.0.1:9000"
+ingress_link_key = "0000000000000000000000000000000000000000000000000000000000000001"
+
+[path]
+require_diverse_jurisdictions = true
+max_per_jurisdiction = 1
+"#,
+        )
+        .unwrap();
+        let path = file.path.expect("path section");
+        assert!(path.require_diverse_jurisdictions);
+        assert_eq!(path.max_per_jurisdiction, 1);
+        assert_eq!(
+            path.jurisdiction_policy(),
+            Some(JurisdictionPolicy {
+                max_per_jurisdiction: 1
+            })
+        );
+    }
+
+    #[test]
+    fn path_diversity_defaults_safely_off() {
+        assert_eq!(PathFileConfig::default().jurisdiction_policy(), None);
+        assert!(!PathFileConfig::default().require_diverse_jurisdictions);
+        assert_eq!(PathFileConfig::default().max_per_jurisdiction, 1);
     }
 }

@@ -30,7 +30,7 @@ This document maps named attack primitives to **current mitigation status**, **r
 |---------|-------------------|----------|----------|
 | Client TCP ingress (default paced CLI) | **Partial** — `PacedSession` + continuous dummy cover; τ-aligned cells | Raw/`--raw`/`send_payload` bypass emitter; handshake per session; adversarial custom client | Threat model §6 `aegis-client`; Phase 8 §4 benign vs malicious traces |
 | Per-hop mixing delay Exp(μ) | **By design** — delay visible on link | GPA learns delay samples; not the primary hiding primitive | Threat model §2 `aegis-relay` |
-| Relay cover bursts (τ-paced) | **Partial (2026-07-18)** — cover cells AEAD-sealed, same width; τ dispatcher; multi-hop gap quantified; A3 matched discard opt-in | Cover discarded / invalid onion ≠ Sphinx forward continuity; scaffold onions still discard | `cover_flow.rs`, `cover_burst_gpa_characterization.json`, `cover_multihop_characterization.json` |
+| Relay cover bursts (τ-paced) | **Partial (2026-07-18)** — cover cells AEAD-sealed, same width; τ dispatcher; multi-hop gap quantified; A3 matched discard; B1 peelable `cover_onions` opt-in | Local-discard cover ≠ Sphinx continuity; peelable onions are sink-discard (not client exit); not info-theoretic | `cover_flow.rs`, `cover_burst_gpa_characterization.json`, `cover_multihop_characterization.json` |
 | Exit → clearnet server | **By design (weaker tier)** — sender-side shaping to exit; receiver not in AEGIS | GPA at exit server link sees ordinary TLS/volume; no receiver hard-cap | Phase 8 §3 exit-tier; spec §8 |
 | Sticky guard entry pin | **By design** — GPA learns one guard id per client epoch | Bounded by plateau math if `c` small; adaptive adversary worsens (§4) | Threat model §3 guards; `adaptive_guard_exposure.analysis.json` |
 
@@ -68,6 +68,19 @@ This document maps named attack primitives to **current mitigation status**, **r
 | Rust client preset | **Partial** — hard/soft sticky + resample hooks | Defaults **disabled**; prefer `preset = "adaptive_v4"` (or `adaptive_v3` / `adaptive_v2` / legacy `adaptive_first`) | `aegis-topology/src/guard_mitigation.rs`; client `[guard_mitigation]` + `[path].epoch_age` |
 
 **Adaptive summary:** **Partial v1–v4** lowers sim exposure (v4 best at E=2000; v3 still strong mid-horizon); **does not close §13**. Operators enable `preset = "adaptive_v4"` on clients for pilot; field recompromise rates unmeasured.
+
+### 3.1 Joint adaptive-guard × gossip-eclipse (leftovers B3)
+
+**Threat:** Same-horizon adaptive recompromise of the client's guard set **plus** coordinated gossip eclipse / `majority_k` collusion on the victim peer table (boosted: dirty epochs seat compromised guards as eclipse reporters).
+
+| Surface | Status | Residual | Evidence |
+|---------|--------|----------|----------|
+| Adaptive-only baseline | **[O] QUANTIFIED** | Exposure → ~1 at long E | `adaptive_guard_exposure.analysis.json` (reused) |
+| Gossip-only baseline | **[O] QUANTIFIED Partial** | FP / eclipse vs `(f,K,N)` | `gossip_eclipse*.json` (reused); §10 |
+| Joint boosted coupling | **[O] QUANTIFIED** | At `f=0.125`/`K=2` independent rarely eclipses; dirty epochs unlock `adv≥K` → eclipse rises with exposure | `sim/data/joint_guard_gossip.analysis.json`; `joint_guard_gossip.py` |
+| Joint defense (`mitigated_v4` + stacked gossip) | **Partial [O] QUANTIFIED** | Lowers union/joint at partial `f`; **`f=1` / long-E still saturate** | Artifact `joint_defense`; §10 stacked |
+
+**Joint note:** Characterization only — **does not close §13**. Field recompromise and peer-table eclipse rates are **unmeasured** free parameters (`c`, `f`). Multi-org BFT remains **External**. See also §10.
 
 ---
 
@@ -182,7 +195,7 @@ This document maps named attack primitives to **current mitigation status**, **r
 | Burst-heavy scenario | **Partial** — baseline + `burst_heavy` bundle in same artifact | Lab model; not WAN GPA | `compare_cover_modes_under_burst` |
 | Multi-hop semantic gap | **Partial (2026-07-18)** — cover/invalid lower `implied_packet_continuity` vs Sphinx-only; raise `semantic_gap_score` | Single-hop gap CV can still look τ-like while hop semantics diverge | `cover_multihop.py`; `sim/data/cover_multihop_characterization.json` |
 | Cover discard vs Sphinx forward | **Partial** — next hop discards `COVER_FRAGMENT_RESERVED`; forwards do not continue | GPA with ≥2 hop vantage sees wire≠forward yield | `cover_flow.rs`; multihop artifact `delta.continuity_ratio_*` |
-| Cover multi-hop defenses (S4→A3) | **Partial** — in-sim cover onions → continuity≈1; product opt-in `matched_local_discard` aligns discard volume; `cover_onions_scaffold` tagged but still discarded | Matched discard ≠ Sphinx continuity; peelable cover onions not shipped; not info-theoretic | `cover_flow.rs` `CoverMultihopDefense`; TOML `[cover] multihop_defense`; `cover_multihop_defense.py`; [`cover_multihop_defense.md`](cover_multihop_defense.md) |
+| Cover multi-hop defenses (S4→A3/B1) | **Partial** — in-sim cover onions → continuity≈1; product opt-in `matched_local_discard`; **`cover_onions`** peel-to-sink (valid Sphinx → terminal → `COVER_SINK_HOP_ID`); scaffold remains discard-only | Full multi-hop forwardable cover deferred; lab peer KEM seeds ≠ directory PK distro; not client exit traffic; not info-theoretic | `cover_flow.rs` `CoverMultihopDefense`; TOML `[cover] multihop_defense=cover_onions`; `cover_multihop_defense.py`; [`cover_multihop_defense.md`](cover_multihop_defense.md) |
 | Invalid onion (fail peel) | **Partial** — modeled as non-forwarding wire inflation (like discard, different counter path) | Contributes `processed_fail` if it reaches peel; semantic gap score rises | multihop `sphinx_plus_invalid` |
 | Reserved-byte cover marker | **Mitigated** — cover never reassembled as Sphinx | Volume/count correlation still possible | Phase 8 cover marker notes |
 | Ingress KEM client-binding | **Partial** — `require_ingress_kem_commitment` fail-closed on LegacyPsk; matching binding required | Noise_IK does not bind KEM commitment (fails closed if require+Noise); holders of ingress PSK + correct commitment still admitted | `aegis-relay` `net.rs`; node `[link].require_ingress_kem_commitment` |
@@ -200,6 +213,7 @@ See also [`anonymous_reputation.md`](anonymous_reputation.md) § anonymity bound
 | Vector | Mitigation status | Residual | Evidence |
 |--------|-------------------|----------|----------|
 | **Gossip eclipse** | **Partial** — **[O] QUANTIFIED** neighbor-only adverts; peer table from config | Victim with `adv ≥ K` under coordinated report-first gets pure-adv medians; full eclipse (`f=1`) → bias≈0.9 / FP≈1 in sim; no global view | `sim/aegis_sim/gossip_eclipse.py`; `sim/data/gossip_eclipse*.json`; [`health_gossip.md`](health_gossip.md); threat model §4 |
+| **Joint adaptive × gossip (B3)** | **[O] QUANTIFIED** — shared-epoch coupling; see §3.1 | Boosted dirty epochs raise effective `f`; union ≥ either surface; field rates unmeasured | `joint_guard_gossip.py`; `sim/data/joint_guard_gossip*.json` |
 | **Gossip defenses (S5 → product)** | **Partial [O] QUANTIFIED** — Rust `stacked` (`majority_k`+`min_orgs`+eclipse-detect) | Cuts FP vs C1 at partial `f`; **`f=1` still saturates**; multi-org collusion meeting `min_orgs` still biases median | Product: `GossipMergePolicy` / `PeerHealthTracker`; sim: `gossip_eclipse_defense.py`; [`health_gossip.md`](health_gossip.md) |
 | **`majority_k` collusion** | **Partial** — **[O] QUANTIFIED** K distinct authority reporters before median merge (default **K=4**) | Solo quorum needs `adv ≥ K`; mixed sets where adv hold median majority still attack-rate; half-weight preserves ratio | `PeerHealthTracker`; C1/S5 gates; TOML `majority_k` |
 | Equivocation | **Mitigated** — quorum log rejects conflicting `(epoch, reporter, subject)` | Local log only; not multi-org BFT | `health_quorum_log.rs` |

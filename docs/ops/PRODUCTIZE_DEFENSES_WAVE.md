@@ -9,7 +9,7 @@
 |----|-------|-------------|-----------------|
 | A1 | Gossip stacked | **Done** — `GossipMergePolicy` stacked defaults (K=4, min_orgs=2, eclipse-detect); TOML + PeerInfo org/jurisdiction | Multi-org BFT; `f=1` still saturates |
 | A2 | Exit presence_pad | **Done** — `[exit].presence_pad` matched-Q decoy/idle pad (default off) | Clearnet GPA |
-| A3 | Cover multi-hop | **Shipped:** opt-in `matched_local_discard` + `cover_onions_scaffold` (still discard) | Info-theoretic / Sphinx continuity |
+| A3 | Cover multi-hop | **Shipped:** opt-in `matched_local_discard` + `cover_onions` peel-to-sink + scaffold | Full multi-hop forwardable; info-theoretic |
 | A4 | Metrics scrape harden | **Done** — `MetricsExportGate` + `[metrics]` (cadence 30s / quantize 16 / suppress drops); `operator_check` warns on high-res | Privileged raw `coarse_stats` / high-res opt-in |
 | A5 | Metrics scrape defense sim | **Done** — `metrics_scrape_defense.py` ranks `stacked` vs C5 Pearson; artifact + pytest | Not closed; fail/queue residual |
 | A6 | Sphinx fuzz evidence | **Done** — timed libFuzzer + [`sim/sphinx_fuzz_evidence.txt`](../../sim/sphinx_fuzz_evidence.txt) | Mechanized proof |

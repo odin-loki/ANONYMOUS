@@ -145,6 +145,32 @@ observables remain vulnerable — do not disable hard-cap for "efficiency."
 
 ---
 
+## E) Joint adaptive-guard × gossip-eclipse [O → QUANTIFIED] (leftovers B3)
+
+**Spec / wave:** Compose adaptive compromised-mix redraw with gossip eclipse / `majority_k` over shared epochs.
+
+**Simulator:** `sim/aegis_sim/joint_guard_gossip.py` (imports public APIs; does not rewrite adaptive / gossip cores)
+- `joint_long_horizon(...)` — coupled curves (`p_adaptive_exposed`, `p_gossip_fp`, `p_eclipse_any`, union/joint)
+- `baseline_adaptive_only` / `baseline_gossip_only` — live public-API baselines
+- `joint_defense_curve` — optional `mitigated_v4` + stacked gossip vs undefended
+- `load_committed_baselines` — reuse adaptive + gossip committed artifacts
+
+**Coupling:** Per epoch redraw guards with prob `c`. Concurrent coordinated eclipse at `(N,f,K)` with default **`f=0.125`, `K=2`, `N=8`** (1 adv — below solo quorum). **Boosted:** dirty epochs raise effective `f` by seating compromised guards as eclipse reporters so `adv≥K`. Clean epochs keep baseline `f`. Gossip success = eclipse_any ∨ false_probation.
+
+**Findings (characterizes, does not close):**
+- Union ≥ either component; joint ≤ min(components).
+- Independent gossip at default `f` rarely eclipses; boosted unlocks eclipse as adaptive exposure grows.
+- `joint_v4_stacked` lowers mid-horizon union at partial `f`; long-E / `f→1` still saturate.
+- **§13 not closed**; field recompromise and eclipse rates unmeasured.
+
+**Artifact:** `sim/data/joint_guard_gossip.analysis.json`  
+**Script:** `sim/scripts/run_joint_guard_gossip.py` (`--offline` for longer E)  
+**Pytest:** `sim/tests/test_joint_guard_gossip.py`
+
+**Honest limits:** Synthetic; multi-org BFT External; no WAN adversary. Does not claim adaptive_v4 or stacked gossip closed.
+
+---
+
 ## Regenerating artifacts
 
 ```bash
@@ -152,6 +178,8 @@ cd sim && PYTHONPATH=. python scripts/generate_research_artifacts.py --only comb
 cd sim && PYTHONPATH=. python scripts/generate_research_artifacts.py --only c2
 # or: python scripts/run_exit_tier_intersection.py --offline
 #     python scripts/run_fused_adversary.py --offline
+#     python scripts/run_joint_guard_gossip.py --offline
 cd sim && PYTHONPATH=. pytest -q tests/test_combined_active_intersection.py tests/test_hardening.py -k combined
 cd sim && PYTHONPATH=. pytest -q tests/test_exit_tier_intersection.py tests/test_fused_adversary.py
+cd sim && PYTHONPATH=. pytest -q tests/test_joint_guard_gossip.py
 ```

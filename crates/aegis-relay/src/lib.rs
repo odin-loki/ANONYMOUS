@@ -59,11 +59,12 @@ pub use config::{
     DEFAULT_COVER_TARGET_FLOW_COUNT, DEFAULT_MU,
 };
 pub use cover_flow::{
-    is_cover_onion_scaffold_fragment, is_discard_cover_fragment, is_relay_cover_fragment,
-    plan_cover_emit, BulkRoundCommand, BulkRoundTracker, CoverEmitPlan, CoverEmitResult,
-    CoverFlow, CoverFlowConfig, CoverFlowGenerator, CoverMultihopDefense,
-    COVER_FRAGMENT_RESERVED, COVER_ONION_SCAFFOLD_RESERVED, DEFAULT_COVER_ONION_FLOWS,
-    DEFAULT_MATCHED_COVER_FLOWS,
+    build_peel_to_sink_cover_flow, is_cover_onion_scaffold_fragment, is_cover_sink_hop,
+    is_discard_cover_fragment, is_relay_cover_fragment, plan_cover_emit, BulkRoundCommand,
+    BulkRoundTracker, CoverEmitPlan, CoverEmitResult, CoverFlow, CoverFlowConfig,
+    CoverFlowGenerator, CoverMultihopDefense, CoverOnionTerminal, COVER_FRAGMENT_RESERVED,
+    COVER_ONION_PAYLOAD_PREFIX, COVER_ONION_SCAFFOLD_RESERVED, COVER_SINK_HOP_ID,
+    DEFAULT_COVER_ONION_FLOWS, DEFAULT_MATCHED_COVER_FLOWS,
 };
 pub use delay::sample_mixing_delay;
 pub use health_gossip::{

@@ -107,6 +107,7 @@ fn build_roster_path_records(
         },
         min_reputation: DEFAULT_PATH_REPUTATION_FLOOR,
         max_attempts: 50,
+        jurisdiction: path_cfg.jurisdiction_policy(),
     };
     let (_guards, records) = build_client_bound_path(&topo, roster, &pruning, &params)?;
     Ok(records)
@@ -330,6 +331,70 @@ mod tests {
             build_client_bound_path(&topo, &roster, &pruning, &params).unwrap();
         assert_eq!(guards.pin_mode, GuardPinMode::Rotate);
         assert_eq!(guards.guard_set().len(), GUARD_SET_SIZE as usize);
+
+        let _ = std::fs::remove_file(&roster_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn roster_path_enforces_jurisdiction_diversity_when_enabled() {
+        let mut roster = RelayRoster::new();
+        let jurisdictions = ["US", "DE", "FR", "UK", "JP", "CA", "AU", "SE"];
+        for i in 0..32u64 {
+            let j = jurisdictions[i as usize % jurisdictions.len()];
+            roster.admit_for_tests(test_relay_record(i + 1, j));
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "aegis-client-roster-diverse-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let roster_path = dir.join("roster.json");
+        roster.save_to_file(&roster_path).unwrap();
+
+        let mut kem_hops = Vec::new();
+        for i in 1..=32u64 {
+            kem_hops.push(test_hop_for_fixture(i));
+        }
+
+        let file = ClientConfigFile {
+            first_hop_addr: "127.0.0.1:9000".into(),
+            ingress_link_key: "0000000000000000000000000000000000000000000000000000000000000001".into(),
+            payload: None,
+            hops: kem_hops,
+            roster: Some(crate::roster_load::RosterFileConfig {
+                path: roster_path.to_string_lossy().into(),
+                authority_pubkeys: vec![],
+                threshold: 1,
+                allow_unverified_roster: true,
+            }),
+            link: None,
+            guard_mitigation: aegis_topology::GuardMitigationFileConfig {
+                adaptive_first: false,
+                preset: Some("adaptive_v4".into()),
+            },
+            path: Some(PathFileConfig {
+                client_seed: 11,
+                require_diverse_jurisdictions: true,
+                max_per_jurisdiction: 1,
+                epoch_age: 2,
+                anomaly_demotion_flag: true,
+                ..PathFileConfig::default()
+            }),
+        };
+
+        let hops = resolve_client_hops(&file, true).unwrap();
+        assert_eq!(hops.len(), TopologyConfig::high_threat().layer_count);
+
+        let records = build_roster_path_records(
+            &roster,
+            file.path.as_ref().unwrap(),
+            &file,
+        )
+        .unwrap();
+        let path: Vec<_> = records.iter().map(|r| r.id).collect();
+        let policy = file.path.as_ref().unwrap().jurisdiction_policy().unwrap();
+        assert!(aegis_topology::path_satisfies_jurisdiction(&path, &roster, &policy).unwrap());
 
         let _ = std::fs::remove_file(&roster_path);
         let _ = std::fs::remove_dir(&dir);

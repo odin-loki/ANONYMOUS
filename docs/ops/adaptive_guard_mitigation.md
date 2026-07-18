@@ -71,6 +71,10 @@ preset = "adaptive_v4"   # "adaptive_first" | "adaptive_v2" | "adaptive_v3" | "a
 epoch_age = 1            # pilot: epochs since last guard re-sample (v4 hard cap = 2)
 anomaly_demotion_flag = false
 peer_anomaly_count = 0
+# Opt-in jurisdiction diversity (default off — safe). Soft path filter only;
+# charter/legal quota enforcement remains External (see faction_sybil_skew.md).
+# require_diverse_jurisdictions = true
+# max_per_jurisdiction = 1
 ```
 
 Parsed into [`GuardMitigationFileConfig`](../../crates/aegis-topology/src/guard_mitigation.rs)
@@ -78,12 +82,16 @@ and resolved to `GuardMitigationPolicy::adaptive_v4()` (hard sticky cap 2, soft
 band from 1), `adaptive_v3()`, `adaptive_v2()`, or `adaptive_first()` (legacy).
 
 At path build time, the client CLI and library callers use [`build_client_bound_path`](../../crates/aegis-client/src/path.rs)
-(or topology's `build_bound_path_pruned_with_guards_mitigated`) with:
+(or topology's `build_bound_path_pruned_with_guards_mitigated` /
+`build_bound_path_diverse_pruned_with_guards_mitigated` when diversity is on) with:
 
 1. **`GuardMitigationSignals`** — `epoch_age`, `anomaly_demotion_flag`,
    `peer_anomaly_count` from `[path]` when set (defaults zero/false when telemetry unavailable).
 2. **`apply_to_config_with_signals`** — sets `GuardPinMode::Rotate` under signal.
 3. **`client_seed_for_guards`** — re-mixes client seed when `should_resample_guards`.
+4. **Optional jurisdiction diversity** — when `[path] require_diverse_jurisdictions = true`,
+   mitigation runs first, then diverse-pruned path selection
+   (`max_per_jurisdiction`, default 1).
 
 When signals are absent, `adaptive_v4` / `adaptive_v3` still apply soft-band /
 hard-cap rotation and rotate-on-anomaly / peer-spike thresholds once wired.

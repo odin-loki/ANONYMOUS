@@ -138,6 +138,8 @@ Neither path replaces staged **WAN soak** on distinct operator hosts, adversaria
 
 **Opt-in adaptive guard mitigation** (default off): on the **client**, set `[guard_mitigation] preset = "adaptive_v4"` (or `adaptive_v3` / `adaptive_v2` / legacy `adaptive_first = true`) and optional `[path]` signals; omit ordered `[[hops]]` or pass `--roster-path` for roster-driven paths (KEM registry by relay `id` still required). Node TOML accepts the same `[guard_mitigation]` section for operator symmetry but does not select client paths — see [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md).
 
+**Opt-in jurisdiction diversity** (default off): under `[path]`, set `require_diverse_jurisdictions = true` and optional `max_per_jurisdiction = 1` so roster paths use diverse-pruned selection (composes with adaptive_v4). Soft software filter only — charter/legal enforcement remains **External** ([`faction_sybil_skew.md`](faction_sybil_skew.md)).
+
 ## Step-by-step (manual)
 
 ### 1. Build binaries
@@ -195,13 +197,15 @@ noise_static_secret = "..."
 # NO [trace] section
 ```
 
-Optional adaptive guard mitigation (spec §13 — **default off**):
+Optional adaptive guard mitigation (spec §13 — **default off**) and jurisdiction diversity (**default off**):
 
 ```toml
 # [guard_mitigation]
 # preset = "adaptive_v4"   # preferred; or "adaptive_v3" / "adaptive_v2" / "adaptive_first"
 # [path]
 # epoch_age = 7
+# require_diverse_jurisdictions = true
+# max_per_jurisdiction = 1
 ```
 
 Inline `[kem]` seeds use `allow_plaintext_kem = true` for pilot convenience only. Production WAN nodes should use external `kem.seeds` with `0600` per [`DEPLOYMENT.md`](DEPLOYMENT.md).

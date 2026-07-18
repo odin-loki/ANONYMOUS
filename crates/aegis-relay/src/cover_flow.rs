@@ -15,49 +15,47 @@
 //! A bulk round is an explicit counting window opened by [`BulkRoundCommand::Begin`] and
 //! closed by [`BulkRoundCommand::EndRound`]. Real flows observed while the window is open
 //! are counted; at close the relay emits synthetic cover flows so the observed total
-//! reaches [`CoverRequirement::target_flow_count`] (baseline), or a matched/scaffold plan
-//! under [`CoverMultihopDefense`].
+//! reaches [`CoverRequirement::target_flow_count`] (baseline), or a matched/scaffold/onion
+//! plan under [`CoverMultihopDefense`].
 //!
 //! ## Cover flow shape
 //!
-//! Each synthetic cover flow is a bounded burst of
-//! [`aegis_crypto::cell::Command::SphinxFragment`] cells — the same command byte and
-//! [`SPHINX_FRAGMENT_COUNT`] as a real bulk Sphinx packet on the wire — with a random
-//! [`PacketId`] and CSPRNG payload slots. [`crate::RelayNode`] forwards the burst on the
-//! optional cover outbound channel; the link bridge seals each cell with hop AEAD before
-//! writing TCP frames.
+//! Baseline / matched / scaffold cover is a bounded burst of
+//! [`aegis_crypto::cell::Command::SphinxFragment`] cells — same command byte and
+//! [`SPHINX_FRAGMENT_COUNT`] as real bulk — with a random [`PacketId`] and CSPRNG payload
+//! slots tagged by reserved markers. Peelable [`CoverMultihopDefense::CoverOnions`] flows
+//! are **valid Sphinx** fragments (reserved zero) built to a terminal hop then
+//! [`COVER_SINK_HOP_ID`].
 //!
 //! ## Honest limitation
 //!
 //! Cover padding holds **observed flow count and per-flow cell volume** at this relay,
 //! and each cover cell is a fixed-width AEAD link frame indistinguishable in length from
-//! real traffic. After decryption, cover fragments carry random payload bytes (not a valid
-//! Sphinx onion). A reserved-byte wire marker (`COVER_FRAGMENT_RESERVED` /
-//! `COVER_ONION_SCAFFOLD_RESERVED`) lets inbound link handlers discard cover before
-//! reassembly so it never reaches peel. The link-bridge cover dispatcher paces cells onto
-//! the wire at Mode-1 τ ([`crate::net::DEFAULT_COVER_CELL_TAU`]) so inter-cell gaps match
-//! client paced bulk when possible. Residual: multi-hop forwarding semantics and valid
-//! Sphinx ciphertext still differ — cover is discarded at the next hop and never
-//! peels/forwards like genuine bulk.
+//! real traffic. Local-discard cover (`COVER_FRAGMENT_RESERVED` /
+//! `COVER_ONION_SCAFFOLD_RESERVED`) never reaches peel. Peelable cover onions restore
+//! **one hop** of Sphinx peel-then-sink continuity when a terminal peer KEM public is
+//! configured; they are **not** real client exit traffic (payload discarded at the sink
+//! hop id). Residual: full multi-hop forwardable cover onions and info-theoretic
+//! indistinguishability are not claimed.
 //!
-//! ## Multi-hop defense (wave A3 / S4 productization)
+//! ## Multi-hop defense (wave A3 / B1 productization)
 //!
 //! Sim ranking in `sim/aegis_sim/cover_multihop_defense.py` prefers **cover onions**
 //! (peel/forward then sink) to raise `implied_packet_continuity` toward Sphinx, with
-//! **matched local discard** as the low-risk ops lever (synchronize per-hop cover burst
-//! schedules so discard volumes match). Product ships:
+//! **matched local discard** as the low-risk ops lever. Product ships:
 //! - [`CoverMultihopDefense::MatchedLocalDiscard`] — fixed cover flow count per round
-//!   (independent of local real traffic) so peer hops with the same TOML align discard
-//!   volume; still `COVER_FRAGMENT_RESERVED` local discard.
-//! - [`CoverMultihopDefense::CoverOnionsScaffold`] — tagged scaffold flows for future
-//!   peelable cover onions; **still discarded today** — does **not** restore Sphinx
-//!   forward continuity or claim info-theoretic indistinguishability.
+//!   (peer-aligned discard volume); still `COVER_FRAGMENT_RESERVED`.
+//! - [`CoverMultihopDefense::CoverOnions`] — valid Sphinx to terminal peer then
+//!   peel-then-discard at [`COVER_SINK_HOP_ID`] (requires terminal KEM public).
+//! - [`CoverMultihopDefense::CoverOnionsScaffold`] — tagged scaffold; **still discarded**.
 
 use aegis_crypto::cell::{Cell, Command, CELL_LEN};
 use aegis_crypto::fragment::{
-    PacketId, FRAGMENT_HEADER_LEN, FRAGMENT_PAYLOAD_LEN, LAST_FRAGMENT_DATA_LEN,
-    SPHINX_FRAGMENT_COUNT,
+    fragment_with_random_id, PacketId, FRAGMENT_HEADER_LEN, FRAGMENT_PAYLOAD_LEN,
+    LAST_FRAGMENT_DATA_LEN, SPHINX_FRAGMENT_COUNT,
 };
+use aegis_crypto::kem::{RelayKemPublic, RelayKemSecret};
+use aegis_crypto::sphinx::{self, PathHop};
 use aegis_negotiator::cover::{
     dial_needs_cover_plan, required_cover_flow_count, CoverRequirement,
 };
@@ -76,20 +74,30 @@ const OFF_PAYLOAD: usize = FRAGMENT_HEADER_LEN;
 /// cover padding never enters the Sphinx peel/forward path.
 pub const COVER_FRAGMENT_RESERVED: [u8; 2] = [0xC0, 0x01];
 
-/// Reserved-byte tag for cover-onion **scaffold** fragments (wave A3).
-///
-/// Same local-discard fate as [`COVER_FRAGMENT_RESERVED`] today. Distinct marker
-/// reserves the wire slot for a future peel/forward-then-sink construction without
-/// claiming Sphinx continuity now.
+/// Reserved-byte tag for cover-onion **scaffold** fragments (still local-discard).
 pub const COVER_ONION_SCAFFOLD_RESERVED: [u8; 2] = [0xC0, 0x02];
+
+/// Well-known next-hop id meaning "peel then discard" (not client exit delivery).
+///
+/// After a terminal hop peels a cover onion, Sphinx returns `Forward` with this
+/// `next_hop`. [`crate::RelayNode`] sinks the packet — it must never be treated as
+/// real client exit traffic.
+pub const COVER_SINK_HOP_ID: [u8; 32] = [
+    0xA3, 0xC0, 0x53, 0x4B, // "aegis cover sink" marker bytes
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x53,
+];
+
+/// Payload prefix stamped into cover-onion delta (not a client application message).
+pub const COVER_ONION_PAYLOAD_PREFIX: &[u8] = b"aegis-cover-onion-sink-v1";
 
 /// Default fixed cover flows when [`CoverMultihopDefense::MatchedLocalDiscard`] is on.
 pub const DEFAULT_MATCHED_COVER_FLOWS: u32 = 1;
 
-/// Default scaffold onion flows when [`CoverMultihopDefense::CoverOnionsScaffold`] is on.
+/// Default cover-onion flows when onion modes are on.
 pub const DEFAULT_COVER_ONION_FLOWS: u32 = 1;
 
-/// Multi-hop cover defense mode (sim S4 → product A3).
+/// Multi-hop cover defense mode (sim S4 → product A3 / B1).
 ///
 /// Opt-in via TOML `[cover] multihop_defense`. Default keeps today's pad-to-target
 /// local discard.
@@ -100,6 +108,8 @@ pub enum CoverMultihopDefense {
     BaselineLocalDiscard,
     /// Emit a fixed matched cover volume each round (peer-aligned discard/volume).
     MatchedLocalDiscard,
+    /// Valid Sphinx cover onion to a terminal hop, then peel-then-discard at sink id.
+    CoverOnions,
     /// Scaffold tagged cover-onion flows; still local-discard (no Sphinx continuity).
     CoverOnionsScaffold,
 }
@@ -112,9 +122,9 @@ impl CoverMultihopDefense {
                 Some(Self::BaselineLocalDiscard)
             }
             "matched" | "matched_local_discard" => Some(Self::MatchedLocalDiscard),
-            "cover_onions" | "cover_onions_scaffold" | "onions_scaffold" => {
-                Some(Self::CoverOnionsScaffold)
-            }
+            // Peelable product path (B1) — distinct from scaffold.
+            "cover_onions" | "onions" | "peelable_cover_onions" => Some(Self::CoverOnions),
+            "cover_onions_scaffold" | "onions_scaffold" => Some(Self::CoverOnionsScaffold),
             _ => None,
         }
     }
@@ -124,24 +134,60 @@ impl CoverMultihopDefense {
         match self {
             Self::BaselineLocalDiscard => "baseline_local_discard",
             Self::MatchedLocalDiscard => "matched_local_discard",
+            Self::CoverOnions => "cover_onions",
             Self::CoverOnionsScaffold => "cover_onions_scaffold",
         }
     }
 }
 
-/// How many local-discard vs onion-scaffold flows a round close should emit.
+/// Terminal hop that peels a cover onion before the sink discard.
+#[derive(Clone)]
+pub struct CoverOnionTerminal {
+    pub id: [u8; 32],
+    pub pk: RelayKemPublic,
+}
+
+impl std::fmt::Debug for CoverOnionTerminal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CoverOnionTerminal")
+            .field("id", &self.id)
+            .field("pk_commitment", &self.pk.commitment())
+            .finish()
+    }
+}
+
+impl CoverOnionTerminal {
+    #[must_use]
+    pub fn new(id: [u8; 32], pk: RelayKemPublic) -> Self {
+        Self { id, pk }
+    }
+
+    #[must_use]
+    pub fn path_hop(&self) -> PathHop {
+        PathHop {
+            id: self.id,
+            pk: self.pk.clone(),
+        }
+    }
+}
+
+/// How many local-discard / scaffold / peelable-onion flows a round close should emit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoverEmitPlan {
     /// Classic `COVER_FRAGMENT_RESERVED` flows (local discard at next hop).
     pub local_discard_flows: u32,
-    /// Scaffold `COVER_ONION_SCAFFOLD_RESERVED` flows (also discarded today).
+    /// Scaffold `COVER_ONION_SCAFFOLD_RESERVED` flows (also discarded).
     pub onion_scaffold_flows: u32,
+    /// Peelable valid-Sphinx cover onions (terminal → sink).
+    pub onion_peelable_flows: u32,
 }
 
 impl CoverEmitPlan {
     #[must_use]
     pub const fn total_flows(self) -> u32 {
-        self.local_discard_flows.saturating_add(self.onion_scaffold_flows)
+        self.local_discard_flows
+            .saturating_add(self.onion_scaffold_flows)
+            .saturating_add(self.onion_peelable_flows)
     }
 
     #[must_use]
@@ -157,12 +203,10 @@ impl CoverEmitPlan {
 
 /// Plan cover emission for a closed bulk round under the chosen multi-hop defense.
 ///
-/// - **Baseline:** `max(0, target - real)` local-discard flows (unchanged L2 pad).
-/// - **Matched:** exactly `matched_cover_flows` local-discard flows, independent of
-///   `real` — peers sharing the same TOML emit identical discard cell counts.
-/// - **Cover onions scaffold:** baseline pad (if any) plus `cover_onion_flows`
-///   scaffold flows. Scaffold does **not** peel/forward; continuity residual vs
-///   Sphinx remains.
+/// - **Baseline:** `max(0, target - real)` local-discard flows.
+/// - **Matched:** exactly `matched_cover_flows` local-discard flows.
+/// - **Cover onions:** baseline pad (if any) plus `cover_onion_flows` peelable onions.
+/// - **Cover onions scaffold:** baseline pad plus scaffold-tagged discard flows.
 #[must_use]
 pub fn plan_cover_emit(
     defense: CoverMultihopDefense,
@@ -176,22 +220,37 @@ pub fn plan_cover_emit(
         return CoverEmitPlan {
             local_discard_flows: 0,
             onion_scaffold_flows: 0,
+            onion_peelable_flows: 0,
         };
     }
     match defense {
         CoverMultihopDefense::BaselineLocalDiscard => CoverEmitPlan {
             local_discard_flows: required_cover_flow_count(real_participants, target),
             onion_scaffold_flows: 0,
+            onion_peelable_flows: 0,
         },
         CoverMultihopDefense::MatchedLocalDiscard => CoverEmitPlan {
             local_discard_flows: matched_cover_flows,
             onion_scaffold_flows: 0,
+            onion_peelable_flows: 0,
+        },
+        CoverMultihopDefense::CoverOnions => CoverEmitPlan {
+            local_discard_flows: required_cover_flow_count(real_participants, target),
+            onion_scaffold_flows: 0,
+            onion_peelable_flows: cover_onion_flows,
         },
         CoverMultihopDefense::CoverOnionsScaffold => CoverEmitPlan {
             local_discard_flows: required_cover_flow_count(real_participants, target),
             onion_scaffold_flows: cover_onion_flows,
+            onion_peelable_flows: 0,
         },
     }
+}
+
+/// True when `next_hop` is the cover-onion sink (peel-then-discard).
+#[must_use]
+pub fn is_cover_sink_hop(next_hop: &[u8; 32]) -> bool {
+    next_hop == &COVER_SINK_HOP_ID
 }
 
 /// True when `cell` is a relay-origin bulk-cover fragment (not client Sphinx).
@@ -216,20 +275,24 @@ pub fn is_cover_onion_scaffold_fragment(cell: &Cell) -> bool {
 }
 
 /// True when inbound must discard the cell before Sphinx reassembly.
+///
+/// Peelable cover onions are **not** matched — they use reserved-zero Sphinx fragments.
 #[must_use]
 pub fn is_discard_cover_fragment(cell: &Cell) -> bool {
     is_relay_cover_fragment(cell) || is_cover_onion_scaffold_fragment(cell)
 }
 
 /// Cells emitted per synthetic cover flow (one bulk Sphinx packet on the wire).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct CoverFlowConfig {
     pub cells_per_flow: usize,
     pub multihop_defense: CoverMultihopDefense,
     /// Fixed local-discard flows when defense is [`CoverMultihopDefense::MatchedLocalDiscard`].
     pub matched_cover_flows: u32,
-    /// Scaffold onion flows when defense is [`CoverMultihopDefense::CoverOnionsScaffold`].
+    /// Onion flows when defense is cover_onions or cover_onions_scaffold.
     pub cover_onion_flows: u32,
+    /// Terminal hop for peelable cover onions (required to emit peelable flows).
+    pub cover_onion_terminal: Option<CoverOnionTerminal>,
 }
 
 impl Default for CoverFlowConfig {
@@ -239,6 +302,7 @@ impl Default for CoverFlowConfig {
             multihop_defense: CoverMultihopDefense::BaselineLocalDiscard,
             matched_cover_flows: DEFAULT_MATCHED_COVER_FLOWS,
             cover_onion_flows: DEFAULT_COVER_ONION_FLOWS,
+            cover_onion_terminal: None,
         }
     }
 }
@@ -258,6 +322,16 @@ impl CoverFlowConfig {
         Self {
             multihop_defense: CoverMultihopDefense::CoverOnionsScaffold,
             cover_onion_flows,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn cover_onions(cover_onion_flows: u32, terminal: CoverOnionTerminal) -> Self {
+        Self {
+            multihop_defense: CoverMultihopDefense::CoverOnions,
+            cover_onion_flows,
+            cover_onion_terminal: Some(terminal),
             ..Self::default()
         }
     }
@@ -313,8 +387,8 @@ impl CoverFlowGenerator {
     }
 
     #[must_use]
-    pub fn config(&self) -> CoverFlowConfig {
-        self.config
+    pub fn config(&self) -> &CoverFlowConfig {
+        &self.config
     }
 
     /// Delegate to negotiator — single source of truth for **baseline** padding arithmetic.
@@ -338,13 +412,16 @@ impl CoverFlowGenerator {
     }
 
     /// Emit flows according to [`plan_cover_emit`].
+    ///
+    /// Peelable onion flows require [`CoverFlowConfig::cover_onion_terminal`]; without it
+    /// those slots are skipped (honest residual — cannot build Sphinx without a peer pk).
     pub fn generate_plan<R: RngCore + CryptoRngCore>(
         &self,
         dial: SecurityDial,
         real_participants: usize,
         rng: &mut R,
     ) -> (CoverEmitPlan, Vec<CoverFlow>) {
-        let plan = plan_cover_emit(
+        let mut plan = plan_cover_emit(
             self.config.multihop_defense,
             dial,
             real_participants,
@@ -359,6 +436,22 @@ impl CoverFlowGenerator {
         for _ in 0..plan.onion_scaffold_flows {
             flows.push(self.generate_one_flow(rng, COVER_ONION_SCAFFOLD_RESERVED));
         }
+        let mut emitted_peelable = 0u32;
+        if plan.onion_peelable_flows > 0 {
+            if let Some(terminal) = &self.config.cover_onion_terminal {
+                for _ in 0..plan.onion_peelable_flows {
+                    match build_peel_to_sink_cover_flow(terminal, rng) {
+                        Ok(flow) => {
+                            flows.push(flow);
+                            emitted_peelable += 1;
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+        // Reflect actual peelable emissions when terminal missing / build failed.
+        plan.onion_peelable_flows = emitted_peelable;
         (plan, flows)
     }
 
@@ -374,6 +467,34 @@ impl CoverFlowGenerator {
             .collect();
         CoverFlow { cells }
     }
+}
+
+/// Build one peelable cover onion: valid Sphinx `[terminal → COVER_SINK]`, fragmented.
+///
+/// Wire cells have reserved-zero headers (enter reassembly). Terminal peel yields
+/// [`COVER_SINK_HOP_ID`]; the mix must sink/discard — **not** client exit delivery.
+pub fn build_peel_to_sink_cover_flow<R: RngCore + CryptoRngCore>(
+    terminal: &CoverOnionTerminal,
+    rng: &mut R,
+) -> Result<CoverFlow, aegis_crypto::CryptoError> {
+    let (sink_sec, sink_pk) = RelayKemSecret::generate(rng);
+    let _ = sink_sec; // sink never peels in-network; id alone triggers discard.
+    let path = [
+        terminal.path_hop(),
+        PathHop {
+            id: COVER_SINK_HOP_ID,
+            pk: sink_pk,
+        },
+    ];
+    let mut payload = [0u8; sphinx::DELTA_LEN];
+    let n = COVER_ONION_PAYLOAD_PREFIX.len().min(sphinx::DELTA_LEN);
+    payload[..n].copy_from_slice(&COVER_ONION_PAYLOAD_PREFIX[..n]);
+    rng.fill_bytes(&mut payload[n..]);
+    let packet = sphinx::build(&path, &payload[..n], rng)?;
+    let (cells, _) = fragment_with_random_id(&packet, rng);
+    Ok(CoverFlow {
+        cells: cells.to_vec(),
+    })
 }
 
 /// Operator/automation commands that drive per-round cover accounting on a relay.
@@ -459,12 +580,13 @@ impl BulkRoundTracker {
         );
 
         // Baseline: keep legacy gate (no emit when already at/over target).
-        // Matched / scaffold: emit whenever the plan is non-empty (matched ignores real).
+        // Matched / onion modes: emit whenever the planned slots are non-empty.
         let should_emit = match config.multihop_defense {
             CoverMultihopDefense::BaselineLocalDiscard => {
                 dial_needs_cover_plan(dial, real, target)
             }
             CoverMultihopDefense::MatchedLocalDiscard
+            | CoverMultihopDefense::CoverOnions
             | CoverMultihopDefense::CoverOnionsScaffold => {
                 matches!(dial, SecurityDial::L2UniformBatched) && !plan.is_empty()
             }
@@ -473,8 +595,11 @@ impl BulkRoundTracker {
             return None;
         }
 
-        let generator = CoverFlowGenerator::with_config(self.requirement, *config);
+        let generator = CoverFlowGenerator::with_config(self.requirement, config.clone());
         let (plan, cover_flows) = generator.generate_plan(dial, real, rng);
+        if plan.is_empty() && cover_flows.is_empty() {
+            return None;
+        }
         let cover_flow_count = cover_flows.len() as u32;
         let cover_cell_count = cover_flows
             .iter()
@@ -544,8 +669,19 @@ fn encode_cover_fragment_cell<R: RngCore + CryptoRngCore>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aegis_crypto::fragment::reassemble;
+    use aegis_crypto::kem::RelayKemSecret;
+    use aegis_crypto::replay::ReplayCache;
+    use aegis_crypto::sphinx::{process, Processed};
     use aegis_negotiator::cover::required_cover_flow_count;
     use rand_core::OsRng;
+
+    fn test_terminal(rng: &mut OsRng) -> (RelayKemSecret, CoverOnionTerminal) {
+        let (sec, pk) = RelayKemSecret::generate(rng);
+        let mut id = [0u8; 32];
+        id[0] = 0x7E;
+        (sec, CoverOnionTerminal::new(id, pk))
+    }
 
     #[test]
     fn generator_produces_exact_count_when_under_target() {
@@ -654,7 +790,6 @@ mod tests {
         assert_eq!(a.plan.local_discard_flows, 2);
         assert_eq!(a.plan.onion_scaffold_flows, 0);
         assert!(a.cover_flows.iter().flat_map(|f| &f.cells).all(is_relay_cover_fragment));
-        // Honest residual: matched discard does not create Sphinx forwards.
         assert_eq!(a.multihop_defense, CoverMultihopDefense::MatchedLocalDiscard);
     }
 
@@ -674,6 +809,7 @@ mod tests {
 
         assert_eq!(result.plan.local_discard_flows, 0);
         assert_eq!(result.plan.onion_scaffold_flows, 2);
+        assert_eq!(result.plan.onion_peelable_flows, 0);
         assert_eq!(result.cover_flow_count, 2);
         assert!(result
             .cover_flows
@@ -685,16 +821,62 @@ mod tests {
             .iter()
             .flat_map(|f| &f.cells)
             .all(is_discard_cover_fragment));
-        assert!(result
-            .cover_flows
-            .iter()
-            .flat_map(|f| &f.cells)
-            .all(|c| !is_relay_cover_fragment(c)));
-        // Honest: scaffold ≠ Sphinx forward continuity.
         assert_eq!(
             result.multihop_defense,
             CoverMultihopDefense::CoverOnionsScaffold
         );
+    }
+
+    #[test]
+    fn cover_onions_peel_to_sink_is_valid_sphinx_not_discard_marker() {
+        let mut rng = OsRng;
+        let (term_sec, terminal) = test_terminal(&mut rng);
+        let config = CoverFlowConfig::cover_onions(1, terminal);
+        let mut tracker = BulkRoundTracker::new();
+
+        tracker.begin(SecurityDial::L2UniformBatched, CoverRequirement::new(8));
+        for _ in 0..8 {
+            tracker.observe_real_flow();
+        }
+        let result = tracker
+            .close_and_emit(&mut rng, &config)
+            .expect("peelable onions emit when pad is zero");
+
+        assert_eq!(result.plan.onion_peelable_flows, 1);
+        assert_eq!(result.plan.onion_scaffold_flows, 0);
+        assert_eq!(result.multihop_defense, CoverMultihopDefense::CoverOnions);
+        let flow = &result.cover_flows[0];
+        assert!(flow.cells.iter().all(|c| !is_discard_cover_fragment(c)));
+
+        let packet = reassemble(&flow.cells).expect("peelable cover must reassemble");
+        let mut replay = ReplayCache::new();
+        match process(&packet, &term_sec, &mut replay).expect("terminal peel") {
+            Processed::Forward { next_hop, .. } => {
+                assert!(
+                    is_cover_sink_hop(&next_hop),
+                    "terminal peel must reveal cover sink hop"
+                );
+            }
+            other => panic!("expected Forward to sink, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cover_onions_without_terminal_emits_no_peelable() {
+        let config = CoverFlowConfig {
+            multihop_defense: CoverMultihopDefense::CoverOnions,
+            cover_onion_flows: 2,
+            cover_onion_terminal: None,
+            ..CoverFlowConfig::default()
+        };
+        let mut tracker = BulkRoundTracker::new();
+        let mut rng = OsRng;
+        tracker.begin(SecurityDial::L2UniformBatched, CoverRequirement::new(8));
+        for _ in 0..8 {
+            tracker.observe_real_flow();
+        }
+        // Planned non-empty, but no terminal → generate_plan emits nothing peelable.
+        assert!(tracker.close_and_emit(&mut rng, &config).is_none());
     }
 
     #[test]
@@ -745,19 +927,34 @@ mod tests {
     }
 
     #[test]
-    fn parse_multihop_defense_tokens() {
+    fn parse_multihop_defense_tokens_distinct() {
         assert_eq!(
             CoverMultihopDefense::parse("matched_local_discard"),
             Some(CoverMultihopDefense::MatchedLocalDiscard)
         );
         assert_eq!(
             CoverMultihopDefense::parse("cover_onions"),
+            Some(CoverMultihopDefense::CoverOnions)
+        );
+        assert_eq!(
+            CoverMultihopDefense::parse("cover_onions_scaffold"),
             Some(CoverMultihopDefense::CoverOnionsScaffold)
+        );
+        assert_ne!(
+            CoverMultihopDefense::parse("cover_onions"),
+            CoverMultihopDefense::parse("cover_onions_scaffold")
         );
         assert_eq!(
             CoverMultihopDefense::parse("baseline"),
             Some(CoverMultihopDefense::BaselineLocalDiscard)
         );
         assert_eq!(CoverMultihopDefense::parse("nope"), None);
+    }
+
+    #[test]
+    fn cover_sink_hop_id_is_stable_and_non_zero() {
+        assert_ne!(COVER_SINK_HOP_ID, [0u8; 32]);
+        assert!(is_cover_sink_hop(&COVER_SINK_HOP_ID));
+        assert!(!is_cover_sink_hop(&[0u8; 32]));
     }
 }

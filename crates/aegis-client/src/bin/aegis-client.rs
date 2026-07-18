@@ -141,7 +141,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             None => "",
         };
-        eprintln!("building bound path from roster{mitigation_note}");
+        let diversity_note = file
+            .path
+            .as_ref()
+            .filter(|p| p.require_diverse_jurisdictions)
+            .map(|p| {
+                format!(
+                    " with jurisdiction diversity (max_per_jurisdiction={})",
+                    p.max_per_jurisdiction.max(1)
+                )
+            })
+            .unwrap_or_default();
+        eprintln!("building bound path from roster{mitigation_note}{diversity_note}");
     } else if !file.hops.is_empty() {
         eprintln!("using explicit [[hops]] path ({} hops)", file.hops.len());
     }

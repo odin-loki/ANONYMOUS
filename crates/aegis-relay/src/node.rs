@@ -30,7 +30,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::config::{BulkCoverConfig, CoverPolicyError, RelayConfig};
-use crate::cover_flow::{BulkRoundCommand, BulkRoundTracker};
+use crate::cover_flow::{is_cover_sink_hop, BulkRoundCommand, BulkRoundTracker};
 use crate::delay::sample_mixing_delay;
 use crate::relay_id::RelayId;
 
@@ -102,6 +102,8 @@ impl RelayCoarseStats {
 pub struct RelayDebugStats {
     pub loop_return_count: u64,
     pub dropped_count: u64,
+    /// Peel-then-discard cover onions that terminated at [`crate::COVER_SINK_HOP_ID`].
+    pub cover_onion_sink_count: u64,
     pub cover_flow_count: u64,
     pub cover_cell_count: u64,
     pub integrity_error_count: u64,
@@ -115,6 +117,7 @@ pub struct RelayDebugStats {
 struct RelayStats {
     loop_return_count: AtomicU64,
     dropped_count: AtomicU64,
+    cover_onion_sink_count: AtomicU64,
     cover_flow_count: AtomicU64,
     cover_cell_count: AtomicU64,
     integrity_error_count: AtomicU64,
@@ -129,6 +132,7 @@ impl RelayStats {
         Self {
             loop_return_count: AtomicU64::new(0),
             dropped_count: AtomicU64::new(0),
+            cover_onion_sink_count: AtomicU64::new(0),
             cover_flow_count: AtomicU64::new(0),
             cover_cell_count: AtomicU64::new(0),
             integrity_error_count: AtomicU64::new(0),
@@ -142,12 +146,14 @@ impl RelayStats {
     fn coarse(&self) -> RelayCoarseStats {
         let loop_return = self.loop_return_count.load(Ordering::Relaxed);
         let dropped = self.dropped_count.load(Ordering::Relaxed);
+        let cover_sink = self.cover_onion_sink_count.load(Ordering::Relaxed);
         let forwarded = self.forwarded_count.load(Ordering::Relaxed);
         let integrity = self.integrity_error_count.load(Ordering::Relaxed);
         let replay = self.replay_error_count.load(Ordering::Relaxed);
         let other = self.other_error_count.load(Ordering::Relaxed);
         RelayCoarseStats {
-            processed_ok: forwarded + loop_return + dropped,
+            // Cover-onion sinks count as successful process (peel ok) without forward.
+            processed_ok: forwarded + loop_return + dropped + cover_sink,
             processed_fail: integrity + replay + other,
             cover_emitted: self.cover_flow_count.load(Ordering::Relaxed),
             queue_dropped: self.queue_dropped.load(Ordering::Relaxed),
@@ -158,6 +164,7 @@ impl RelayStats {
         RelayDebugStats {
             loop_return_count: self.loop_return_count.load(Ordering::Relaxed),
             dropped_count: self.dropped_count.load(Ordering::Relaxed),
+            cover_onion_sink_count: self.cover_onion_sink_count.load(Ordering::Relaxed),
             cover_flow_count: self.cover_flow_count.load(Ordering::Relaxed),
             cover_cell_count: self.cover_cell_count.load(Ordering::Relaxed),
             integrity_error_count: self.integrity_error_count.load(Ordering::Relaxed),
@@ -421,6 +428,15 @@ async fn process_one_packet<R: RngCore + CryptoRngCore>(
 
     match result {
         Ok(Processed::Forward { next_hop, packet }) => {
+            // Peelable cover onion terminal: Sphinx peel succeeded, sink payload.
+            // Not real client traffic — do not observe as a real bulk flow or exit.
+            if is_cover_sink_hop(&next_hop) {
+                let _ = packet;
+                stats
+                    .cover_onion_sink_count
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
             round.observe_real_flow();
             let delay = sample_mixing_delay(node.config.mu, rng);
             tokio::time::sleep(delay).await;
@@ -572,6 +588,50 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(handle.debug_stats().cover_flow_count, 2);
         assert_eq!(handle.debug_stats().forwarded_count, 4);
+    }
+
+    #[tokio::test]
+    async fn cover_onion_peel_then_sink_does_not_forward_or_count_real() {
+        use crate::cover_flow::{build_peel_to_sink_cover_flow, CoverOnionTerminal};
+        use aegis_crypto::fragment::reassemble;
+
+        let mut rng = OsRng;
+        let (term_sec, term_pk) = RelayKemSecret::generate(&mut rng);
+        let mut term_id = [0u8; 32];
+        term_id[0] = 0x7E;
+        let terminal = CoverOnionTerminal::new(term_id, term_pk);
+        let flow = build_peel_to_sink_cover_flow(&terminal, &mut rng).unwrap();
+        let packet = reassemble(&flow.cells).unwrap();
+
+        let (inbound_tx, inbound_rx) = mpsc::channel(8);
+        let (outbound_tx, mut outbound_rx) = mpsc::channel(8);
+        let node = RelayNode::new(RelayId(term_id), term_sec, RelayConfig::default());
+        let (handle, _task) = node.spawn(inbound_rx, outbound_tx, None, OsRng).unwrap();
+
+        handle
+            .begin_bulk_round(SecurityDial::L2UniformBatched, CoverRequirement::new(8))
+            .await
+            .unwrap();
+        inbound_tx.send(packet).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            outbound_rx.try_recv().is_err(),
+            "cover-onion sink must not forward"
+        );
+        let dbg = handle.debug_stats();
+        assert_eq!(dbg.cover_onion_sink_count, 1);
+        assert_eq!(dbg.forwarded_count, 0);
+        assert_eq!(handle.coarse_stats().processed_ok, 1);
+
+        // Sink must not count as a real bulk flow (would shrink pad from 8 → 7).
+        handle.end_bulk_round().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            handle.debug_stats().cover_flow_count,
+            8,
+            "0 real flows after sink ⇒ full baseline pad of 8"
+        );
     }
 
     #[tokio::test]

@@ -56,11 +56,26 @@ Jurisdiction fields remain **declarative** in code; quota compliance is policy.
 | `authorities_meet_charter_diversity` | Trustee jurisdiction count ≥2 |
 | `rate_limited_rejects` | Slow-pipeline residual when rate limit on |
 
+## Client path-select (wave B2)
+
+Opt-in soft enforcement on roster-driven client paths (default **off**):
+
+```toml
+[path]
+require_diverse_jurisdictions = true
+max_per_jurisdiction = 1   # default when diversity enabled; ignored when off
+```
+
+Wires to `build_bound_path_diverse_pruned` / mitigated compose when
+`[guard_mitigation] preset = "adaptive_v4"` (or other presets) is also set.
+This is **software path resampling**, not charter/legal quota enforcement.
+
 ## Honest leftovers
 
 - **Legal vetting / sanctions screening:** External — not modeled as crypto.
-- **Binding diversity quotas:** Charter policy + auditor process; code stores
-  `RelayRecord.jurisdiction` only.
+- **Binding diversity quotas / charter enforcement:** Still **External** (counsel /
+  auditor process). Client knobs only reject concentrated hops at path-build time;
+  they do not admit, revoke, or legally certify jurisdiction labels.
 - **Multi-org BFT reputation / global revocation:** External.
 - This sim does **not** claim consortium governance closed.
 
@@ -70,3 +85,5 @@ Jurisdiction fields remain **declarative** in code; quota compliance is policy.
 - [`ATTACK_PLAYBOOK.md`](ATTACK_PLAYBOOK.md) §6 (consortium faction)
 - [`RESEARCH_AGENDA.md`](RESEARCH_AGENDA.md) §1 / §4 governance
 - [`RESEARCH_COVERAGE_WAVE.md`](RESEARCH_COVERAGE_WAVE.md) track C3
+- [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md) — compose with adaptive_v4
+- [`PILOT.md`](PILOT.md) — client `[path]` knobs
