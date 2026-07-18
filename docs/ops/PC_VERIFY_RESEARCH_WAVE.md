@@ -1,7 +1,8 @@
 # PC verify + research wave (no Docker)
 
 **Date:** 2026-07-18  
-**Tip baseline:** 3819c1b  
+**Tip baseline:** 3819c1b → **landed at `c7c2f0d`**  
+**Status:** **Landed** (S1–S6 Done). Hub: [`RESEARCH_THEORY_AND_STATUS.md`](RESEARCH_THEORY_AND_STATUS.md).  
 **Goal:** Max security verify + research on this PC.  
 **Out of scope:** Docker, false formal-proof claims, inventing WAN C2.
 
@@ -14,7 +15,8 @@
 | S5 | Gossip K + adaptive/fused | `adaptive_v4` + stacked gossip | **Done** — see § S5 | Field rates |
 | S6 | CT / SoftHSM / Noise | Evidence + Noise note | **Done** — see § S6 | Isolated dudect bar |
 
-**Execution:** Grok 4.5 agents in parallel; parent integrates.
+**Execution:** Grok 4.5 agents in parallel; parent integrates.  
+**Operator entry:** [`RESEARCH_THEORY_AND_STATUS.md`](RESEARCH_THEORY_AND_STATUS.md).
 
 ---
 
@@ -99,7 +101,8 @@ SPHINX_FUZZ_MODE=short bash scripts/run_sphinx_fuzz_evidence.sh          # ~12 m
 | Cover multi-hop (C5→S4) | `cover_multihop_defense.py` + `sim/data/cover_multihop_defense*.json` + tests | `cover_onions` (ops lever: `matched_local_discard`) | `implied_packet_continuity`→1.0, `semantic_gap_score`, hop L1 | Product still `COVER_FRAGMENT_RESERVED` local discard |
 
 **Docs:** [`exit_tier_defense.md`](exit_tier_defense.md) · [`cover_multihop_defense.md`](cover_multihop_defense.md) · playbook §7 / §9 rows.  
-**Rust:** policy comment only in `crates/aegis-relay/src/cover_flow.rs` (no new flags).
+**Rust (at S4 land):** policy comment only in `crates/aegis-relay/src/cover_flow.rs`.  
+**Later product (A2/A3/B1 → tip `c7c2f0d`):** `[exit].presence_pad`; `[cover] multihop_defense` = `matched_local_discard` / `cover_onions` / scaffold — see [`RESEARCH_THEORY_AND_STATUS.md`](RESEARCH_THEORY_AND_STATUS.md).
 
 ```bash
 cd sim && PYTHONPATH=. python scripts/run_exit_tier_defense.py
@@ -107,7 +110,7 @@ cd sim && PYTHONPATH=. python scripts/run_cover_multihop_defense.py
 cd sim && PYTHONPATH=. pytest -q tests/test_exit_tier_defense.py tests/test_cover_multihop_defense.py
 ```
 
-**Not claimed:** Info-theoretic cover indistinguishability, WAN exit C2 close, peelable cover onions in product.
+**Not claimed (S4-era residual; still true for science):** Info-theoretic cover indistinguishability, WAN exit C2 close. Peelable cover onions later shipped as product opt-in (B1) — not info-theoretic.
 
 ---
 

@@ -1,7 +1,8 @@
 # Productize defenses wave (no Docker)
 
 **Date:** 2026-07-18  
-**Tip baseline:** ddaad73  
+**Tip baseline:** ddaad73 → **landed at `c7c2f0d`**  
+**Status:** **Landed** (A1–A6 Done/Shipped). Hub: [`RESEARCH_THEORY_AND_STATUS.md`](RESEARCH_THEORY_AND_STATUS.md).  
 **Goal:** Land sim-recommended defenses into product + deepen fuzz/metrics research on this PC.  
 **Out of scope:** Docker, false §13/formal-proof closure, inventing WAN C2.
 
@@ -14,7 +15,8 @@
 | A5 | Metrics scrape defense sim | **Done** — `metrics_scrape_defense.py` ranks `stacked` vs C5 Pearson; artifact + pytest | Not closed; fail/queue residual |
 | A6 | Sphinx fuzz evidence | **Done** — timed libFuzzer + [`sim/sphinx_fuzz_evidence.txt`](../../sim/sphinx_fuzz_evidence.txt) | Mechanized proof |
 
-**Execution:** Grok 4.5 agents in parallel; parent integrates.
+**Execution:** Grok 4.5 agents in parallel; parent integrates.  
+**Operator entry:** [`PILOT.md`](PILOT.md) · [`DEPLOYMENT.md`](DEPLOYMENT.md) · [`RESEARCH_THEORY_AND_STATUS.md`](RESEARCH_THEORY_AND_STATUS.md).
 
 ---
 

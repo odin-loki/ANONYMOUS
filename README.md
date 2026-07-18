@@ -60,6 +60,12 @@ cd ../crates && cargo build --workspace && cargo test --workspace
 
 All of the above is independently re-verifiable with `cd sim && PYTHONPATH=. pytest -q` (**25 passed**) and `cd crates && cargo test --workspace` (**195 passed, 3 ignored, 0 failed**, plus `cargo deny check` clean, `.github/workflows/ci.yml` for test/deny/nightly fuzz-smoke, and a workspace-wide `unsafe_code = forbid` lint policy — see `docs/AEGIS_implementation_threat_model.md`).
 
+## Research status (honest)
+
+In-repo research waves (coverage C1–C6, PC verify S1–S6, productize A1–A6 / leftovers B1–B3) are **landed at tip `c7c2f0d`** as Partial / **[O] QUANTIFIED** product+sim defenses — adaptive_v4, stacked gossip, exit `presence_pad`, cover `cover_onions` / `matched_local_discard`, metrics export gate, jurisdiction path select, SoftHSM ceremony stand-in. **Research is not closed:** §13 science remains open, platform External leftovers remain (hardware TEE/HSM, multi-org BFT, isolated dudect, full AC issuer), and Docker is optional offline-pack only (do not claim containers ran without a daemon).
+
+**Start here:** [`docs/ops/RESEARCH_THEORY_AND_STATUS.md`](docs/ops/RESEARCH_THEORY_AND_STATUS.md) · backlog [`docs/ops/RESEARCH_AGENDA.md`](docs/ops/RESEARCH_AGENDA.md) · ops matrix [`docs/ops/RESEARCH_OPS_STATUS.md`](docs/ops/RESEARCH_OPS_STATUS.md).
+
 ## Security profiling
 Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing + a real implementation-level threat model, not just the paper design) lives across:
 - `docs/AEGIS_crypto_constant_time_review.md` — constant-time review + real `cargo-fuzz`/libFuzzer results (via WSL; Windows lacks libFuzzer sanitizer support) for `aegis-crypto`'s attacker-facing parsers, plus `aegis-topology`'s roster/beacon deserialization.
@@ -70,13 +76,14 @@ Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing 
 
 ## Where to start in Cursor
 1. Skim `docs/AEGIS_SPEC_v3_consolidated.md` (esp. §4, §5, §6, §10, §12).
-2. Run the `sim/` suite so the evidence ledger is live in your session.
-3. Run `cargo test --workspace` in `crates/` — Phases 2–8 are implemented; see each
+2. Read [`docs/ops/RESEARCH_THEORY_AND_STATUS.md`](docs/ops/RESEARCH_THEORY_AND_STATUS.md) for current research theory + product knobs (tip `c7c2f0d`).
+3. Run the `sim/` suite so the evidence ledger is live in your session.
+4. Run `cargo test --workspace` in `crates/` — Phases 2–8 are implemented; see each
    crate's module docs, `docs/AEGIS_phase2_implementation_notes.md`,
    `docs/AEGIS_crypto_constant_time_review.md`, `docs/AEGIS_implementation_threat_model.md`,
    and `docs/AEGIS_phase8_hardening_notes.md` for concrete design decisions and honestly
    which claims are [T]/[R]/[O] at the implementation (not just simulation) level.
-4. Try the real testnet: `cargo run -p aegis-node -- --config <toml>` for one or more
+5. Try the real testnet: `cargo run -p aegis-node -- --config <toml>` for one or more
    relays, then `cargo run -p aegis-client -- --config <toml>` to send a real, τ-paced
    Sphinx packet over TCP (see `crates/aegis-node/tests/tcp_testnet.rs` for a runnable
    example of the config shape). Production templates: `deploy/templates/`; validate with
@@ -84,11 +91,10 @@ Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing 
    governance draft: `docs/ops/CONSORTIUM_CHARTER.md`. `crates/aegis-node/tests/trace_capture.rs` (run with
    `-- --ignored`) reproduces the Phase-8 benign and malicious real trace captures.
 
-   **Security profiling status (2026-07-17): done** — call-site gaps closed, and
-   the research/ops leftovers wave is **closed** except B-class External. See
-   `docs/AEGIS_research_ops_hardening_plan.md`, `docs/ops/RESEARCH_OPS_STATUS.md`,
-   `docs/ops/RESEARCH_AGENDA.md` (what remains open — not "research complete"), and
-   `docs/ops/` (incl. `docs/ops/CONSORTIUM_CHARTER.md`, `docs/ops/PILOT.md`).
+   **Security profiling status (2026-07-17): done** — call-site gaps closed. Research waves
+   through tip `c7c2f0d` are landed as Partial/[O] QUANTIFIED — **not** "research complete".
+   See [`docs/ops/RESEARCH_THEORY_AND_STATUS.md`](docs/ops/RESEARCH_THEORY_AND_STATUS.md),
+   `docs/ops/RESEARCH_OPS_STATUS.md`, and `docs/ops/RESEARCH_AGENDA.md`.
 
    Call-site mitigations: paced session + ρ≤0.7, ingress token-bucket + global
    budget, M-of-N + KEM-derived `RelayId`, CT replay scan, signed reputation

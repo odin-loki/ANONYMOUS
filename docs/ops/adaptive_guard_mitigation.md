@@ -1,6 +1,7 @@
 # Adaptive guard mitigation (v1 + v2 + v3 + v4)
 
-**Status:** partial sim + Rust hook (2026-07-18) — **does not close spec §13**
+**Tip:** `c7c2f0d` · **Status:** partial sim + Rust hook (2026-07-18) — **does not close spec §13**  
+**Theory:** [`RESEARCH_THEORY_AND_STATUS.md`](RESEARCH_THEORY_AND_STATUS.md) §2.3 · preferred product preset: **`adaptive_v4`**
 
 ## Problem (quantified)
 

@@ -1,5 +1,8 @@
 # AEGIS Phase 2 — `aegis-crypto` Implementation Notes
 
+**Tip baseline:** c7c2f0d (docs sync 2026-07-18)  
+**Cross-ref:** [`ops/ATTACK_PLAYBOOK.md`](ops/ATTACK_PLAYBOOK.md) §11 · [`ops/RESEARCH_THEORY_AND_STATUS.md`](ops/RESEARCH_THEORY_AND_STATUS.md) · [`ops/sphinx_symbolic_model.md`](ops/sphinx_symbolic_model.md)
+
 This document records concrete design decisions for the Phase-2 Sphinx cryptographic
 core. It does **not** modify `docs/AEGIS_SPEC_v3_consolidated.md` (frozen source of truth).
 
@@ -12,6 +15,8 @@ core. It does **not** modify `docs/AEGIS_SPEC_v3_consolidated.md` (frozen source
 | `gamma` (per-hop integrity MAC) | 32 | 8224 |
 | `delta` (payload onion) | 256 | 8256 |
 | **Total `SPHINX_PACKET_LEN`** | **8512** | |
+
+**Canonical wire size is 8512 bytes.** Older notes that said 8504 are obsolete — do not reintroduce that figure.
 
 - **`MAX_HOPS = 6`** — supports acceptance tests for path lengths 2..=6 with unused
   routing slots filled with CSPRNG randomness (length unchanged).
@@ -60,10 +65,13 @@ AAD `b"aegis-link-v1"`.
 2. **LIONESS delta** — not implemented; stream-XOR onion chosen for correctness and test coverage.
 3. **`sphinx::process` on `Cell`** — returns `Malformed`; callers must use `SphinxPacket`.
 
-## Tests
+## Tests and verification status
 
 - Gate: `crates/aegis-crypto/tests/vectors.rs` (gate + edge-case property/KAT tests, unignored).
 - Additional unit tests: `kem.rs`, `sphinx.rs` (peel-pad invariants, multi-hop forward, tamper offsets), `link.rs` (tamper offsets, link AEAD).
-- Python bit-oracle (wave S1): `sim/aegis_sim/sphinx_oracle.py` + `sim/tests/test_sphinx_oracle.py` — build/peel/MAC/replay-tag from secrets; hybrid KEM remains Rust-only. Shared primitive KATs also asserted in `sphinx.rs` unit tests.
-- Fuzz: `crates/aegis-crypto/fuzz/README.md` — overnight `fuzz_sphinx_process` (WSL/Linux + `cargo-fuzz`); seed via `scripts/seed_sphinx_fuzz_corpus.py`.
-- **Status (2026-07-18, wave S1):** edge cases + peel-order KATs, wrong-hop / skip-hop reject, alpha/gamma/beta bit-flip tagging map, delta-MAC coverage gap documented, seeded relay-key structural KAT, Python↔Rust shared primitive KATs. Formal Sphinx proof remains spec §13 open item **[O]** — **not claimed**.
+- Threat-model gap tests: `crates/aegis-crypto/tests/threat_model_gaps.rs` (fixed 8512 / fragment surface, MAC, replay bounds).
+- Python bit-oracle (wave S1): `sim/aegis_sim/sphinx_oracle.py` + `sim/tests/test_sphinx_oracle.py` — build/peel/MAC/replay-tag from secrets; hybrid KEM remains Rust-only. Shared primitive KATs: `cargo test -p aegis-crypto python_oracle_shared_primitive_kats`.
+- ProVerif symbolic model (wave S3): `tools/proverif/` — **L1 secrecy**, **L2 integrity**, **L3 replay** proved under idealized Dolev–Yao (this PC / ProVerif 2.05). See [`ops/sphinx_symbolic_model.md`](ops/sphinx_symbolic_model.md). **Not** a computational ML-KEM reduction; **not** EasyCrypt; anonymity lemmas out of scope.
+- Fuzz: `crates/aegis-crypto/fuzz/README.md` — short/overnight `fuzz_sphinx_process` evidence pack (`sim/sphinx_fuzz_evidence.txt`); seed via `scripts/seed_sphinx_fuzz_corpus.py`. Crash/panic search only.
+- SoftHSM (ops custody, not Sphinx math): ceremony regress **Succeeded** as a **software token** only — see [`ops/softhsm_ceremony.md`](ops/softhsm_ceremony.md); vendor HSM remains **External**.
+- **Status (2026-07-18, tip c7c2f0d):** KATs + peel-order / wrong-hop / tagging gates + Python oracle + ProVerif L1–L3 (symbolic) + fuzz evidence. Wire size **8512**. Formal computational Sphinx proof remains spec §13 open item **[O]** — **not claimed**. Operator attack map: [`ops/ATTACK_PLAYBOOK.md`](ops/ATTACK_PLAYBOOK.md) §11.

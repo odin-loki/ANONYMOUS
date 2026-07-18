@@ -1,8 +1,10 @@
 # SoftHSM2 ceremony pilot (PKCS#11)
 
 **Status:** **Succeeded** on OdinsPC WSL (2026-07-18) — SoftHSM2 user-local build +
-token `aegis-ceremony` initialized; S6 ceremony regress green at tip `3819c1b`.
-SoftHSM remains a **software token**, not hardware custody. **Not required for CI.**
+token `aegis-ceremony` initialized; S6 ceremony regress green (evidence retained).
+**Tip:** `c7c2f0d` (docs/ops aligned; SoftHSM path unchanged). SoftHSM remains a
+**software token**, not hardware custody. **Not required for CI.**
+Hub: [`RESEARCH_THEORY_AND_STATUS.md`](RESEARCH_THEORY_AND_STATUS.md).
 
 **Parent:** [`consortium_key_ceremony.md`](consortium_key_ceremony.md)  
 **APIs:** `Pkcs11CustodyOps`, `HsmCustodyProvider`, `SimulatedHsmProvider`, `select_ceremony_custody`  
@@ -176,8 +178,9 @@ softhsm2-util --show-slots | grep -A2 'aegis-ceremony'
 # Rust PKCS#11 link still External — SimulatedHsmProvider remains the in-tree lab path.
 ```
 
-## Host run: OdinsPC (2026-07-18, tip `ae536f1`) — **SUCCEEDED**
+## Host run: OdinsPC (2026-07-18) — **SUCCEEDED**
 
+First succeeded at tip `ae536f1`; still valid at tip `c7c2f0d` (software-token path unchanged).
 Evidence: [`sim/softhsm_init_evidence.txt`](../../sim/softhsm_init_evidence.txt)
 
 | Step | Result |

@@ -1,8 +1,9 @@
 # AEGIS operator pilot (4-node loopback)
 
 **Date:** 2026-07-18  
+**Tip:** `c7c2f0d`  
 **Audience:** operators validating a production-checklist stack before WAN deployment  
-**Related:** [`DEPLOYMENT.md`](DEPLOYMENT.md), [`consortium_key_ceremony.md`](consortium_key_ceremony.md), [`noise_link_auth.md`](noise_link_auth.md), [`health_gossip.md`](health_gossip.md)
+**Related:** [`DEPLOYMENT.md`](DEPLOYMENT.md), [`RESEARCH_THEORY_AND_STATUS.md`](RESEARCH_THEORY_AND_STATUS.md) (theory hub), [`consortium_key_ceremony.md`](consortium_key_ceremony.md), [`noise_link_auth.md`](noise_link_auth.md), [`health_gossip.md`](health_gossip.md), [`softhsm_ceremony.md`](softhsm_ceremony.md)
 
 This pilot runs four `aegis-node` relays and a paced `aegis-client` on **127.0.0.1** with settings aligned to the production deployment checklist — not the lab-loose `sim/data/testnet_configs/` flags (unverified roster, trace on, ingress limits disabled).
 
@@ -136,9 +137,31 @@ Configs mount at `/config`; nodes listen on `0.0.0.0:17419–17422`, publish opt
 
 Neither path replaces staged **WAN soak** on distinct operator hosts, adversarial netem, or consortium ceremony. Docker bridge only proves that cross-container DNS + Noise + roster verify + cover + gossip wiring works beyond a single loopback namespace.
 
-**Opt-in adaptive guard mitigation** (default off): on the **client**, set `[guard_mitigation] preset = "adaptive_v4"` (or `adaptive_v3` / `adaptive_v2` / legacy `adaptive_first = true`) and optional `[path]` signals; omit ordered `[[hops]]` or pass `--roster-path` for roster-driven paths (KEM registry by relay `id` still required). Node TOML accepts the same `[guard_mitigation]` section for operator symmetry but does not select client paths — see [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md).
+## Recommended opt-ins (default off unless noted)
 
-**Opt-in jurisdiction diversity** (default off): under `[path]`, set `require_diverse_jurisdictions = true` and optional `max_per_jurisdiction = 1` so roster paths use diverse-pruned selection (composes with adaptive_v4). Soft software filter only — charter/legal enforcement remains **External** ([`faction_sybil_skew.md`](faction_sybil_skew.md)).
+These are the current researched/productized levers. Loopback pilot templates keep most **commented out** so the smoke stays minimal; enable for staging / production checklist runs. Theory + residuals: [`RESEARCH_THEORY_AND_STATUS.md`](RESEARCH_THEORY_AND_STATUS.md).
+
+| Opt-in | Where | Recommended setting | Notes |
+|--------|-------|---------------------|-------|
+| Adaptive guard | **Client** `[guard_mitigation]` | `preset = "adaptive_v4"` | Prefer v4 over v3/v2/`adaptive_first`. Node parses for symmetry only — see [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md). |
+| Jurisdiction path | **Client** `[path]` | `require_diverse_jurisdictions = true`, `max_per_jurisdiction = 1` | Soft filter; composes with adaptive_v4. Legal charter remains **External** ([`faction_sybil_skew.md`](faction_sybil_skew.md)). |
+| Health gossip stacked | **Node** `[health_gossip]` | `majority_k = 4`, `min_orgs = 2`, `eclipse_detect = true` + peer `org_id`/`jurisdiction` | Code defaults are stacked when knobs omitted; committed pilot TOMLs still pin `majority_k = 2` for short smoke — raise to stacked for staging ([`health_gossip.md`](health_gossip.md)). |
+| Exit presence pad | **Exit node** `[exit]` | `presence_pad = true` (+ `pad_q` / `epoch_ms` / `presence_rate_pct`) | Exit hops only; bandwidth cost; clearnet GPA residual ([`exit_tier_defense.md`](exit_tier_defense.md)). |
+| Cover multi-hop | **Node** `[cover]` | `multihop_defense = "cover_onions"` (or `"matched_local_discard"`) | Onions need terminal peer KEM public; matched discard when PK unavailable ([`cover_multihop_defense.md`](cover_multihop_defense.md)). |
+| Metrics export gate | **Node** `[metrics]` | Keep production defaults (min **30s**, quantize **16**, suppress ingress drops) | Use `MetricsExportGate`; do not scrape raw `coarse_stats` ([`metrics_scrape_defense.md`](metrics_scrape_defense.md)). |
+
+**Client path wiring:** omit ordered `[[hops]]` or pass `--roster-path` for roster-driven paths (KEM registry by relay `id` still required).
+
+### SoftHSM ceremony path (optional, not required for loopback)
+
+For PKCS#11 stand-in before vendor HSM: user-local SoftHSM2 under WSL/Linux — probe → user-build → init token `aegis-ceremony` → ceremony regress. Does **not** claim hardware custody. Full steps: [`softhsm_ceremony.md`](softhsm_ceremony.md).
+
+```powershell
+powershell -File scripts/softhsm_wsl.ps1 -Action probe
+powershell -File scripts/softhsm_wsl.ps1 -Action user-build
+powershell -File scripts/softhsm_wsl.ps1 -Action init -Evidence
+powershell -File scripts/softhsm_wsl.ps1 -Action regress -Evidence
+```
 
 ## Step-by-step (manual)
 
@@ -188,24 +211,38 @@ require = true
 [health_gossip]
 enabled = true
 # signing_seed + peer gossip_verifying_key configured
+# Pilot templates pin majority_k = 2; staging: stacked majority_k=4, min_orgs=2, eclipse_detect=true
 
 [link]
 handshake = "auto"
 noise_static_secret = "..."
 # production ingress limits: defaults (≈ 1/τ cells/sec); not zeroed like testnet
 
+# [metrics]  — omit to use MetricsExportGate production defaults (30s / quantize 16 / suppress drops)
 # NO [trace] section
 ```
 
-Optional adaptive guard mitigation (spec §13 — **default off**) and jurisdiction diversity (**default off**):
+Optional researched opt-ins (**default off** unless noted) — see table above:
 
 ```toml
+# Client (or node for symmetry):
 # [guard_mitigation]
 # preset = "adaptive_v4"   # preferred; or "adaptive_v3" / "adaptive_v2" / "adaptive_first"
 # [path]
 # epoch_age = 7
 # require_diverse_jurisdictions = true
 # max_per_jurisdiction = 1
+
+# Node cover multi-hop (opt-in):
+# [cover]
+# multihop_defense = "cover_onions"          # or "matched_local_discard"
+# cover_onion_flows = 1
+# # matched_cover_flows = 2
+
+# Exit hop only:
+# [exit]
+# deliver_to = "file:data/exit_deliveries.log"
+# presence_pad = true
 ```
 
 Inline `[kem]` seeds use `allow_plaintext_kem = true` for pilot convenience only. Production WAN nodes should use external `kem.seeds` with `0600` per [`DEPLOYMENT.md`](DEPLOYMENT.md).
@@ -248,7 +285,7 @@ After sends, verify:
 
 1. All four node processes still running (no “unverified roster” stderr).
 2. `sim/data/pilot_configs/data/exit_deliveries.log` grows on exit node (node3).
-3. Optional: `data/health_quorum.log` on nodes — gossip uses `majority_k = 2`; a short pilot may not reach quorum; that is expected.
+3. Optional: `data/health_quorum.log` on nodes — committed pilot TOMLs use `majority_k = 2` (short smoke); stacked staging uses `majority_k = 4` and may not reach quorum in a short run — expected.
 
 ## One-command smoke (Windows)
 
@@ -287,6 +324,8 @@ Do **not** commit real ceremony seeds; pilot authority material is labeled test-
 
 ## See also
 
+- [`RESEARCH_THEORY_AND_STATUS.md`](RESEARCH_THEORY_AND_STATUS.md) — theory hub (quantified / productized / External)  
 - [`DEPLOYMENT.md`](DEPLOYMENT.md) — production go-live gate  
 - [`RESEARCH_OPS_STATUS.md`](RESEARCH_OPS_STATUS.md) — Partial vs External gaps  
+- [`softhsm_ceremony.md`](softhsm_ceremony.md) — SoftHSM2 PKCS#11 stand-in (not hardware custody)  
 - `sim/scripts/capture_multiprocess_trace.py` — lab trace capture (trace on, lab flags); pilot intentionally diverges

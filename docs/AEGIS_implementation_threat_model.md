@@ -1,6 +1,7 @@
 # AEGIS — Implementation-Level Threat Model
 
-**Date:** 2026-07-12 (mitigation sync **2026-07-17**; crypto gap ledger **2026-07-18** / Wave S2)  
+**Date:** 2026-07-12 (mitigation sync **2026-07-17**; crypto gap ledger **2026-07-18** / Wave S2; research sync tip **`c7c2f0d`**)  
+**Research hub:** [`ops/RESEARCH_THEORY_AND_STATUS.md`](ops/RESEARCH_THEORY_AND_STATUS.md) · playbook [`ops/ATTACK_PLAYBOOK.md`](ops/ATTACK_PLAYBOOK.md)  
 **Scope:** Maps the paper threat model in `docs/AEGIS_SPEC_v3_consolidated.md` §2–§9 onto the **actual Rust/Python code** in this workspace.  
 **Adversary baseline:** Nation-state global passive adversary (GPA) + active fraction `f` of compromised mixes, for a **permissioned consortium** mixnet.  
 **Cross-references:** `docs/AEGIS_crypto_constant_time_review.md` (crypto side channels), `docs/AEGIS_phase8_hardening_notes.md` (real-trace / adaptive-adversary quantification). This document does **not** repeat those findings.

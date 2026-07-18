@@ -1,10 +1,10 @@
 # Research coverage wave (no Docker)
 
 **Date:** 2026-07-18  
-**Tip baseline:** 649c4a7 → this wave  
+**Tip baseline:** 649c4a7 → **landed at `c7c2f0d`**  
 **Goal:** Comprehensive in-repo research profiling of thin Partial/[O] surfaces.  
 **Out of scope:** Docker, false “research closed”, inventing operational C2.  
-**Status:** C1–C6 landed as **[O] QUANTIFIED / Partial** — not science-closed.
+**Status:** **Landed** at `c7c2f0d` — C1–C6 as **[O] QUANTIFIED / Partial** — not science-closed. Hub: [`RESEARCH_THEORY_AND_STATUS.md`](RESEARCH_THEORY_AND_STATUS.md).
 
 | ID | Track | In-repo deliverable | Key result | Honest leftover |
 |----|-------|---------------------|------------|-----------------|
@@ -33,4 +33,5 @@ cd sim && PYTHONPATH=. pytest -q \
 # powershell -File scripts/run_dudect_lab_wsl.ps1 -Mode deepen
 ```
 
-**Execution:** Grok 4.5 agents in parallel; parent integrates.
+**Execution:** Grok 4.5 agents in parallel; parent integrates.  
+**Operator entry:** [`RESEARCH_THEORY_AND_STATUS.md`](RESEARCH_THEORY_AND_STATUS.md).
