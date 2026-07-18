@@ -61,7 +61,7 @@ chmod +x deploy/scripts/check_pilot_prereqs.sh
 python3 deploy/scripts/validate_compose_offline.py
 ```
 
-This lints `docker-compose.yml`, checks pilot TOML shape (`[roster].path`, cover, gossip, Noise `auto`, Docker DNS peers), documents `adaptive_v3` / roster-path wiring in comments, and — if `aegis-node` is on PATH or under `crates/target/` — runs `aegis-node validate`. Pilot configs are **expected to FAIL** validate on lab KEM flags (`allow_plaintext_kem` + inline seeds) while roster verify succeeds when cwd is `pilot_configs/`. Evidence: `deploy/evidence/offline_validate.json`, `deploy/evidence/host_probe.txt`.
+This lints `docker-compose.yml`, checks pilot TOML shape (`[roster].path`, cover, gossip, Noise `auto`, Docker DNS peers), documents `adaptive_v4` / roster-path wiring in comments, and — if `aegis-node` is on PATH or under `crates/target/` — runs `aegis-node validate`. Pilot configs are **expected to FAIL** validate on lab KEM flags (`allow_plaintext_kem` + inline seeds) while roster verify succeeds when cwd is `pilot_configs/`. Evidence: `deploy/evidence/offline_validate.json`, `deploy/evidence/host_probe.txt`.
 
 ### Windows Docker Desktop + WSL2 (operator install — interactive)
 
@@ -136,7 +136,7 @@ Configs mount at `/config`; nodes listen on `0.0.0.0:17419–17422`, publish opt
 
 Neither path replaces staged **WAN soak** on distinct operator hosts, adversarial netem, or consortium ceremony. Docker bridge only proves that cross-container DNS + Noise + roster verify + cover + gossip wiring works beyond a single loopback namespace.
 
-**Opt-in adaptive guard mitigation** (default off): on the **client**, set `[guard_mitigation] preset = "adaptive_v3"` (or `adaptive_v2` / legacy `adaptive_first = true`) and optional `[path]` signals; omit ordered `[[hops]]` or pass `--roster-path` for roster-driven paths (KEM registry by relay `id` still required). Node TOML accepts the same `[guard_mitigation]` section for operator symmetry but does not select client paths — see [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md).
+**Opt-in adaptive guard mitigation** (default off): on the **client**, set `[guard_mitigation] preset = "adaptive_v4"` (or `adaptive_v3` / `adaptive_v2` / legacy `adaptive_first = true`) and optional `[path]` signals; omit ordered `[[hops]]` or pass `--roster-path` for roster-driven paths (KEM registry by relay `id` still required). Node TOML accepts the same `[guard_mitigation]` section for operator symmetry but does not select client paths — see [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md).
 
 ## Step-by-step (manual)
 
@@ -199,7 +199,7 @@ Optional adaptive guard mitigation (spec §13 — **default off**):
 
 ```toml
 # [guard_mitigation]
-# preset = "adaptive_v3"   # preferred; or "adaptive_v2" / "adaptive_first"
+# preset = "adaptive_v4"   # preferred; or "adaptive_v3" / "adaptive_v2" / "adaptive_first"
 # [path]
 # epoch_age = 7
 ```
