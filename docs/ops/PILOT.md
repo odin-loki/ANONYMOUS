@@ -80,7 +80,7 @@ Configs mount at `/config`; nodes listen on `0.0.0.0:17419–17422` and peer via
 
 Neither path replaces staged **WAN soak** on distinct operator hosts, adversarial netem, or consortium ceremony. Docker bridge only proves that cross-container DNS + Noise + roster verify + cover + gossip wiring works beyond a single loopback namespace.
 
-**Opt-in adaptive guard mitigation** (default off): set `[guard_mitigation] adaptive_first = true` in a node TOML — see [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md).
+**Opt-in adaptive guard mitigation** (default off): set `[guard_mitigation] adaptive_first = true` in **client** TOML (enforced at path build); node TOML accepts the same section for operator symmetry — see [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md).
 
 ## Step-by-step (manual)
 

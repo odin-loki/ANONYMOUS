@@ -18,8 +18,20 @@ authority_pubkeys = [
   "<64 hex consortium authority 2>",
 ]
 
-# L=4 example path — one [[hops]] entry per relay (guard → … → exit).
-# kem_commitment on each hop when roster binding is required.
+# Optional adaptive guard mitigation (spec §13 first pass — default off).
+# Enforced on the client when building roster-driven paths.
+# [guard_mitigation]
+# adaptive_first = true
+
+# Optional roster-path parameters (used when [[hops]] is empty or with --roster-path).
+# [path]
+# client_seed = 0
+# topology_seed = 0
+# epoch = 0
+
+# Production: omit ordered [[hops]] to build paths from roster + [guard_mitigation].
+# When using roster paths, list every admitted relay below as a KEM registry (keyed by id).
+# Pilot/lab: keep an ordered L=4 path — explicit [[hops]] override roster path building.
 
 [[hops]]
 id = "0100000000000000000000000000000000000000000000000000000000000000"

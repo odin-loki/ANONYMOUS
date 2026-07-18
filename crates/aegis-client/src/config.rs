@@ -23,6 +23,32 @@ pub struct ClientConfigFile {
     /// Optional adaptive guard mitigation (spec §13 first pass — default off).
     #[serde(default)]
     pub guard_mitigation: GuardMitigationFileConfig,
+    /// Optional roster-path build parameters (ignored when explicit `[[hops]]` override).
+    #[serde(default)]
+    pub path: Option<PathFileConfig>,
+}
+
+/// Parameters for roster-driven bound-path construction.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq, Eq)]
+pub struct PathFileConfig {
+    /// Client seed for guard-set sampling (re-mixed when mitigation re-samples).
+    #[serde(default)]
+    pub client_seed: u64,
+    /// Epoch id passed to topology builder.
+    #[serde(default)]
+    pub epoch: u64,
+    /// Topology assignment seed for the epoch.
+    #[serde(default)]
+    pub topology_seed: u64,
+    /// Mitigation signal: epochs since last guard re-sample.
+    #[serde(default)]
+    pub epoch_age: u64,
+    /// Mitigation signal: operator/anomaly demotion flag.
+    #[serde(default)]
+    pub anomaly_demotion_flag: bool,
+    /// Mitigation signal: peer health spike count.
+    #[serde(default)]
+    pub peer_anomaly_count: u32,
 }
 
 #[derive(Debug, Deserialize, Default)]

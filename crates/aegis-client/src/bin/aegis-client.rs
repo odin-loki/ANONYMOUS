@@ -8,11 +8,10 @@ use std::time::Duration;
 use aegis_client::config::{ClientConfigFile, ClientLinkFileConfig};
 use aegis_client::driver::config_with_tau_and_peak;
 use aegis_client::emitter::env_allows_high_rho;
+use aegis_client::hops_resolve::{resolve_client_hops, use_roster_path};
 use aegis_client::roster_load::load_roster_from_config;
-use aegis_client::send::{BuildPacketOptions, ClientHop, ClientLink};
+use aegis_client::send::{BuildPacketOptions, ClientLink};
 use aegis_client::session::{PacedSession, PacedSessionConfig};
-use aegis_crypto::kem::RelayKemSecret;
-use aegis_topology::types::KemPublicCommitment;
 use aegis_relay::{LinkBridgeConfig, LinkHandshakeMode};
 use clap::Parser;
 use rand_core::OsRng;
@@ -35,6 +34,10 @@ struct Cli {
     /// Burst-send without constant-rate pacing (debug / trace capture only).
     #[arg(long)]
     raw: bool,
+
+    /// Build path from roster + guard mitigation instead of explicit ordered `[[hops]]`.
+    #[arg(long)]
+    roster_path: bool,
 
     /// Seconds of dummy cover after the last fragment (Mode 1 default).
     #[arg(long, default_value_t = 2.0)]
@@ -122,6 +125,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    let roster_mode = use_roster_path(&file, cli.roster_path);
+    if roster_mode {
+        eprintln!(
+            "building bound path from roster{}",
+            if file.guard_mitigation.adaptive_first {
+                " with adaptive_first guard mitigation"
+            } else {
+                ""
+            }
+        );
+    } else if !file.hops.is_empty() {
+        eprintln!("using explicit [[hops]] path ({} hops)", file.hops.len());
+    }
+
+    let hops = resolve_client_hops(&file, cli.roster_path).map_err(|e| e.to_string())?;
+
     let payload = if cli.stdin {
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)?;
@@ -129,30 +148,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if let Some(p) = cli.payload {
         p.into_bytes()
     } else {
-        file.payload.unwrap_or_default().into_bytes()
+        file.payload.as_deref().unwrap_or_default().as_bytes().to_vec()
     };
-
-    let mut hops = Vec::new();
-    for hop in &file.hops {
-        let id = parse_hex32(&hop.id)?;
-        let x = parse_hex32(&hop.kem_x25519_seed)?;
-        let d = parse_hex32(&hop.kem_mlkem_d)?;
-        let z = parse_hex32(&hop.kem_mlkem_z)?;
-        let (_sec, pk) = RelayKemSecret::generate_deterministic(x, d, z);
-        let kem_commitment = hop
-            .kem_commitment
-            .as_deref()
-            .map(parse_hex32)
-            .transpose()
-            .map_err(|e| format!("kem_commitment: {e}"))?
-            .map(KemPublicCommitment);
-        hops.push(ClientHop {
-            id,
-            kem_public: pk,
-            kem_commitment,
-            addr: None,
-        });
-    }
 
     let first_hop_addr: SocketAddr = file.first_hop_addr.parse()?;
     let first_hop_relay_id = hops

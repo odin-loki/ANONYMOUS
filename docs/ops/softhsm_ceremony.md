@@ -22,6 +22,8 @@ to a real module.
 
 ## Install (WSL / Debian-family Linux)
 
+### Option A — system packages (requires sudo)
+
 ```bash
 sudo apt-get update
 sudo apt-get install -y softhsm2 opensc
@@ -32,6 +34,36 @@ Common module path (set `AEGIS_PKCS11_MODULE` if different):
 ```text
 /usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so
 ```
+
+### Option B — user-local build (no sudo after build deps)
+
+When `sudo` needs a password and you cannot install `softhsm2` system-wide, build
+SoftHSM2 into `~/.local` after one-time build dependencies are present:
+
+```bash
+# One-time build deps (requires sudo password once):
+sudo apt-get update
+sudo apt-get install -y build-essential libssl-dev uuid-dev libtool autoconf automake
+
+mkdir -p ~/src && cd ~/src
+curl -LO https://github.com/opendnssec/SoftHSMv2/archive/refs/tags/2.6.1.tar.gz
+tar xzf 2.6.1.tar.gz && cd SoftHSMv2-2.6.1
+./autogen.sh
+./configure --prefix="$HOME/.local" --disable-gost
+make -j"$(nproc)"
+make install
+```
+
+User-local paths (used automatically by `scripts/softhsm_init.sh` when present):
+
+| Artifact | Path |
+|----------|------|
+| `softhsm2-util` | `~/.local/bin/softhsm2-util` |
+| PKCS#11 module | `~/.local/lib/softhsm/libsofthsm2.so` |
+| `AEGIS_PKCS11_MODULE` | `$HOME/.local/lib/softhsm/libsofthsm2.so` |
+
+Ensure `~/.local/bin` is on `PATH` (and `~/.local/lib` on `LD_LIBRARY_PATH` if the
+module fails to load).
 
 ## Init token (safe helper)
 
@@ -52,7 +84,7 @@ Environment overrides:
 | `AEGIS_SOFTHSM_TOKEN_LABEL` | `aegis-ceremony` | Token label |
 | `AEGIS_SOFTHSM_SO_PIN` / `AEGIS_SOFTHSM_USER_PIN` | `1234` | **Change in real ops** |
 | `SOFTHSM2_CONF` | `~/.config/softhsm2/softhsm2.conf` | SoftHSM config file |
-| `AEGIS_PKCS11_MODULE` | see above | PKCS#11 module for `pkcs11-tool` smoke |
+| `AEGIS_PKCS11_MODULE` | `~/.local/lib/softhsm/libsofthsm2.so` if user-local build exists, else `/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so` | PKCS#11 module for `pkcs11-tool` smoke |
 
 Manual equivalent:
 
@@ -101,6 +133,27 @@ Capture `softhsm2-util --show-slots` output in your ops log. Expected:
 
 **This repo does not commit host-specific slot dumps.** If SoftHSM is absent (typical
 Windows CI), the init script is a no-op with install instructions — that is intentional.
+
+### Host run: OdinsPC (2026-07-18, tip `9ce640f`)
+
+Evidence: [`sim/softhsm_init_evidence.txt`](../../sim/softhsm_init_evidence.txt)
+
+| Step | Result |
+|------|--------|
+| WSL build-deps pre-check (no sudo) | **Blocked** — `uuid-dev` and `libtool` not installed; `gcc`, `make`, `openssl`, `libssl-dev`, `autoconf`, `automake` present |
+| SoftHSM2 source build to `~/.local` | **Not run** — missing `/usr/include/uuid/uuid.h` and `libtool` |
+| `bash scripts/softhsm_init.sh` | **Graceful no-op** (exit 0) — `softhsm2-util` absent |
+| Token init / `pkcs11-tool` smoke | **Not run** |
+
+**Unblock (minimal sudo, one password prompt):**
+
+```bash
+sudo apt-get update && sudo apt-get install -y uuid-dev libtool
+# then build per Option B above, or:
+sudo apt-get install -y softhsm2 opensc
+cd /mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS
+bash scripts/softhsm_init.sh | tee -a sim/softhsm_init_evidence.txt
+```
 
 ### Host run: OdinsPC (2026-07-18, tip `f531480`)
 

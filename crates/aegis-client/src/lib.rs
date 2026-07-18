@@ -14,6 +14,7 @@
 
 pub mod config;
 pub mod driver;
+pub mod hops_resolve;
 pub mod emitter;
 pub mod padding;
 pub mod path;
@@ -41,8 +42,9 @@ pub use send::{
 #[allow(deprecated)]
 pub use send::{build_packet, send_payload, send_payload_with_options};
 pub use config::{
-    load_client_config, ClientConfigFile, ClientLinkFileConfig, HopConfig,
+    load_client_config, ClientConfigFile, ClientLinkFileConfig, HopConfig, PathFileConfig,
 };
+pub use hops_resolve::{explicit_hops_from_config, resolve_client_hops, use_roster_path, HopsResolveError};
 pub use path::{build_client_bound_path, ClientPathBuildParams};
 pub use roster_load::{load_roster_from_config, RosterFileConfig, RosterLoadError};
 pub use aegis_topology::{GuardMitigationFileConfig, GuardMitigationPolicy, GuardMitigationSignals};

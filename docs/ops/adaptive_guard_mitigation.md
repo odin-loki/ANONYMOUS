@@ -36,7 +36,7 @@ Parsed into [`GuardMitigationFileConfig`](../../crates/aegis-topology/src/guard_
 and resolved to `GuardMitigationPolicy::adaptive_first()` (sticky cap 12 epochs,
 rotate on anomaly / peer-health spike).
 
-At path build time, use [`build_client_bound_path`](../../crates/aegis-client/src/path.rs)
+At path build time, the client CLI and library callers use [`build_client_bound_path`](../../crates/aegis-client/src/path.rs)
 (or topology's `build_bound_path_pruned_with_guards_mitigated`) with:
 
 1. **`GuardMitigationSignals`** — `epoch_age`, `anomaly_demotion_flag`,
@@ -46,6 +46,10 @@ At path build time, use [`build_client_bound_path`](../../crates/aegis-client/sr
 
 When signals are absent, `adaptive_first` still applies sticky-cap rotation at
 `epoch_age >= 12` and rotate-on-anomaly / peer-spike thresholds once wired.
+
+**CLI:** with `[roster]` configured, omit ordered `[[hops]]` (or pass `--roster-path`) to
+build a mitigated bound path; explicit `[[hops]]` remains the pilot/lab override. KEM
+registry entries keyed by relay `id` are required for roster paths.
 
 ### Node TOML (operator symmetry)
 
@@ -60,8 +64,7 @@ Pilot templates include a commented example; production template:
 
 - Sim demotion is a **model**, not measured recompromise rate.
 - Mitigated curve is **lower** than unmitigated adaptive at long horizons; still **[O]**.
-- Client CLI with explicit hop lists does not yet auto-build roster paths; mitigation
-  applies when callers use `build_client_bound_path`.
+- Roster paths require `[[hops]]` KEM registry entries (or live key fetch, not wired).
 - Does not address combined active+intersection or operational C2 traces.
 
 ## Regenerate artifact + tests
@@ -77,5 +80,6 @@ Rust:
 cargo test -p aegis-topology guard_mitigation
 cargo test -p aegis-client guard_mitigation
 cargo test -p aegis-client path::
+cargo test -p aegis-client hops_resolve
 cargo test -p aegis-node guard_mitigation
 ```

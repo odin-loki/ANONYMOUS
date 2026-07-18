@@ -10,12 +10,23 @@ LABEL="${AEGIS_SOFTHSM_TOKEN_LABEL:-aegis-ceremony}"
 SO_PIN="${AEGIS_SOFTHSM_SO_PIN:-1234}"
 USER_PIN="${AEGIS_SOFTHSM_USER_PIN:-1234}"
 
+# Prefer user-local SoftHSM2 build (--prefix=$HOME/.local) over system packages.
+if [[ -x "${HOME}/.local/bin/softhsm2-util" ]]; then
+  export PATH="${HOME}/.local/bin:${PATH}"
+  export LD_LIBRARY_PATH="${HOME}/.local/lib:${LD_LIBRARY_PATH:-}"
+  export AEGIS_PKCS11_MODULE="${AEGIS_PKCS11_MODULE:-${HOME}/.local/lib/softhsm/libsofthsm2.so}"
+fi
+
 if ! command -v softhsm2-util >/dev/null 2>&1; then
   cat <<EOF
 SoftHSM2 not found (softhsm2-util missing).
 
-Install on Debian/Ubuntu WSL:
+Install on Debian/Ubuntu WSL (system packages):
   sudo apt-get update && sudo apt-get install -y softhsm2 opensc
+
+Or build without sudo into ~/.local (see docs/ops/softhsm_ceremony.md):
+  sudo apt-get install -y uuid-dev libtool   # build deps only; needs password once
+  # then configure --prefix=\$HOME/.local, make install
 
 Then re-run:
   bash scripts/softhsm_init.sh
@@ -56,7 +67,14 @@ fi
 softhsm2-util --show-slots || true
 
 if command -v pkcs11-tool >/dev/null 2>&1; then
-  MODULE="${AEGIS_PKCS11_MODULE:-/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so}"
+  MODULE="${AEGIS_PKCS11_MODULE:-}"
+  if [[ -z "$MODULE" ]]; then
+    if [[ -f "${HOME}/.local/lib/softhsm/libsofthsm2.so" ]]; then
+      MODULE="${HOME}/.local/lib/softhsm/libsofthsm2.so"
+    else
+      MODULE="/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so"
+    fi
+  fi
   if [[ -f "$MODULE" ]]; then
     echo "--- pkcs11-tool slot smoke ---"
     pkcs11-tool --module "$MODULE" --list-slots || true

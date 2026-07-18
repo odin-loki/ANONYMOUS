@@ -79,3 +79,65 @@ On this machine, run interactively in WSL:
   bash scripts/softhsm_init.sh | tee -a sim/softhsm_init_evidence.txt
 
 Expected after install: token label aegis-ceremony on slot 0, pkcs11-tool --list-slots OK.
+
+---
+
+# AEGIS SoftHSM no-sudo build attempt (tip 9ce640f)
+# Captured: 2026-07-18T05:13:05Z (UTC)
+
+## Step 1 — WSL build-deps pre-check (no sudo)
+
+Host: WSL2 Ubuntu 24.04.1 LTS, user odin (sudo group, password required)
+
+| Dependency | Status |
+|------------|--------|
+| gcc (13.3.0) | OK — /usr/bin/gcc |
+| make (4.3) | OK — /usr/bin/make |
+| openssl (3.0.13) | OK — /usr/bin/openssl |
+| libssl-dev headers (/usr/include/openssl/ssl.h) | OK |
+| pkg-config openssl | OK — 3.0.13 |
+| autoconf | OK — /usr/bin/autoconf |
+| automake | OK — /usr/bin/automake |
+| uuid-dev (/usr/include/uuid/uuid.h) | **MISSING** |
+| libtool | **MISSING** |
+
+Exact packages needed (one sudo password prompt):
+  sudo apt-get update && sudo apt-get install -y uuid-dev libtool
+
+Optional full build chain if not already present:
+  sudo apt-get install -y build-essential libssl-dev autoconf automake
+
+## Step 2 — SoftHSM2 source build to ~/.local
+
+Result: **NOT RUN** — blocked by missing uuid-dev and libtool.
+Would run after deps installed:
+  mkdir -p ~/src && cd ~/src
+  curl -LO https://github.com/opendnssec/SoftHSMv2/archive/refs/tags/2.6.1.tar.gz
+  tar xzf 2.6.1.tar.gz && cd SoftHSMv2-2.6.1
+  ./autogen.sh && ./configure --prefix=$HOME/.local --disable-gost
+  make -j$(nproc) && make install
+
+## Step 3 — scripts/softhsm_init.sh (graceful no-op)
+
+Command:
+  wsl -u odin bash -c "cd /mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS && bash scripts/softhsm_init.sh"
+
+Exit code: 0
+
+Output:
+  SoftHSM2 not found (softhsm2-util missing).
+  (install hints for system packages and ~/.local build path)
+
+Token init: NOT PERFORMED
+pkcs11-tool smoke: NOT PERFORMED
+~/.local/bin/softhsm2-util: NOT PRESENT
+
+## Step 4 — repo updates (this tip)
+
+- docs/ops/softhsm_ceremony.md — added Option B (~/.local prefix paths)
+- scripts/softhsm_init.sh — prefers $HOME/.local/bin/softhsm2-util and module path
+
+## Remaining blocker
+
+Non-interactive sudo unavailable. Install uuid-dev + libtool (or softhsm2 opensc)
+with one interactive password, then re-run init script.

@@ -9,6 +9,10 @@ threshold = 1
 authority_pubkeys = ["2c0e2c6c299cde735e527506c5ab4ac3eef994741d3ced645de588c2d9b25258"]
 allow_unverified_roster = false
 
+# Optional adaptive guard mitigation (spec §13 first pass — default off).
+# [guard_mitigation]
+# adaptive_first = true
+
 [link]
 handshake = "auto"
 noise_static_secret = "8d4b21cbb4226a7a07b43302fa76cb820a74559776cdcc407bf8aa96edee36de"

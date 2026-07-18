@@ -100,7 +100,7 @@ Use this checklist when writing release notes, README claims, or sales material.
 
 ## 6. Suggested next sessions (priority-neutral backlog)
 
-1. **Pilot productization (in progress)** — staged rollout per [`PILOT.md`](PILOT.md): `deploy/templates/` production snippets, `aegis-node validate`, [`DEPLOYMENT.md`](DEPLOYMENT.md) checklist. Remaining: operator-supplied WAN/C2 traces, counsel-reviewed charter, External platform rows.
+1. **Pilot productization** — **Closed** (2026-07-18) — staged rollout per [`PILOT.md`](PILOT.md): `deploy/templates/` production snippets, Docker compose pilot, `aegis-node validate`, client CLI roster-path + `[guard_mitigation]` wiring. Remaining: operator-supplied WAN/C2 traces, counsel-reviewed charter, External platform rows.
 2. **Operational trace ingest** — point `load_trace_counts` / `shapeability_report` at a redacted real C2 or telemetry capture (operator-supplied; not in repo).
 3. **Adaptive / combined-attack mitigation** — first pass: sim `mode='mitigated'` + `GuardMitigationPolicy` ([`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md)); extend detection fidelity; combined attack still [O].
 4. **Platform integration pilots** — one External row at a time (TEE SDK, PKCS#11 HSM, multi-org gossip, AC issuer, isolated dudect lab) per ops runbooks.
