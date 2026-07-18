@@ -1,3 +1,8 @@
+# AEGIS operator pilot — deterministic test material (not production secrets).
+# See docs/ops/PILOT.md. Opt-in adaptive guard mitigation (default off):
+# [guard_mitigation]
+# adaptive_first = true
+
 relay_id = "7035fd1502c22b36d4fad0146dd4ab3c5363d596288efd64f28595b073251f46"
 listen = "127.0.0.1:17422"
 mu = 80.0

@@ -62,6 +62,12 @@ def main() -> int:
         default="",
         help="Comma-separated ports (4 values); overrides --ephemeral-ports when set",
     )
+    parser.add_argument(
+        "--network",
+        choices=("loopback", "bridge"),
+        default="loopback",
+        help="Peer addressing: loopback (127.0.0.1) or bridge (Docker service names)",
+    )
     parser.add_argument("--skip-build", action="store_true", help="Skip cargo build of aegis-pilot-gen")
     args = parser.parse_args()
 
@@ -91,10 +97,18 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     ports_arg = ",".join(str(p) for p in ports)
     subprocess.run(
-        [str(pilot_gen), "--out", str(args.out.resolve()), "--ports", ports_arg],
+        [
+            str(pilot_gen),
+            "--out",
+            str(args.out.resolve()),
+            "--ports",
+            ports_arg,
+            "--network",
+            args.network,
+        ],
         check=True,
     )
-    print(f"pilot configs ready under {args.out} (ports={ports})")
+    print(f"pilot configs ready under {args.out} (ports={ports}, network={args.network})")
     return 0
 
 

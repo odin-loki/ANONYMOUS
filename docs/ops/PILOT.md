@@ -28,6 +28,59 @@ This pilot runs four `aegis-node` relays and a paced `aegis-client` on **127.0.0
 | `scripts/run_pilot.ps1` | Windows smoke: build → start 4 nodes → paced sends → coarse health |
 | `scripts/run_pilot.sh` | Unix equivalent |
 | `crates/aegis-topology/src/bin/aegis_pilot_gen.rs` | Deterministic key/roster/TOML generator |
+| `deploy/compose/` | Docker multi-node pilot (4 relays + optional client profile) |
+
+## Docker pilot (multi-container)
+
+When Docker is available, a bridge-network variant exercises the same production-checklist defaults as loopback (`verified roster`, Noise `auto`, cover on, gossip on) across **separate containers** instead of one host process tree.
+
+| Path | Purpose |
+|------|---------|
+| `deploy/compose/Dockerfile` | Builds `aegis-node` + `aegis-client` (release) |
+| `deploy/compose/docker-compose.yml` | 4 relay services + optional `client` profile (one-shot send) |
+| `deploy/compose/generate_configs.ps1` / `generate_configs.sh` | Writes `deploy/compose/pilot_configs/` with `--network bridge` |
+
+**Generate bridge configs** (from repo root):
+
+```powershell
+.\deploy\compose\generate_configs.ps1
+```
+
+```bash
+chmod +x deploy/compose/generate_configs.sh
+./deploy/compose/generate_configs.sh
+```
+
+**Run** (requires Docker Engine + Compose v2):
+
+```powershell
+docker compose -f deploy/compose/docker-compose.yml up --build
+docker compose -f deploy/compose/docker-compose.yml --profile client run --rm client
+```
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml up --build
+docker compose -f deploy/compose/docker-compose.yml --profile client run --rm client
+```
+
+Configs mount at `/config`; nodes listen on `0.0.0.0:17419–17422` and peer via Docker DNS (`node0`…`node3`). Inline `[kem]` seeds remain pilot-only (`allow_plaintext_kem = true`).
+
+**If Docker is unavailable** on your host, the files above are still shipped in-tree for CI or a later machine — use the loopback path (`run_pilot.ps1` / `run_pilot.sh`) locally.
+
+### Loopback vs bridge — honest limits
+
+| Aspect | Loopback (`run_pilot.*`) | Docker bridge (`deploy/compose/`) |
+|--------|--------------------------|-----------------------------------|
+| Process isolation | Single OS; hidden windows / same user | Separate containers |
+| Network path | `127.0.0.1` TCP — no NIC, no ARP | Bridge veth; synthetic L2/L3 between containers |
+| Latency / loss | Near-zero LAN loopback | Slightly higher; still not WAN |
+| NAT / firewall | N/A | Not modeled (same bridge) |
+| Multi-host | No | No — all containers on one Docker host |
+| Gossip quorum | Short runs may miss 60s interval | Same — not a multi-org deployment |
+
+Neither path replaces staged **WAN soak** on distinct operator hosts, adversarial netem, or consortium ceremony. Docker bridge only proves that cross-container DNS + Noise + roster verify + cover + gossip wiring works beyond a single loopback namespace.
+
+**Opt-in adaptive guard mitigation** (default off): set `[guard_mitigation] adaptive_first = true` in a node TOML — see [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md).
 
 ## Step-by-step (manual)
 
@@ -84,6 +137,13 @@ noise_static_secret = "..."
 # production ingress limits: defaults (≈ 1/τ cells/sec); not zeroed like testnet
 
 # NO [trace] section
+```
+
+Optional adaptive guard mitigation (spec §13 first pass — **default off**):
+
+```toml
+# [guard_mitigation]
+# adaptive_first = true
 ```
 
 Inline `[kem]` seeds use `allow_plaintext_kem = true` for pilot convenience only. Production WAN nodes should use external `kem.seeds` with `0600` per [`DEPLOYMENT.md`](DEPLOYMENT.md).

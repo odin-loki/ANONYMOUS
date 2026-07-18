@@ -102,6 +102,26 @@ Capture `softhsm2-util --show-slots` output in your ops log. Expected:
 **This repo does not commit host-specific slot dumps.** If SoftHSM is absent (typical
 Windows CI), the init script is a no-op with install instructions — that is intentional.
 
+### Host run: OdinsPC (2026-07-18, tip `f531480`)
+
+Evidence: [`sim/softhsm_init_evidence.txt`](../../sim/softhsm_init_evidence.txt)
+
+| Step | Result |
+|------|--------|
+| `sudo apt-get install softhsm2 opensc` (WSL Ubuntu 24.04) | **Blocked** — `sudo -n` requires password; non-interactive install not possible |
+| `bash scripts/softhsm_init.sh` | **Graceful no-op** (exit 0) — prints install hint; `softhsm2-util` absent |
+| Token init / `pkcs11-tool` smoke | **Not run** — packages not installed |
+| Optional Rust PKCS#11 smoke | **Skipped** — no in-tree PKCS#11 crate; default workspace unchanged |
+| `cargo test --workspace` (WSL, `crates/`) | **6 pre-existing `aegis-node` keyring failures** — KemProtect/keyring on this host; unrelated to SoftHSM |
+
+**Unblock on this host:** run interactively in WSL:
+
+```bash
+sudo apt-get update && sudo apt-get install -y softhsm2 opensc
+cd /mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS
+bash scripts/softhsm_init.sh | tee -a sim/softhsm_init_evidence.txt
+```
+
 ## Ceremony workflow (unchanged logic)
 
 1. **Pilot / lab:** `SoftwareCustodyProvider` or `SimulatedHsmProvider` + `aegis-ceremony`

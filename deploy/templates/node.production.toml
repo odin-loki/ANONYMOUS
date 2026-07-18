@@ -58,6 +58,10 @@ interval_secs = 60
 majority_k = 2
 quorum_log_path = "data/health_quorum.log"
 
+# Optional adaptive guard mitigation (spec §13 first pass — default off).
+# [guard_mitigation]
+# adaptive_first = true
+
 # Mix relays: leave trace unset. Exit-only nodes may configure [exit] instead.
 # [trace]
 # path = ...

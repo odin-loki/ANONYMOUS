@@ -15,6 +15,7 @@ path = "src/bin/aegis-client.rs"
 aegis-crypto = { path = "../aegis-crypto" }
 aegis-relay = { path = "../aegis-relay" }
 aegis-topology = { path = "../aegis-topology" }
+aegis-trust = { path = "../aegis-trust" }
 tokio.workspace = true
 thiserror.workspace = true
 rand_core = "0.6"

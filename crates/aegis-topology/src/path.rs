@@ -15,6 +15,7 @@ use aegis_trust::policy::RelayPruningPolicy;
 
 use crate::error::TopologyError;
 use crate::guards::{GuardConfig, GuardSelector};
+use crate::guard_mitigation::{GuardMitigationPolicy, GuardMitigationSignals};
 use crate::layers::Topology;
 use crate::pruning::path_satisfies_pruning_policy;
 use crate::roster::RelayRoster;
@@ -331,6 +332,42 @@ pub fn build_bound_path_pruned_with_guards(
         topology,
         &config,
         client_seed,
+        policy,
+        min_reputation,
+    )?;
+    let records = build_bound_path_pruned(
+        topology,
+        roster,
+        Some(&guards),
+        policy,
+        min_reputation,
+        max_attempts,
+    )?;
+    Ok((guards, records))
+}
+
+/// Production path builder with adaptive guard mitigation applied before guard selection.
+///
+/// Applies [`GuardMitigationPolicy::apply_to_config_with_signals`] for pin mode and
+/// [`GuardMitigationPolicy::client_seed_for_guards`] when re-sample is required.
+/// Pass [`GuardMitigationSignals::default()`] when no epoch/anomaly telemetry is available yet.
+pub fn build_bound_path_pruned_with_guards_mitigated(
+    topology: &Topology,
+    roster: &RelayRoster,
+    base_guard_config: &GuardConfig,
+    client_seed: u64,
+    mitigation: &GuardMitigationPolicy,
+    signals: &GuardMitigationSignals,
+    policy: &RelayPruningPolicy,
+    min_reputation: f64,
+    max_attempts: usize,
+) -> Result<(GuardSelector, Vec<RelayRecord>), TopologyError> {
+    let guard_config = mitigation.apply_to_config_with_signals(base_guard_config, signals);
+    let effective_seed = mitigation.client_seed_for_guards(client_seed, signals);
+    let guards = GuardSelector::new_reputation_weighted_pruned(
+        topology,
+        &guard_config,
+        effective_seed,
         policy,
         min_reputation,
     )?;

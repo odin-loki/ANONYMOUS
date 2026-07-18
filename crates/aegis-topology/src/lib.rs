@@ -40,14 +40,17 @@ pub use shamir::{
     decode_share_hex, encode_share_hex, reconstruct_seed, split_seed, SeedShare, ShamirError,
 };
 pub use error::{RosterError, TopologyError};
-pub use guard_mitigation::GuardMitigationPolicy;
+pub use guard_mitigation::{
+    GuardMitigationFileConfig, GuardMitigationPolicy, GuardMitigationSignals,
+    resample_guard_client_seed,
+};
 pub use guards::{
     guard_exposure_plateau, GuardConfig, GuardPinMode, GuardSelector, GUARD_SET_SIZE,
 };
 pub use layers::{build_topology, build_topology_reputation_filtered, Topology};
 pub use path::{
     build_bound_path_diverse_pruned, build_bound_path_pruned, build_bound_path_pruned_with_guards,
-    path_compromise_probability, path_satisfies_jurisdiction, path_satisfies_reputation,
+    build_bound_path_pruned_with_guards_mitigated, path_compromise_probability, path_satisfies_jurisdiction, path_satisfies_reputation,
     relay_records_for_path, select_diverse_path, select_diverse_reputation_path,
     select_diverse_reputation_path_pruned, select_path_reputation_weighted,
     select_path_reputation_weighted_pruned, JurisdictionPolicy,

@@ -2,6 +2,11 @@
 //!
 //! Ties Phase-7 anomaly / peer-health signals to guard rotation policy without
 //! changing production defaults. Does **not** close §13 adaptive exposure.
+//!
+//! **Enforcement point:** clients select guards/paths; relay nodes load
+//! `[guard_mitigation]` for operator symmetry only (see `docs/ops/adaptive_guard_mitigation.md`).
+
+use serde::{Deserialize, Serialize};
 
 use crate::guards::{GuardConfig, GuardPinMode};
 
@@ -104,6 +109,79 @@ impl GuardMitigationPolicy {
         );
         cfg
     }
+
+    /// Apply mitigation to `base` using [`GuardMitigationSignals`].
+    pub fn apply_to_config_with_signals(
+        &self,
+        base: &GuardConfig,
+        signals: &GuardMitigationSignals,
+    ) -> GuardConfig {
+        self.apply_to_config(
+            base,
+            signals.epoch_age,
+            signals.anomaly_demotion_flag,
+            signals.peer_anomaly_count,
+        )
+    }
+
+    /// Client seed for guard re-sample when [`Self::should_resample_guards`] is true.
+    pub fn client_seed_for_guards(
+        &self,
+        base_seed: u64,
+        signals: &GuardMitigationSignals,
+    ) -> u64 {
+        if self.should_resample_guards(
+            signals.epoch_age,
+            signals.anomaly_demotion_flag,
+            signals.peer_anomaly_count,
+        ) {
+            resample_guard_client_seed(base_seed, signals)
+        } else {
+            base_seed
+        }
+    }
+}
+
+/// Epoch-local signals fed into [`GuardMitigationPolicy`] at path/guard build time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GuardMitigationSignals {
+    /// Epochs since the held guard set was last re-sampled (0 at fresh sample).
+    pub epoch_age: u64,
+    /// True when pruning/anomaly demotion fired this epoch window.
+    pub anomaly_demotion_flag: bool,
+    /// Distinct peer-health anomaly flags this epoch (see `peer_health_spike_detected`).
+    pub peer_anomaly_count: u32,
+}
+
+/// TOML `[guard_mitigation]` — opt-in sticky-cap + rotate-on-signal guard policy.
+///
+/// When omitted or `adaptive_first = false`, behavior matches production defaults
+/// ([`GuardMitigationPolicy::disabled()`]). See `docs/ops/adaptive_guard_mitigation.md`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GuardMitigationFileConfig {
+    /// Enable the [`GuardMitigationPolicy::adaptive_first()`] preset (default false).
+    #[serde(default)]
+    pub adaptive_first: bool,
+}
+
+impl GuardMitigationFileConfig {
+    /// Resolve the effective mitigation policy for path/guard selection hooks.
+    pub fn resolve_policy(&self) -> GuardMitigationPolicy {
+        if self.adaptive_first {
+            GuardMitigationPolicy::adaptive_first()
+        } else {
+            GuardMitigationPolicy::disabled()
+        }
+    }
+}
+
+/// Derive a fresh client seed when guard re-sample is required (deterministic for tests).
+pub fn resample_guard_client_seed(base_seed: u64, signals: &GuardMitigationSignals) -> u64 {
+    base_seed
+        .wrapping_mul(0x5851_f42d_4c95_7f2d)
+        .wrapping_add(signals.epoch_age.wrapping_mul(0x1405_7b7e_f767_814f))
+        .wrapping_add(u64::from(signals.peer_anomaly_count))
+        .wrapping_add(u64::from(signals.anomaly_demotion_flag))
 }
 
 #[cfg(test)]
@@ -141,5 +219,29 @@ mod tests {
         assert_eq!(out.pin_mode, GuardPinMode::StickyPrimary);
         let out2 = p.apply_to_config(&base, 0, true, 0);
         assert_eq!(out2.pin_mode, GuardPinMode::Rotate);
+    }
+
+    #[test]
+    fn file_config_defaults_disabled() {
+        let file = GuardMitigationFileConfig::default();
+        assert!(!file.adaptive_first);
+        assert_eq!(file.resolve_policy(), GuardMitigationPolicy::disabled());
+    }
+
+    #[test]
+    fn client_seed_unchanged_when_not_resampling() {
+        let p = GuardMitigationPolicy::adaptive_first();
+        let signals = GuardMitigationSignals::default();
+        assert_eq!(p.client_seed_for_guards(42, &signals), 42);
+    }
+
+    #[test]
+    fn client_seed_resamples_on_sticky_cap() {
+        let p = GuardMitigationPolicy::adaptive_first();
+        let signals = GuardMitigationSignals {
+            epoch_age: 12,
+            ..GuardMitigationSignals::default()
+        };
+        assert_ne!(p.client_seed_for_guards(42, &signals), 42);
     }
 }

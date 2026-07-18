@@ -31,9 +31,13 @@ struct Args {
     #[arg(long, default_value = "pilot_configs")]
     out: PathBuf,
 
-    /// Comma-separated loopback listen ports (4 values) or empty for defaults.
+    /// Comma-separated listen ports (4 values) or empty for defaults.
     #[arg(long, default_value = "17419,17420,17421,17422")]
     ports: String,
+
+    /// Peer addressing: `loopback` (127.0.0.1) or `bridge` (Docker service names).
+    #[arg(long, default_value = "loopback", value_parser = ["loopback", "bridge"])]
+    network: String,
 
     /// Emit JSON manifest to stdout instead of writing TOML files.
     #[arg(long)]
@@ -175,7 +179,27 @@ fn edge_link_tag(a: usize, b: usize) -> u8 {
     a.max(b) as u8
 }
 
-fn write_all(out: &Path, ports: &[u16], manifest: &PilotManifest, roster: &RelayRoster) -> Result<(), String> {
+fn listen_addr(network: &str, port: u16) -> String {
+    match network {
+        "bridge" => format!("0.0.0.0:{port}"),
+        _ => format!("127.0.0.1:{port}"),
+    }
+}
+
+fn peer_host(network: &str, peer_index: usize) -> String {
+    match network {
+        "bridge" => format!("node{peer_index}"),
+        _ => "127.0.0.1".to_string(),
+    }
+}
+
+fn write_all(
+    out: &Path,
+    ports: &[u16],
+    manifest: &PilotManifest,
+    roster: &RelayRoster,
+    network: &str,
+) -> Result<(), String> {
     fs::create_dir_all(out).map_err(|e| e.to_string())?;
     fs::create_dir_all(out.join("data")).map_err(|e| e.to_string())?;
 
@@ -199,12 +223,13 @@ fn write_all(out: &Path, ports: &[u16], manifest: &PilotManifest, roster: &Relay
                 r#"
 [[peers]]
 id = "{id}"
-addr = "127.0.0.1:{port}"
+addr = "{host}:{port}"
 link_key = "{link_key}"
 noise_static_public = "{noise_pk}"
 gossip_verifying_key = "{gossip_vk}"
 "#,
                 id = manifest.nodes[p].relay_id,
+                host = peer_host(network, p),
                 port = ports[p],
                 link_key = hex_encode(&link_key(edge_link_tag(i, p))),
                 noise_pk = peer_noise_public(manifest, p),
@@ -217,12 +242,13 @@ gossip_verifying_key = "{gossip_vk}"
                 r#"
 [[peers]]
 id = "{id}"
-addr = "127.0.0.1:{port}"
+addr = "{host}:{port}"
 link_key = "{link_key}"
 noise_static_public = "{noise_pk}"
 gossip_verifying_key = "{gossip_vk}"
 "#,
                 id = manifest.nodes[p].relay_id,
+                host = peer_host(network, p),
                 port = ports[p],
                 link_key = hex_encode(&link_key(edge_link_tag(i, p))),
                 noise_pk = peer_noise_public(manifest, p),
@@ -262,8 +288,13 @@ deliver_to = "file:data/exit_deliveries.log"
         };
 
         let toml = format!(
-            r#"relay_id = "{relay_id}"
-listen = "127.0.0.1:{port}"
+            r#"# AEGIS operator pilot — deterministic test material (not production secrets).
+# See docs/ops/PILOT.md. Opt-in adaptive guard mitigation (default off):
+# [guard_mitigation]
+# adaptive_first = true
+
+relay_id = "{relay_id}"
+listen = "{listen}"
 mu = 80.0
 
 [kem]
@@ -297,7 +328,7 @@ noise_static_secret = "{noise_sk}"
 {ingress_noise}{ingress}{exit}{peers}
 "#,
             relay_id = node.relay_id,
-            port = port,
+            listen = listen_addr(network, *port),
             x25519 = node.kem_x25519_seed,
             mlkem_d = node.kem_mlkem_d,
             mlkem_z = node.kem_mlkem_z,
@@ -332,7 +363,8 @@ kem_commitment = "{kem_commitment}"
     }
 
     let client = format!(
-        r#"first_hop_addr = "127.0.0.1:{port0}"
+        r#"# AEGIS operator pilot client — see docs/ops/PILOT.md
+first_hop_addr = "{first_hop}"
 ingress_link_key = "{ingress_key}"
 payload = "pilot-smoke"
 
@@ -348,7 +380,7 @@ noise_static_secret = "{ingress_noise_sk}"
 first_hop_noise_static_public = "{first_hop_noise_pk}"
 {hops}
 "#,
-        port0 = ports[0],
+        first_hop = format!("{}:{}", peer_host(network, 0), ports[0]),
         ingress_key = manifest.ingress_link_key,
         authority_pk = manifest.authority_pubkey_hex,
         ingress_noise_sk = manifest.ingress_noise_static_secret,
@@ -369,10 +401,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    write_all(&args.out, &ports, &manifest, &roster)?;
+    write_all(&args.out, &ports, &manifest, &roster, &args.network)?;
     eprintln!(
-        "pilot configs -> {} (ports={ports:?}, base default {PILOT_BASE_PORT})",
-        args.out.display()
+        "pilot configs -> {} (ports={ports:?}, network={}, base default {PILOT_BASE_PORT})",
+        args.out.display(),
+        args.network
     );
     Ok(())
 }

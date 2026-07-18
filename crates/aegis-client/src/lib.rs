@@ -12,9 +12,11 @@
 //! `send(tick, cell)` each slot. Production egress uses [`TcpCellTransport`]
 //! over a long-lived [`aegis_relay::LinkSession`]; tests use mock recorders.
 
+pub mod config;
 pub mod driver;
 pub mod emitter;
 pub mod padding;
+pub mod path;
 pub mod roster_load;
 pub mod send;
 pub mod session;
@@ -38,7 +40,12 @@ pub use send::{
 };
 #[allow(deprecated)]
 pub use send::{build_packet, send_payload, send_payload_with_options};
+pub use config::{
+    load_client_config, ClientConfigFile, ClientLinkFileConfig, HopConfig,
+};
+pub use path::{build_client_bound_path, ClientPathBuildParams};
 pub use roster_load::{load_roster_from_config, RosterFileConfig, RosterLoadError};
+pub use aegis_topology::{GuardMitigationFileConfig, GuardMitigationPolicy, GuardMitigationSignals};
 pub use session::{PacedSession, PacedSessionConfig};
 pub use tcp_transport::TcpCellTransport;
 pub use transport::{ObserverRecord, OutboundCell, Transport};

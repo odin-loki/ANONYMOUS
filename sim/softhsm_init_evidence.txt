@@ -1,0 +1,81 @@
+# AEGIS SoftHSM init smoke evidence
+# Host: Windows 10 (win32 10.0.26200) + WSL2 Ubuntu 24.04.1 LTS
+# Repo tip: f531480 Ship productization wave: pilot pack, SoftHSM path, adaptive mitigation, charter.
+# Captured: 2026-07-18T05:02:11Z (UTC)
+
+## Step 1 — apt install (blocked)
+
+Command:
+  wsl -e bash -lc "sudo -n true"
+
+Result:
+  sudo: a password is required
+  SUDO_NEEDS_PASSWORD
+
+Command (not run — would require interactive sudo password):
+  sudo apt-get update && sudo apt-get install -y softhsm2 opensc
+
+Pre-check:
+  which softhsm2-util → NOT_INSTALLED
+
+Blocker: WSL sudo requires a password on this host; non-interactive install cannot proceed.
+
+## Step 2 — scripts/softhsm_init.sh (graceful no-op)
+
+Command:
+  wsl -e bash -lc "cd /mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS && bash scripts/softhsm_init.sh"
+
+Exit code: 0
+
+Output:
+  SoftHSM2 not found (softhsm2-util missing).
+
+  Install on Debian/Ubuntu WSL:
+    sudo apt-get update && sudo apt-get install -y softhsm2 opensc
+
+  Then re-run:
+    bash scripts/softhsm_init.sh
+
+  See docs/ops/softhsm_ceremony.md for PKCS#11 module path and AEGIS wiring.
+
+Token init: NOT PERFORMED (softhsm2-util absent)
+pkcs11-tool smoke: NOT PERFORMED (opensc not installed)
+
+## Step 3 — PKCS#11 Rust/Python smoke
+
+Skipped intentionally: SoftHSM not installed; no optional in-tree PKCS#11 crate added.
+Default workspace build unchanged (no native PKCS#11 deps).
+
+## Step 4 — default cargo test (no SoftHSM)
+
+Windows PowerShell: cargo not on PATH.
+
+WSL (crates/ workspace):
+  cd crates && cargo test --workspace
+
+Result (2026-07-18): 6 failures in aegis-node — all KemProtect/keyring
+  ("keyring get_password: No matching entry found in secure storage").
+  Unrelated to SoftHSM; no PKCS#11 crates in workspace. Other crates passed.
+
+  Failed tests:
+    config::tests::kem_first_run_writes_external_file_by_default
+    config::tests::kem_load_from_external_file_with_custom_path
+    config::tests::kem_load_or_init_is_idempotent
+    config::tests::kem_persist_roundtrip_via_protect_layer
+    config::tests::link_and_ingress_toml_wire_ingress_rate_limit
+    kem_seed_protect::tests::keyring_protect_unprotect_roundtrip_or_fallback
+
+## WSL host metadata
+
+Linux OdinsPC 6.6.87.2-microsoft-standard-WSL2 x86_64 GNU/Linux
+PRETTY_NAME="Ubuntu 24.04.1 LTS"
+
+## Unblock for real token smoke
+
+On this machine, run interactively in WSL:
+
+  sudo apt-get update && sudo apt-get install -y softhsm2 opensc
+  cd /mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS
+  bash scripts/softhsm_init.sh | tee -a sim/softhsm_init_evidence.txt
+
+Expected after install: token label aegis-ceremony on slot 0, pkcs11-tool --list-slots OK.

@@ -5,9 +5,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use aegis_client::config::{ClientConfigFile, ClientLinkFileConfig};
 use aegis_client::driver::config_with_tau_and_peak;
 use aegis_client::emitter::env_allows_high_rho;
-use aegis_client::roster_load::{load_roster_from_config, RosterFileConfig};
+use aegis_client::roster_load::load_roster_from_config;
 use aegis_client::send::{BuildPacketOptions, ClientHop, ClientLink};
 use aegis_client::session::{PacedSession, PacedSessionConfig};
 use aegis_crypto::kem::RelayKemSecret;
@@ -15,7 +16,6 @@ use aegis_topology::types::KemPublicCommitment;
 use aegis_relay::{LinkBridgeConfig, LinkHandshakeMode};
 use clap::Parser;
 use rand_core::OsRng;
-use serde::Deserialize;
 
 #[derive(Parser, Debug)]
 #[command(name = "aegis-client", about = "AEGIS Sphinx packet injector")]
@@ -59,40 +59,6 @@ struct Cli {
     /// Allow hops without roster KEM commitments (dev/legacy only).
     #[arg(long, conflicts_with = "require_kem_binding")]
     no_require_kem_binding: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct ClientConfigFile {
-    first_hop_addr: String,
-    ingress_link_key: String,
-    payload: Option<String>,
-    hops: Vec<HopConfig>,
-    /// Optional permissioned roster; when set, loaded with consortium re-verify.
-    #[serde(default)]
-    roster: Option<RosterFileConfig>,
-    /// Optional first-hop Noise link settings (production ingress).
-    #[serde(default)]
-    link: Option<ClientLinkFileConfig>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct ClientLinkFileConfig {
-    #[serde(default)]
-    handshake: Option<String>,
-    #[serde(default)]
-    noise_static_secret: Option<String>,
-    #[serde(default)]
-    first_hop_noise_static_public: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HopConfig {
-    id: String,
-    kem_x25519_seed: String,
-    kem_mlkem_d: String,
-    kem_mlkem_z: String,
-    /// Optional SHA3-256 hex commitment from the signed roster (64 hex chars).
-    kem_commitment: Option<String>,
 }
 
 fn parse_hex32(s: &str) -> Result<[u8; 32], String> {

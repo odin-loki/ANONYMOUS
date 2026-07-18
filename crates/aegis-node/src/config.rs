@@ -30,7 +30,9 @@ use aegis_relay::{
     RelayConfig, RelayId, DEFAULT_COVER_ROUND_SECS, DEFAULT_COVER_TARGET_FLOW_COUNT,
     DEFAULT_GLOBAL_MAX_CELLS_PER_SEC, DEFAULT_INGRESS_BURST, DEFAULT_INGRESS_MAX_CELLS_PER_SEC,
 };
-use aegis_topology::{RelayRoster, RosterError, ThresholdConsortium};
+use aegis_topology::{
+    GuardMitigationFileConfig, GuardMitigationPolicy, RelayRoster, RosterError, ThresholdConsortium,
+};
 use aegis_trust::{
     signing_key_from_hex_seed, verifying_key_from_hex, NullifierError, NullifierRegistry,
     RelayPruningPolicy, ReputationError, ReputationLedger,
@@ -102,6 +104,12 @@ pub struct NodeConfigFile {
     /// Optional signed cross-relay peer-health gossip (see `docs/ops/health_gossip.md`).
     #[serde(default)]
     pub health_gossip: HealthGossipConfig,
+    /// Optional adaptive guard mitigation (spec §13 first pass — default off).
+    ///
+    /// Parsed for operator symmetry with client TOML; relay nodes do not select
+    /// client paths — **clients enforce** via [`GuardMitigationPolicy`] at path build.
+    #[serde(default)]
+    pub guard_mitigation: GuardMitigationFileConfig,
 }
 
 /// TOML `[reputation]` — EWMA ledger persistence for this relay process.
@@ -760,6 +768,8 @@ pub struct NodeRuntimeConfig {
     pub roster: Option<RelayRoster>,
     pub reputation: ReputationConfig,
     pub health_gossip: HealthGossipConfig,
+    /// Loaded mitigation preset; relay datapath does not select guards (client-side).
+    pub guard_mitigation: GuardMitigationPolicy,
 }
 
 impl NodeConfigFile {
@@ -926,6 +936,7 @@ impl NodeConfigFile {
             roster,
             reputation: self.reputation,
             health_gossip: self.health_gossip,
+            guard_mitigation: self.guard_mitigation.resolve_policy(),
         })
     }
 }
@@ -1684,5 +1695,72 @@ burst = 2
             cfg.global_max_cells_per_sec,
             Some(DEFAULT_GLOBAL_MAX_CELLS_PER_SEC)
         );
+    }
+
+    #[test]
+    fn guard_mitigation_defaults_disabled() {
+        let toml = r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+"#;
+        let file: NodeConfigFile = toml::from_str(toml).unwrap();
+        assert!(!file.guard_mitigation.adaptive_first);
+        assert_eq!(
+            file.guard_mitigation.resolve_policy(),
+            GuardMitigationPolicy::disabled()
+        );
+    }
+
+    #[test]
+    fn guard_mitigation_adaptive_first_parses_and_resolves() {
+        let toml = r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[guard_mitigation]
+adaptive_first = true
+"#;
+        let file: NodeConfigFile = toml::from_str(toml).unwrap();
+        assert!(file.guard_mitigation.adaptive_first);
+        let policy = file.guard_mitigation.resolve_policy();
+        assert_eq!(policy, GuardMitigationPolicy::adaptive_first());
+        assert!(policy.should_resample_guards(12, false, 0));
+    }
+
+    #[test]
+    fn guard_mitigation_wires_into_runtime() {
+        let dir = test_config_dir("guard-mitigation-runtime");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("node.toml");
+        let seeds = fixed_seeds();
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[kem]
+allow_plaintext_kem = true
+x25519_seed = "{}"
+mlkem_d = "{}"
+mlkem_z = "{}"
+
+[guard_mitigation]
+adaptive_first = true
+"#,
+                seeds.x25519_seed, seeds.mlkem_d, seeds.mlkem_z
+            ),
+        )
+        .unwrap();
+        let file = NodeConfigFile::load(&config_path).unwrap();
+        let runtime = file.into_runtime(&config_path).unwrap();
+        assert_eq!(
+            runtime.guard_mitigation,
+            GuardMitigationPolicy::adaptive_first()
+        );
+
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

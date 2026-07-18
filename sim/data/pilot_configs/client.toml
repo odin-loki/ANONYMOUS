@@ -1,3 +1,4 @@
+# AEGIS operator pilot client — see docs/ops/PILOT.md
 first_hop_addr = "127.0.0.1:17419"
 ingress_link_key = "d0a5000000000000000000000000000000000000000000000000000000000000"
 payload = "pilot-smoke"
