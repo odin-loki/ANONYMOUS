@@ -25,6 +25,26 @@ jobs:
           workspaces: crates
       - name: Run workspace tests
         run: cargo test --workspace
+      - name: Unix KEM seed mode hardening
+        run: |
+          cargo test -p aegis-node --lib kem_external_file_has_restrictive_mode_on_unix -- --nocapture
+          cargo test -p aegis-node --lib kem_seed_file_rejects_group_world_readable_mode -- --nocapture
+
+  sim-pytest:
+    name: sim pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install sim test deps
+        run: pip install -r sim/requirements.txt
+      - name: Run sim pytest
+        working-directory: sim
+        env:
+          PYTHONPATH: .
+        run: pytest tests/ -q
 
   deny:
     name: cargo deny

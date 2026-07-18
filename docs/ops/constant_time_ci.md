@@ -1,8 +1,8 @@
 # Constant-time evidence CI / local `dudect`
 
-**Status (2026-07-17):** In-tree timing smokes; WSL wrapper captures smoke evidence; in-repo
-`tools/dudect/` + `dudect-ffi` Rust exports scaffold the external lab boundary. Full
-oreparaz/dudect statistical runs remain **External** (operator + isolated CPU).
+**Status (2026-07-18):** In-tree timing smokes; WSL wrappers capture smoke + lab attempt evidence;
+`tools/dudect/` auto-clones oreparaz/dudect + `aegis-crypto-dudect-ffi` Rust exports scaffold the
+external lab boundary. Full statistical runs on an **isolated CPU** remain **External**.
 
 ## In-tree smokes (run anywhere)
 
@@ -40,6 +40,16 @@ The script:
 
 1. Runs `timing_smoke` + `dudect_smoke` under WSL (`cargo test -p aegis-crypto …`).
 2. Writes timestamped output to [`sim/dudect_wsl_smoke.txt`](../../sim/dudect_wsl_smoke.txt) (gitignored artifact; copy into `docs/ops/evidence/` for release records if desired).
+
+**Full lab attempt (FFI + Makefile + short dudect stats):**
+
+```powershell
+wsl -e bash -lc '/mnt/c/path/to/ANONYMOUS/scripts/run_dudect_lab_wsl.sh'
+# or: DUDECT_MEASUREMENTS=5000 wsl -e bash -lc '.../run_dudect_lab_wsl.sh'
+```
+
+Captures best-effort build/run output to [`sim/dudect_lab_attempt.txt`](../../sim/dudect_lab_attempt.txt).
+WSL2 is **not** sufficient for ≥10⁵ isolated traces — see blockers at end of that file.
 
 **Prerequisites in WSL:** `curl https://sh.rustup.rs -sSf | sh` (or distro package), then `rustup default stable`.
 
@@ -81,17 +91,18 @@ cargo test --manifest-path aegis-crypto-dudect-ffi/Cargo.toml
 ```bash
 cd tools/dudect
 make                    # stub binaries: FFI smoke only, no dudect stats
-# Full dudect (External operator step):
-git clone https://github.com/oreparaz/dudect.git ../dudect-upstream
-make DUDECT_DIR=../dudect-upstream
+make lab                # auto-clone oreparaz/dudect into ../dudect-upstream + run harnesses
+DUDECT_MEASUREMENTS=5000 make lab   # short lab attempt (not release evidence)
 # Pin core on bare metal / privileged VM:
 taskset -c 2 ./harness_replay_contains
 taskset -c 2 ./harness_verify_mac
 ```
 
-Stub targets print sanity output and exit; they do **not** claim CT. With `DUDECT_DIR`,
-harnesses aim for ≥10⁵ measurements (`number_measurements = 100000` in skeleton — tune upward
-for release evidence).
+The Makefile clones [oreparaz/dudect](https://github.com/oreparaz/dudect) when `../dudect-upstream/src/dudect.h`
+is missing (upstream is header-only; no separate `dudect.c`). Override with `DUDECT_DIR=/path/to/dudect`.
+
+Stub targets print sanity output and exit; they do **not** claim CT. With dudect linked,
+harnesses use `AEGIS_DUDECT_MEASUREMENTS` (default **100000** — tune upward for release evidence).
 
 ### Suggested class split
 
@@ -113,13 +124,18 @@ WSL2 may ignore cpufreq and isolation; treat WSL smokes as CI guards only.
 
 ### Honest External gap
 
-In-tree wiring stops at FFI + C skeleton + Makefile. **Not automated:** cloning oreparaz/dudect,
-adapting harnesses to upstream API drift, running ≥10⁵ traces per primitive on an isolated core,
-and archiving t-statistic reports. That is B-class External per [`RESEARCH_OPS_STATUS.md`](RESEARCH_OPS_STATUS.md).
+In-tree wiring: FFI + C harnesses + Makefile (auto-clone dudect) + WSL lab script +
+[`sim/dudect_lab_attempt.txt`](../../sim/dudect_lab_attempt.txt) best-effort capture.
+
+**Still External (not automated in CI):** running ≥10⁵ traces **per primitive** on an isolated
+core (bare metal / privileged VM with cpufreq + `taskset`), archiving t-statistic reports, and
+sign-off for release claims. WSL2 lab runs document wiring only.
 
 ### CI note
 
-Windows runners: `timing_smoke` + `dudect_smoke`, or optional `run_dudect_wsl.ps1` on self-hosted WSL agents.  
-Linux CI (optional job): `tools/dudect` stub build + optional manual dudect job on pinned hardware.
+Windows runners: `timing_smoke` + `dudect_smoke` only (no Makefile).  
+Linux CI (`.github/workflows/ci.yml`): `cargo test --workspace`, Unix kem seed mode tests,
+and `sim/` pytest with `PYTHONPATH=.`. Optional self-hosted WSL agent may run `run_dudect_lab_wsl.sh`.
+Optional manual dudect job on pinned hardware for release evidence.
 
 See also `docs/AEGIS_crypto_constant_time_review.md`.

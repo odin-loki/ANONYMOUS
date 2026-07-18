@@ -188,6 +188,10 @@ exit (exit rows), merged to `sim/data/real_multiprocess_relay_forward_trace.csv`
 Regenerate: `cargo test -p aegis-node capture_multiprocess_paced_relay_forward_trace_to_csv
 -- --ignored` or `sim/scripts/capture_multiprocess_relay_forward_trace.py`.
 
+**Longer horizon (optional):** the Python capture script accepts `--n-sends 48` to match the
+48-event client-send schedule in §4 (~4× wall time vs default 12 sends). Not re-run in this pass;
+use when a denser relay-forward sample is needed for shapeability at 1 s slots.
+
 **Loopback limits (honest):**
 - **127.0.0.1 only** — no WAN latency/jitter; multi-hop mix delay collapsed vs production.
 - **Trace on ingress + exit only** — not every hop; exit rows lag forwards by path RTT.

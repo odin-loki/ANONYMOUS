@@ -13,6 +13,7 @@ Requires pre-built binaries under crates/target/debug/ (script builds once).
 """
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import socket
@@ -26,7 +27,7 @@ CRATES = ROOT / "crates"
 SIM_DATA = ROOT / "sim" / "data"
 CONFIG_DIR = SIM_DATA / "testnet_configs"
 CELL_COUNT = 18
-N_SENDS = 12
+DEFAULT_N_SENDS = 12
 PATH_LEN = 4
 TAU_SECS = 0.05
 COVER_SECS = 0.1
@@ -279,6 +280,21 @@ def drain_stderr(proc: subprocess.Popen) -> str:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--n-sends",
+        type=int,
+        default=DEFAULT_N_SENDS,
+        help=(
+            "paced CLI send count (default 12 for CI-friendly relay-forward capture; "
+            "use 48 to match client-send schedule in phase8 §4 — ~4× wall time)"
+        ),
+    )
+    args = parser.parse_args()
+    n_sends = args.n_sends
+    if n_sends < 1:
+        raise SystemExit("--n-sends must be >= 1")
+
     SIM_DATA.mkdir(parents=True, exist_ok=True)
     for stale in (
         CONFIG_DIR / "ingress_relay_forward_trace.csv",
@@ -323,7 +339,7 @@ def main() -> int:
                 err = drain_stderr(proc)
                 raise RuntimeError(f"node{i} exited before ready: {err}")
 
-        for i in range(N_SENDS):
+        for i in range(n_sends):
             payload_len = 32 + (i * 17) % 225
             result = subprocess.run(
                 [
@@ -346,7 +362,7 @@ def main() -> int:
             if result.returncode != 0:
                 tail = (result.stderr or result.stdout or "").strip()
                 raise RuntimeError(
-                    f"paced client send {i + 1}/{N_SENDS} failed (exit {result.returncode}): {tail}"
+                    f"paced client send {i + 1}/{n_sends} failed (exit {result.returncode}): {tail}"
                 )
 
             if any(proc.poll() is not None for proc in node_procs):
@@ -362,7 +378,7 @@ def main() -> int:
             exit_trace,
             OUT_PATH,
             path_len=PATH_LEN,
-            n_sends=N_SENDS,
+            n_sends=n_sends,
             ports=ports,
             relay_ids=relay_ids,
         )

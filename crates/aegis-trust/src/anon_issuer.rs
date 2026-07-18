@@ -111,6 +111,27 @@ pub struct IssuedAnonymousCredential {
     pub issuer_signature: Vec<u8>,
 }
 
+/// Client-side blinded issuance request (no `RelayId` in serialized fields).
+///
+/// **Honest Partial binding:** the issuer verifies `presentation` meets
+/// `score_band_threshold` via ZK and signs the binding without learning the
+/// exact score. The issuer still learns `nullifier` (unlinkable w.r.t. RelayId
+/// if `blinding` stays client-secret) and may learn identity out-of-band.
+/// This is **not** a cryptographic blind-signature or interactive AC show.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BlindedIssueRequest {
+    pub epoch: u64,
+    pub score_band_threshold: f64,
+    pub presentation: AnonymousReputationPresentation,
+    pub nullifier: ReputationNullifier,
+}
+
+/// Issuer response to [`BlindedIssueRequest`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BlindedIssueResponse {
+    pub credential: IssuedAnonymousCredential,
+}
+
 impl AnonymousCredentialIssuer {
     pub fn from_seed(seed: [u8; 32]) -> Self {
         Self {
@@ -168,6 +189,70 @@ impl AnonymousCredentialIssuer {
             issuer_pubkey,
             issuer_signature,
         })
+    }
+
+    /// Build a client-side blinded request (presentation + nullifier only).
+    pub fn build_blinded_request(
+        score: ReputationScore,
+        score_band_threshold: f64,
+        relay_id: &[u8; 32],
+        epoch: u64,
+        blinding: &[u8; 32],
+    ) -> Result<BlindedIssueRequest, IssuerError> {
+        if score.0 < score_band_threshold {
+            return Err(IssuerError::ScoreBelowBand {
+                score: score.0,
+                floor: score_band_threshold,
+            });
+        }
+        Ok(BlindedIssueRequest {
+            epoch,
+            score_band_threshold,
+            presentation: present_anonymous(score, score_band_threshold),
+            nullifier: derive_reputation_nullifier(relay_id, epoch, blinding),
+        })
+    }
+
+    /// Issue from a blinded request without taking `relay_id`.
+    ///
+    /// Verifies the ZK threshold proof and signs epoch + commitment + nullifier.
+    /// Exact score remains hidden; identity is not in request bytes.
+    pub fn issue_from_blinded_request(
+        &self,
+        request: &BlindedIssueRequest,
+    ) -> Result<BlindedIssueResponse, IssuerError> {
+        if request.presentation.score_commitment != request.presentation.proof.commitment {
+            return Err(IssuerError::CommitmentMismatch);
+        }
+        if !verify_anonymous(&request.presentation, request.score_band_threshold) {
+            return Err(IssuerError::PresentationInvalid);
+        }
+
+        let issuer_pubkey = self.signing_key.verifying_key().to_bytes();
+        let issuer_signature = self.sign_binding(
+            request.epoch,
+            request.score_band_threshold,
+            &request.presentation.score_commitment,
+            &request.nullifier,
+        );
+
+        Ok(BlindedIssueResponse {
+            credential: IssuedAnonymousCredential {
+                epoch: request.epoch,
+                score_band_threshold: request.score_band_threshold,
+                presentation: request.presentation.clone(),
+                nullifier: request.nullifier,
+                issuer_pubkey,
+                issuer_signature,
+            },
+        })
+    }
+
+    /// Epoch rollover helper: drop spent nullifiers for `old_epoch`.
+    ///
+    /// Pair with fresh credentials at `new_epoch` (distinct nullifier derivation).
+    pub fn rotate_epoch(registry: &mut NullifierRegistry, old_epoch: u64) {
+        registry.forget_epoch(old_epoch);
     }
 
     /// Verify issuer signature + anonymous presentation (no spend).
@@ -395,6 +480,73 @@ mod tests {
 
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn blinded_issue_request_hides_relay_id_and_score() {
+        let relay_id = [0xABu8; 32];
+        let issuer = test_issuer();
+        let request = AnonymousCredentialIssuer::build_blinded_request(
+            ReputationScore(0.91),
+            0.5,
+            &relay_id,
+            5,
+            &[0xCCu8; 32],
+        )
+        .unwrap();
+        let blob = serde_json::to_vec(&request).unwrap();
+        assert!(
+            !blob.windows(32).any(|w| w == relay_id),
+            "blinded request JSON must not embed RelayId"
+        );
+
+        let response = issuer.issue_from_blinded_request(&request).unwrap();
+        let params = issuer.public_params();
+        assert!(
+            AnonymousCredentialIssuer::verify_credential(&params, &response.credential).unwrap()
+        );
+    }
+
+    #[test]
+    fn blinded_issue_rejects_invalid_presentation() {
+        let issuer = test_issuer();
+        let mut request = AnonymousCredentialIssuer::build_blinded_request(
+            ReputationScore(0.8),
+            0.5,
+            &[1u8; 32],
+            1,
+            &[2u8; 32],
+        )
+        .unwrap();
+        request.presentation.proof.commitment[0] ^= 0xff;
+        assert!(issuer.issue_from_blinded_request(&request).is_err());
+    }
+
+    #[test]
+    fn epoch_rotate_forgets_old_spends() {
+        let issuer = test_issuer();
+        let params = issuer.public_params();
+        let relay_id = [0x22u8; 32];
+        let blinding = [0x33u8; 32];
+
+        let cred_e1 = issuer
+            .issue(ReputationScore(0.8), 0.5, &relay_id, 1, &blinding)
+            .unwrap();
+        let mut registry = NullifierRegistry::new();
+        assert!(
+            AnonymousCredentialIssuer::verify_and_spend(&params, &mut registry, &cred_e1).unwrap()
+        );
+        assert_eq!(registry.epoch_len(1), 1);
+
+        AnonymousCredentialIssuer::rotate_epoch(&mut registry, 1);
+        assert_eq!(registry.epoch_len(1), 0);
+
+        let cred_e2 = issuer
+            .issue(ReputationScore(0.8), 0.5, &relay_id, 2, &blinding)
+            .unwrap();
+        assert!(
+            AnonymousCredentialIssuer::verify_and_spend(&params, &mut registry, &cred_e2).unwrap()
+        );
     }
 
     #[test]

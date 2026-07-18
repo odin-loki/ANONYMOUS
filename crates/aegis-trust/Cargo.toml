@@ -7,6 +7,12 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+## Documents Intel DCAP / AMD SEV-SNP hook module (`tee_hardware`). No native SDK
+## deps — real attestation still requires operator-linked platform libraries.
+tee-hardware = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -10,7 +10,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
-use ed25519_dalek::VerifyingKey;
+use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use thiserror::Error;
 
 use crate::health_gossip::PeerHealthAdvert;
@@ -18,6 +18,8 @@ use crate::peer_health::{PeerHealthTracker, GOSSIP_WEIGHT_DEN, GOSSIP_WEIGHT_NUM
 
 /// On-disk record size: epoch + reporter + subject + successes + failures + signature.
 pub const QUORUM_LOG_RECORD_LEN: usize = 8 + 32 + 32 + 8 + 8 + 64;
+
+const EPOCH_CHECKPOINT_DOMAIN: &[u8] = b"aegis-health-epoch-checkpoint-v1";
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum QuorumLogError {
@@ -89,6 +91,40 @@ impl HealthQuorumLogEntry {
     }
 }
 
+/// One quorum-accepted median observation for a subject within a gossip epoch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HealthEpochMedianSummary {
+    pub subject: [u8; 32],
+    pub successes: u64,
+    pub failures: u64,
+}
+
+/// Signed rollup of all quorum-accepted medians for one gossip epoch.
+///
+/// Optional operator artifact — **not** multi-org BFT consensus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HealthEpochCheckpoint {
+    pub epoch: u64,
+    pub summaries: Vec<HealthEpochMedianSummary>,
+    pub signer_pubkey: [u8; 32],
+    pub signature: Vec<u8>,
+}
+
+impl HealthEpochCheckpoint {
+    pub fn verify(&self, verifying_key: &VerifyingKey) -> Result<(), QuorumLogError> {
+        let msg = canonical_checkpoint_bytes(self.epoch, &self.summaries);
+        let sig_bytes: [u8; 64] = self
+            .signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| QuorumLogError::BadSignature)?;
+        let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+        verifying_key
+            .verify(&msg, &sig)
+            .map_err(|_| QuorumLogError::BadSignature)
+    }
+}
+
 /// Result of appending a verified advert to the quorum log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuorumAppendOutcome {
@@ -111,6 +147,8 @@ pub struct HealthQuorumLog {
     /// `(epoch, subject)` → reporter → (successes, failures).
     pending: HashMap<(u64, [u8; 32]), HashMap<[u8; 32], (u64, u64)>>,
     applied: HashSet<(u64, [u8; 32])>,
+    /// Quorum-accepted median `(successes, failures)` per `(epoch, subject)`.
+    applied_medians: HashMap<(u64, [u8; 32]), (u64, u64)>,
     entries: Vec<HealthQuorumLogEntry>,
 }
 
@@ -123,6 +161,7 @@ impl HealthQuorumLog {
             seen: HashMap::new(),
             pending: HashMap::new(),
             applied: HashSet::new(),
+            applied_medians: HashMap::new(),
             entries: Vec::new(),
         }
     }
@@ -142,6 +181,39 @@ impl HealthQuorumLog {
 
     pub fn epoch_subject_applied(&self, epoch: u64, subject: [u8; 32]) -> bool {
         self.applied.contains(&(epoch, subject))
+    }
+
+    /// Accepted median summaries for `epoch`, sorted by subject id.
+    pub fn applied_summaries_for_epoch(&self, epoch: u64) -> Vec<HealthEpochMedianSummary> {
+        let mut out: Vec<HealthEpochMedianSummary> = self
+            .applied_medians
+            .iter()
+            .filter(|((e, _), _)| *e == epoch)
+            .map(|((_, subject), (ok, fail))| HealthEpochMedianSummary {
+                subject: *subject,
+                successes: *ok,
+                failures: *fail,
+            })
+            .collect();
+        out.sort_by_key(|s| s.subject);
+        out
+    }
+
+    /// Sign a checkpoint over all quorum-accepted medians for `epoch`.
+    pub fn sign_epoch_checkpoint(
+        &self,
+        epoch: u64,
+        signing_key: &SigningKey,
+    ) -> HealthEpochCheckpoint {
+        let summaries = self.applied_summaries_for_epoch(epoch);
+        let msg = canonical_checkpoint_bytes(epoch, &summaries);
+        let signature = signing_key.sign(&msg).to_bytes().to_vec();
+        HealthEpochCheckpoint {
+            epoch,
+            summaries,
+            signer_pubkey: signing_key.verifying_key().to_bytes(),
+            signature,
+        }
     }
 
     /// Load an existing log from `path`, or create an empty one if missing.
@@ -178,9 +250,16 @@ impl HealthQuorumLog {
             .filter(|(_, reporters)| reporters.len() >= self.majority_k)
             .map(|(key, _)| *key)
             .collect();
-        for key in ready {
-            self.applied.insert(key);
-            self.pending.remove(&key);
+        for (epoch, subject) in ready {
+            if let Some(by_reporter) = self.pending.get(&(epoch, subject)) {
+                let observations: Vec<(u64, u64)> = by_reporter.values().copied().collect();
+                if let Some((ok, fail)) = crate::peer_health::median_outcome_counts(&observations)
+                {
+                    self.applied_medians.insert((epoch, subject), (ok, fail));
+                }
+            }
+            self.applied.insert((epoch, subject));
+            self.pending.remove(&(epoch, subject));
         }
     }
 
@@ -284,6 +363,8 @@ impl HealthQuorumLog {
         self.applied.insert((epoch, advert.subject));
 
         if let Some((ok, fail)) = crate::peer_health::median_outcome_counts(&observations) {
+            self.applied_medians
+                .insert((epoch, advert.subject), (ok, fail));
             tracker.apply_gossip_outcomes(
                 advert.subject,
                 ok,
@@ -294,6 +375,18 @@ impl HealthQuorumLog {
         }
         Ok(QuorumAppendOutcome::Applied { reporters: have })
     }
+}
+
+fn canonical_checkpoint_bytes(epoch: u64, summaries: &[HealthEpochMedianSummary]) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(EPOCH_CHECKPOINT_DOMAIN.len() + 8 + summaries.len() * 48);
+    msg.extend_from_slice(EPOCH_CHECKPOINT_DOMAIN);
+    msg.extend_from_slice(&epoch.to_le_bytes());
+    for summary in summaries {
+        msg.extend_from_slice(&summary.subject);
+        msg.extend_from_slice(&summary.successes.to_le_bytes());
+        msg.extend_from_slice(&summary.failures.to_le_bytes());
+    }
+    msg
 }
 
 /// Map advert timestamp into a gossip epoch bucket.
@@ -413,6 +506,47 @@ mod tests {
         assert!(reloaded.epoch_subject_applied(epoch, subject));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_authority_reporter_rejected() {
+        let subject = id(11);
+        let epoch = 2;
+        let tracker = PeerHealthTracker::new();
+        let mut log = HealthQuorumLog::new(1, authorities(&[1]));
+
+        let advert = PeerHealthAdvert::sign(&sk(99), id(99), subject, 5, 5, 100);
+        let err = log
+            .append_verified(epoch, &advert, &sk(99).verifying_key(), &tracker)
+            .unwrap_err();
+        assert_eq!(err, QuorumLogError::NotAuthority);
+    }
+
+    #[test]
+    fn epoch_checkpoint_signs_accepted_medians() {
+        let subject = id(20);
+        let epoch = 9;
+        let tracker = PeerHealthTracker::new();
+        let mut log = HealthQuorumLog::new(2, authorities(&[1, 2]));
+        let ck_key = sk(77);
+
+        let a1 = PeerHealthAdvert::sign(&sk(1), id(1), subject, 90, 10, 500);
+        let a2 = PeerHealthAdvert::sign(&sk(2), id(2), subject, 88, 12, 500);
+        log.append_verified(epoch, &a1, &sk(1).verifying_key(), &tracker)
+            .unwrap();
+        log.append_verified(epoch, &a2, &sk(2).verifying_key(), &tracker)
+            .unwrap();
+
+        let checkpoint = log.sign_epoch_checkpoint(epoch, &ck_key);
+        assert_eq!(checkpoint.summaries.len(), 1);
+        assert_eq!(checkpoint.summaries[0].subject, subject);
+        checkpoint
+            .verify(&ck_key.verifying_key())
+            .expect("checkpoint signature must verify");
+
+        let mut tampered = checkpoint.clone();
+        tampered.summaries[0].failures += 1;
+        assert!(tampered.verify(&ck_key.verifying_key()).is_err());
     }
 
     #[test]

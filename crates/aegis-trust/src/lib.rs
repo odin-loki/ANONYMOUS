@@ -34,12 +34,14 @@ pub mod nullifier;
 pub mod policy;
 pub mod reputation;
 pub mod tee;
+#[cfg(feature = "tee-hardware")]
+pub mod tee_hardware;
 pub mod zk;
 
 pub use anomaly::{AnomalyDetector, AnomalyVerdict};
 pub use anon_issuer::{
-    AnonymousCredentialIssuer, AnonymousCredentialIssuerParams, IssuedAnonymousCredential,
-    IssuerError,
+    AnonymousCredentialIssuer, AnonymousCredentialIssuerParams, BlindedIssueRequest,
+    BlindedIssueResponse, IssuedAnonymousCredential, IssuerError,
 };
 pub use nullifier::{NullifierError, NullifierMergeReport, NullifierRegistry};
 pub use policy::{feed_peer_metric, feed_peer_outcomes, RelayPruningPolicy, DEFAULT_PATH_REPUTATION_FLOOR};
@@ -48,11 +50,13 @@ pub use reputation::{
     ReputationLedger, ReputationScore,
 };
 pub use tee::{
-    core_gates_hold_under, core_gates_hold_under_attested, phase7_gate_report_data,
+    core_gates_hold_under, core_gates_hold_under_attested, encode_hardware_quote_envelope,
+    hardware_unavailable_hint, parse_hardware_quote_envelope, phase7_gate_report_data,
     select_attestation_provider, AttestationError, AttestationMode, AttestationProvider,
-    AttestationQuote, HardwareQuoteFields, HardwareTeeProvider, SoftwareAttestationProvider,
-    TeeAssumption, TeeError, HARDWARE_PROVIDER_ID, PHASE7_GATE_REPORT_DOMAIN,
-    SOFTWARE_PROVIDER_ID,
+    AttestationQuote, DcapQuoteRequest, HardwareQuoteEnvelope, HardwareQuoteFields,
+    HardwareTeeProvider, SevQuoteRequest, SoftwareAttestationProvider, TeeAssumption, TeeError,
+    TeePlatform, HARDWARE_PROVIDER_ID, HARDWARE_QUOTE_ENVELOPE_MAGIC,
+    HARDWARE_QUOTE_ENVELOPE_VERSION, PHASE7_GATE_REPORT_DOMAIN, SOFTWARE_PROVIDER_ID,
 };
 pub use zk::{
     derive_reputation_nullifier, present_anonymous, scale_reputation, verify_anonymous,

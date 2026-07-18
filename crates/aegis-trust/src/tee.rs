@@ -42,21 +42,67 @@ pub const HARDWARE_PROVIDER_ID: &str = "hardware-tee-v1";
 /// Canonical `report_data` for the Phase-7 gate checkpoint (lab / software path).
 pub const PHASE7_GATE_REPORT_DOMAIN: &[u8] = b"AEGIS-PHASE7-GATE-v1";
 
+/// Magic prefix for the minimal hardware quote wire envelope (format check only).
+pub const HARDWARE_QUOTE_ENVELOPE_MAGIC: &[u8; 4] = b"ATQ1";
+
+/// Envelope format version understood by [`parse_hardware_quote_envelope`].
+pub const HARDWARE_QUOTE_ENVELOPE_VERSION: u8 = 1;
+
+/// Maximum `report_data` length accepted by the envelope parser (64 KiB).
+pub const HARDWARE_QUOTE_ENVELOPE_MAX_REPORT_DATA: u32 = 65_536;
+
+/// Maximum opaque quote blob length accepted by the envelope parser (1 MiB).
+pub const HARDWARE_QUOTE_ENVELOPE_MAX_QUOTE_BLOB: u32 = 1_048_576;
+
 /// Whether the platform's attested enclave (if any) should be trusted for this
 /// check. `BrokenEnclave` models the spec's threat model where a compromised
 /// relay's enclave attestation cannot be relied upon at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TeeAssumption {
     Trusted,
     BrokenEnclave,
 }
 
+/// Hardware TEE platform selector for quote requests and error hints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum TeePlatform {
+    /// Intel SGX via DCAP quoting library / AESM.
+    IntelDcap = 0,
+    /// AMD SEV-SNP guest attestation via PSP / guest firmware.
+    AmdSevSnp = 1,
+}
+
+impl TeePlatform {
+    /// Decode platform tag from envelope byte.
+    pub fn from_envelope_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0 => Some(Self::IntelDcap),
+            1 => Some(Self::AmdSevSnp),
+            _ => None,
+        }
+    }
+
+    /// Envelope wire tag for this platform.
+    pub fn envelope_tag(self) -> u8 {
+        self as u8
+    }
+}
+
 /// Required fields for a hardware attestation quote (Intel SGX / AMD SEV-SNP).
 ///
-/// Implementors must bind caller `report_data` into the platform report and
-/// include measurement identity in the quote collateral. This struct documents
-/// the contract; [`HardwareTeeProvider`] does not populate it until a real SDK
-/// is wired.
+/// # Contract (implementors MUST satisfy all invariants)
+///
+/// | Field | Intel SGX (DCAP) | AMD SEV-SNP | Verifier MUST |
+/// |-------|------------------|-------------|---------------|
+/// | [`enclave_measurement`](Self::enclave_measurement) | 32 B `MRENCLAVE` (SHA-256 of enclave build) | 32 B guest launch `measurement` / firmware digest | Pin allowed values per deployment; reject unknown builds |
+/// | [`signer_measurement`](Self::signer_measurement) | 32 B `MRSIGNER` (SHA-256 of enclave signer) | 32 B `author_key` / signer digest per guest policy | Pin allowed signers; reject unknown signers |
+/// | [`report_data`](Self::report_data) | Must equal caller binding in SGX `REPORTDATA` (first 64 B used; remainder zero) | Must equal SEV guest report `report_data` per firmware spec | Compare byte-for-byte to expected binding **before** trusting quote crypto |
+/// | [`tcb_version`](Self::tcb_version) | CPU SVN + PCE SVN + QE identity (collateral-specific) | Guest SVN + reported TCB | Enforce minimum TCB / freshness policy; reject stale or revoked platforms |
+///
+/// **This struct documents semantics only.** [`HardwareTeeProvider`] does not
+/// populate it until a real SDK is linked. Parsing an envelope with
+/// [`parse_hardware_quote_envelope`] validates wire layout, **not** attestation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HardwareQuoteFields {
     /// Intel SGX: `MRENCLAVE` (32 B SHA-256 of enclave build).
@@ -71,6 +117,55 @@ pub struct HardwareQuoteFields {
     /// Platform TCB / security version (SGX `MISCSELECT`+CPUSVN+PCESVN; SEV `guest_svn`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tcb_version: Option<Vec<u8>>,
+}
+
+impl HardwareQuoteFields {
+    /// Returns `true` when `report_data` matches the caller's expected binding.
+    pub fn report_data_matches(&self, expected: &[u8]) -> bool {
+        self.report_data.as_slice() == expected
+    }
+}
+
+/// Intel DCAP quote request placeholder — documents inputs for real SDK wiring.
+///
+/// Link Intel SGX DCAP (`libsgx_dcap_quoteverify`, `libdcap_quoteprov`) and
+/// call from [`HardwareTeeProvider::request_dcap_quote`]. Until then every call
+/// returns [`TeeError::HardwareUnavailable`] with an actionable hint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DcapQuoteRequest {
+    /// Caller-defined binding placed into SGX `REPORTDATA` (typically ≤ 64 B).
+    pub report_data: Vec<u8>,
+    /// Expected enclave identity for policy pin (optional at request time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_mrenclave: Option<[u8; 32]>,
+    /// Expected signer identity for policy pin (optional at request time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_mrsigner: Option<[u8; 32]>,
+}
+
+/// AMD SEV-SNP guest attestation request placeholder.
+///
+/// Link AMD SEV-SNP guest attestation (PSP / `libsev-guest`) and call from
+/// [`HardwareTeeProvider::request_sev_quote`]. Until then every call returns
+/// [`TeeError::HardwareUnavailable`] with an actionable hint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SevQuoteRequest {
+    /// Caller-defined binding placed into the guest report `report_data` field.
+    pub report_data: Vec<u8>,
+    /// Expected launch measurement for policy pin (optional at request time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_measurement: Option<[u8; 32]>,
+    /// Expected author key digest for policy pin (optional at request time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_author_key: Option<[u8; 32]>,
+}
+
+/// Parsed hardware quote wire envelope (layout validation only — not attestation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardwareQuoteEnvelope {
+    pub platform: TeePlatform,
+    pub report_data: Vec<u8>,
+    pub quote_blob: Vec<u8>,
 }
 
 /// A signed attestation quote binding opaque `report_data` to an issuer.
@@ -105,8 +200,8 @@ pub enum AttestationMode {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TeeError {
-    #[error("hardware TEE unavailable on this host (no SGX/SEV-SNP SDK or device)")]
-    HardwareUnavailable,
+    #[error("hardware TEE unavailable: {0}")]
+    HardwareUnavailable(String),
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -121,6 +216,8 @@ pub enum AttestationError {
     InvalidSignature,
     #[error("signer pubkey does not match configured root")]
     SignerMismatch,
+    #[error("hardware quote envelope: {0}")]
+    EnvelopeError(String),
 }
 
 /// Issue and verify attestation quotes over opaque `report_data`.
@@ -221,6 +318,111 @@ fn verify_software_quote(
         .map_err(|_| AttestationError::InvalidSignature)
 }
 
+/// Serialize a minimal hardware quote envelope for wire transport.
+///
+/// Layout: `ATQ1` | version u8 | platform u8 | report_len u32 LE | quote_len u32 LE |
+/// report_data | quote_blob. Does **not** perform attestation.
+pub fn encode_hardware_quote_envelope(
+    platform: TeePlatform,
+    report_data: &[u8],
+    quote_blob: &[u8],
+) -> Result<Vec<u8>, AttestationError> {
+    let report_len = u32::try_from(report_data.len())
+        .map_err(|_| AttestationError::EnvelopeError("report_data too long".into()))?;
+    let quote_len = u32::try_from(quote_blob.len())
+        .map_err(|_| AttestationError::EnvelopeError("quote_blob too long".into()))?;
+    if report_len > HARDWARE_QUOTE_ENVELOPE_MAX_REPORT_DATA {
+        return Err(AttestationError::EnvelopeError(
+            "report_data exceeds envelope limit".into(),
+        ));
+    }
+    if quote_len > HARDWARE_QUOTE_ENVELOPE_MAX_QUOTE_BLOB {
+        return Err(AttestationError::EnvelopeError(
+            "quote_blob exceeds envelope limit".into(),
+        ));
+    }
+
+    let mut out = Vec::with_capacity(14 + report_data.len() + quote_blob.len());
+    out.extend_from_slice(HARDWARE_QUOTE_ENVELOPE_MAGIC);
+    out.push(HARDWARE_QUOTE_ENVELOPE_VERSION);
+    out.push(platform.envelope_tag());
+    out.extend_from_slice(&report_len.to_le_bytes());
+    out.extend_from_slice(&quote_len.to_le_bytes());
+    out.extend_from_slice(report_data);
+    out.extend_from_slice(quote_blob);
+    Ok(out)
+}
+
+/// Parse and validate minimal hardware quote envelope structure.
+///
+/// Rejects truncated, oversized, or unknown-format blobs. **Does not verify
+/// attestation** — use a vendor SDK (Intel QVL / AMD KDS) after parsing.
+pub fn parse_hardware_quote_envelope(bytes: &[u8]) -> Result<HardwareQuoteEnvelope, AttestationError> {
+    const HEADER_LEN: usize = 4 + 1 + 1 + 4 + 4;
+
+    if bytes.len() < HEADER_LEN {
+        return Err(AttestationError::EnvelopeError("truncated header".into()));
+    }
+    if bytes.get(0..4) != Some(HARDWARE_QUOTE_ENVELOPE_MAGIC) {
+        return Err(AttestationError::EnvelopeError("bad magic".into()));
+    }
+    if bytes[4] != HARDWARE_QUOTE_ENVELOPE_VERSION {
+        return Err(AttestationError::EnvelopeError("unsupported version".into()));
+    }
+    let platform = TeePlatform::from_envelope_tag(bytes[5])
+        .ok_or_else(|| AttestationError::EnvelopeError("unknown platform tag".into()))?;
+
+    let report_len = u32::from_le_bytes(bytes[6..10].try_into().expect("slice len"));
+    let quote_len = u32::from_le_bytes(bytes[10..14].try_into().expect("slice len"));
+    if report_len > HARDWARE_QUOTE_ENVELOPE_MAX_REPORT_DATA {
+        return Err(AttestationError::EnvelopeError(
+            "report_data length exceeds limit".into(),
+        ));
+    }
+    if quote_len > HARDWARE_QUOTE_ENVELOPE_MAX_QUOTE_BLOB {
+        return Err(AttestationError::EnvelopeError(
+            "quote_blob length exceeds limit".into(),
+        ));
+    }
+
+    let report_end = HEADER_LEN
+        .checked_add(report_len as usize)
+        .ok_or_else(|| AttestationError::EnvelopeError("report_data length overflow".into()))?;
+    let total = report_end
+        .checked_add(quote_len as usize)
+        .ok_or_else(|| AttestationError::EnvelopeError("quote_blob length overflow".into()))?;
+    if bytes.len() != total {
+        return Err(AttestationError::EnvelopeError(format!(
+            "length mismatch: header declares {total} bytes, got {}",
+            bytes.len()
+        )));
+    }
+
+    Ok(HardwareQuoteEnvelope {
+        platform,
+        report_data: bytes[HEADER_LEN..report_end].to_vec(),
+        quote_blob: bytes[report_end..total].to_vec(),
+    })
+}
+
+/// Actionable operator hint for linking a hardware TEE SDK.
+pub fn hardware_unavailable_hint(platform: TeePlatform) -> &'static str {
+    match platform {
+        TeePlatform::IntelDcap => {
+            "Intel DCAP unavailable: install SGX driver + AESM/PCCS, link \
+             libsgx_dcap_quoteverify and libdcap_quoteprov (or intel-sgx-rs), \
+             enable Cargo feature `tee-hardware`, and implement \
+             HardwareTeeProvider::request_dcap_quote. See docs/ops/tee_attestation.md."
+        }
+        TeePlatform::AmdSevSnp => {
+            "AMD SEV-SNP unavailable: enable SEV-SNP in firmware/BIOS, install \
+             PSP packages, link libsev-guest (or sev crate), enable Cargo feature \
+             `tee-hardware`, and implement HardwareTeeProvider::request_sev_quote. \
+             See docs/ops/tee_attestation.md."
+        }
+    }
+}
+
 /// Hardware TEE attestation stub — fail-closed until a platform SDK is linked.
 ///
 /// A production implementation must:
@@ -231,7 +433,7 @@ fn verify_software_quote(
 /// 3. Verify collateral (PCK certs, TCB, revocation) on the verifier side.
 ///
 /// This host has no Intel SGX or AMD SEV-SNP SDK dependency; all entry points
-/// return [`TeeError::HardwareUnavailable`].
+/// return [`TeeError::HardwareUnavailable`] with [`hardware_unavailable_hint`].
 pub struct HardwareTeeProvider;
 
 impl HardwareTeeProvider {
@@ -242,12 +444,26 @@ impl HardwareTeeProvider {
 
     fn probe_hardware() -> Result<Self, TeeError> {
         // Real builds would detect /dev/sgx_enclave, SEV firmware, etc.
-        Err(TeeError::HardwareUnavailable)
+        Err(Self::hardware_unavailable(TeePlatform::IntelDcap))
+    }
+
+    pub(crate) fn hardware_unavailable(platform: TeePlatform) -> TeeError {
+        TeeError::HardwareUnavailable(hardware_unavailable_hint(platform).to_string())
     }
 
     /// Issue a hardware quote binding `report_data`. Unavailable on this host.
     pub fn issue_quote(&self, _report_data: &[u8]) -> Result<AttestationQuote, TeeError> {
-        Err(TeeError::HardwareUnavailable)
+        Err(Self::hardware_unavailable(TeePlatform::IntelDcap))
+    }
+
+    /// Intel DCAP quote path — unavailable until DCAP SDK is linked.
+    pub fn request_dcap_quote(&self, _req: &DcapQuoteRequest) -> Result<AttestationQuote, TeeError> {
+        Err(Self::hardware_unavailable(TeePlatform::IntelDcap))
+    }
+
+    /// AMD SEV-SNP quote path — unavailable until SEV guest SDK is linked.
+    pub fn request_sev_quote(&self, _req: &SevQuoteRequest) -> Result<AttestationQuote, TeeError> {
+        Err(Self::hardware_unavailable(TeePlatform::AmdSevSnp))
     }
 
     /// Verify a hardware quote against `expected_report_data`. Unavailable on this host.
@@ -256,7 +472,30 @@ impl HardwareTeeProvider {
         _quote: &AttestationQuote,
         _expected_report_data: &[u8],
     ) -> Result<(), TeeError> {
-        Err(TeeError::HardwareUnavailable)
+        Err(Self::hardware_unavailable(TeePlatform::IntelDcap))
+    }
+
+    /// Validate envelope layout then verify (both unavailable on this host).
+    pub fn verify_envelope_quote(
+        &self,
+        envelope_bytes: &[u8],
+        expected_report_data: &[u8],
+    ) -> Result<(), TeeError> {
+        let envelope = parse_hardware_quote_envelope(envelope_bytes)
+            .map_err(|_| Self::hardware_unavailable(TeePlatform::IntelDcap))?;
+        if envelope.report_data.as_slice() != expected_report_data {
+            return Err(Self::hardware_unavailable(TeePlatform::IntelDcap));
+        }
+        self.verify_quote(
+            &AttestationQuote {
+                provider: HARDWARE_PROVIDER_ID.to_string(),
+                report_data: envelope.report_data,
+                signature: envelope.quote_blob,
+                signer_pubkey: None,
+                hardware_fields: None,
+            },
+            expected_report_data,
+        )
     }
 }
 
@@ -404,7 +643,72 @@ mod tests {
     fn hardware_provider_fails_closed_on_this_host() {
         assert!(matches!(
             HardwareTeeProvider::try_new(),
-            Err(TeeError::HardwareUnavailable)
+            Err(TeeError::HardwareUnavailable(_))
+        ));
+    }
+
+    #[test]
+    fn hardware_dcap_request_fails_with_actionable_hint() {
+        let req = DcapQuoteRequest {
+            report_data: b"bind".to_vec(),
+            expected_mrenclave: None,
+            expected_mrsigner: None,
+        };
+        let err = HardwareTeeProvider.request_dcap_quote(&req);
+        assert!(matches!(err, Err(TeeError::HardwareUnavailable(ref m)) if m.contains("DCAP")));
+    }
+
+    #[test]
+    fn hardware_sev_request_fails_with_actionable_hint() {
+        let req = SevQuoteRequest {
+            report_data: b"bind".to_vec(),
+            expected_measurement: None,
+            expected_author_key: None,
+        };
+        let err = HardwareTeeProvider.request_sev_quote(&req);
+        assert!(matches!(err, Err(TeeError::HardwareUnavailable(ref m)) if m.contains("SEV-SNP")));
+    }
+
+    #[test]
+    fn hardware_quote_fields_report_data_binding() {
+        let fields = HardwareQuoteFields {
+            enclave_measurement: [1; 32],
+            signer_measurement: [2; 32],
+            report_data: b"expected".to_vec(),
+            tcb_version: None,
+        };
+        assert!(fields.report_data_matches(b"expected"));
+        assert!(!fields.report_data_matches(b"other"));
+    }
+
+    #[test]
+    fn hardware_quote_envelope_roundtrip() {
+        let report = b"phase7-bind";
+        let blob = b"opaque-dcap-quote-bytes";
+        let encoded =
+            encode_hardware_quote_envelope(TeePlatform::IntelDcap, report, blob).expect("encode");
+        let parsed = parse_hardware_quote_envelope(&encoded).expect("parse");
+        assert_eq!(parsed.platform, TeePlatform::IntelDcap);
+        assert_eq!(parsed.report_data, report);
+        assert_eq!(parsed.quote_blob, blob);
+    }
+
+    #[test]
+    fn hardware_quote_envelope_rejects_bad_magic() {
+        let mut bad = encode_hardware_quote_envelope(TeePlatform::AmdSevSnp, b"x", b"y").unwrap();
+        bad[0] ^= 0xFF;
+        assert!(matches!(
+            parse_hardware_quote_envelope(&bad),
+            Err(AttestationError::EnvelopeError(_))
+        ));
+    }
+
+    #[test]
+    fn hardware_quote_envelope_rejects_truncated() {
+        let encoded = encode_hardware_quote_envelope(TeePlatform::IntelDcap, b"a", b"b").unwrap();
+        assert!(matches!(
+            parse_hardware_quote_envelope(&encoded[..encoded.len() - 1]),
+            Err(AttestationError::EnvelopeError(_))
         ));
     }
 
@@ -423,7 +727,7 @@ mod tests {
     fn select_attestation_provider_hardware_fails_closed() {
         assert!(matches!(
             select_attestation_provider(AttestationMode::Hardware, [0; 32]),
-            Err(TeeError::HardwareUnavailable)
+            Err(TeeError::HardwareUnavailable(_))
         ));
     }
 }

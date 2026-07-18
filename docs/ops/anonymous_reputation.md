@@ -12,6 +12,8 @@
 | Local nullifier registry | `aegis_trust::NullifierRegistry` + `verify_anonymous_and_spend` | File-backed spent set **per epoch**; rejects replay on this node |
 | Shared nullifier sync (Partial) | `NullifierRegistry::export_to_file` / `merge_from_file` | Operator file exchange merges peer spends idempotently; rejects corrupt duplicate entries; **not** cross-node consensus |
 | Minimal issuer (Partial) | `AnonymousCredentialIssuer` / `IssuedAnonymousCredential` | Software-bound Ed25519 token: epoch + score band + presentation + nullifier; `AnonymousCredentialIssuerParams::save_to_file` for verifier pubkey |
+| Blinded issuance (Partial) | `BlindedIssueRequest` / `BlindedIssueResponse` + `issue_from_blinded_request` | Client sends ZK presentation + nullifier (no RelayId in JSON); issuer verifies threshold without exact score; **not** interactive AC / blind signatures |
+| Epoch rotation (Partial) | `AnonymousCredentialIssuer::rotate_epoch` → `NullifierRegistry::forget_epoch` | Operator GC of spent nullifiers when rolling credential epoch |
 | Node optional path | `[reputation] nullifier_registry_path` in `aegis-node` TOML | Load on start; save on health drain + shutdown |
 
 `score_commitment` is the Pedersen commitment to `(score_scaled - threshold_scaled)` (same bytes as `proof.commitment`), exposed so a policy layer can bind the presentation to a ledger entry or nullifier without putting a cleartext relay id into the ZK payload.
@@ -32,8 +34,13 @@ let issuer = AnonymousCredentialIssuer::from_seed(seed);
 issuer.public_params().save_to_file("data/issuer_params.json")?;
 
 let cred = issuer.issue(score, band_floor, &relay_id, epoch, &blinding)?;
+// Or blinded path (no relay_id on wire to issuer):
+let req = AnonymousCredentialIssuer::build_blinded_request(score, band_floor, &relay_id, epoch, &blinding)?;
+let resp = issuer.issue_from_blinded_request(&req)?;
 // Verifier:
-AnonymousCredentialIssuer::verify_and_spend(&params, &mut registry, &cred)?;
+AnonymousCredentialIssuer::verify_and_spend(&params, &mut registry, &resp.credential)?;
+// Epoch rollover:
+AnonymousCredentialIssuer::rotate_epoch(&mut registry, old_epoch);
 ```
 
 The issuer **sees `relay_id` at issue time**; the spent credential exposes only the anonymous presentation + nullifier. This is honest software binding, not unlinkable multi-show AC.

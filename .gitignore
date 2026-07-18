@@ -9,3 +9,7 @@ __pycache__/
 .venv/
 # misc
 .DS_Store
+# dudect lab clones + built harnesses (not release evidence)
+tools/dudect-upstream/
+tools/dudect/harness_*
+!tools/dudect/harness_*.c

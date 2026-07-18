@@ -31,8 +31,9 @@ pub use ceremony::{
 };
 pub use custody::{
     select_ceremony_custody, CeremonyCustodyMode, CeremonyError, HsmCustodyProvider,
-    HsmWrappedShareFields, SoftwareCustodyProvider, HSM_CUSTODY_PROVIDER_ID,
-    SOFTWARE_CUSTODY_PROVIDER_ID,
+    HsmSlotInfo, HsmWrappedShareFields, Pkcs11CustodyOps, SimulatedHsmProvider,
+    SoftwareCustodyProvider, HSM_CUSTODY_PROVIDER_ID, SIMULATED_HSM_PROVIDER_ID,
+    SOFTWARE_CUSTODY_PROVIDER_ID, hsm_unavailable_hint,
 };
 pub use shamir::{
     decode_share_hex, encode_share_hex, reconstruct_seed, split_seed, SeedShare, ShamirError,

@@ -68,8 +68,8 @@ pub use health_gossip::{
     DEFAULT_MAX_ADVERT_AGE_SECS, GOSSIP_MAJORITY_K,
 };
 pub use health_quorum_log::{
-    advert_epoch, HealthQuorumLog, HealthQuorumLogEntry, QuorumAppendOutcome, QuorumLogError,
-    QUORUM_LOG_RECORD_LEN,
+    advert_epoch, HealthEpochCheckpoint, HealthEpochMedianSummary, HealthQuorumLog,
+    HealthQuorumLogEntry, QuorumAppendOutcome, QuorumLogError, QUORUM_LOG_RECORD_LEN,
 };
 pub use net::{
     send_link_cell, send_sphinx_packet, write_packet, GossipOutbound, IngressRateLimitConfig,

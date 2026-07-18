@@ -94,6 +94,14 @@ neighbor via the link-bridge gossip channel. Inbound accept uses
 
 Append-only; replay on startup rebuilds pending quorum state.
 
+### Optional epoch checkpoint
+
+After quorum merges for a gossip epoch, operators may call
+`HealthQuorumLog::sign_epoch_checkpoint(epoch, signing_key)` to produce a signed
+[`HealthEpochCheckpoint`] summarizing all accepted median `(successes, failures)` pairs
+for that epoch. Verification uses Ed25519 over a canonical domain-separated blob.
+This is a **local audit artifact**, not multi-org BFT agreement.
+
 ## Residual
 
 - **External:** multi-org BFT reputation consensus — not in scope for this gossip path.
