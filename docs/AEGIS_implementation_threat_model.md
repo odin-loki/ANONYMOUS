@@ -355,7 +355,7 @@ Simulations backing numeric claims:
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
 | mpsc(64) channels — same as relay. | `main.rs` (`RELAY_CHANNEL_CAPACITY`) | **Mitigated (2026-07-17)** — same drop-newest policy as `aegis-relay` (`try_send_drop_newest` + coarse counters). Residual: shared-channel fairness only. | **Low** (was Medium) |
-| Multi-process testnet had peer routing failures (Phase 8 notes). | `sim/scripts/capture_multiprocess_trace.py` | **Partial (2026-07-17)** — last-hop `[exit]` file sink enabled in mp capture configs; prior “routing” errors were terminal peels without exit. Residual: full paced multi-process re-capture. | Low |
+| Multi-process testnet had peer routing failures (Phase 8 notes). | `sim/scripts/capture_multiprocess_trace.py` | **Mitigated (2026-07-18)** — last-hop `[exit]` file sink; paced MP relay-forward re-capture committed (`sim/data/real_multiprocess_relay_forward_trace.csv`). Residual: loopback-only / short-horizon measurement limits. | Low |
 
 ### Elevation of privilege
 
