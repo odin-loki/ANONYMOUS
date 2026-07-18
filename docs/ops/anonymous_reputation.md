@@ -68,3 +68,20 @@ This slice is **not** a paper-complete anonymous credential system. Still **Exte
 ## Threat model
 
 See `docs/AEGIS_implementation_threat_model.md` and `docs/ops/RESEARCH_OPS_STATUS.md` — ZK anonymous reputation row is **Partial**: score threshold is ZK; local replay prevention is Done; identity unlinkability / issuer / multi-node spend are External/deferred.
+
+## Gossip / reputation anonymity (eclipse, `majority_k`)
+
+Cross-relay health gossip can demote relays via median failure rates once `majority_k`
+distinct authority reporters agree ([`health_gossip.md`](health_gossip.md)). This is
+**not** multi-org BFT and does **not** close gossip-eclipse risks.
+
+| Risk | Status | Mitigation / residual |
+|------|--------|------------------------|
+| **Eclipse** — victim sees only adversarial neighbors | **Partial** | Peer table is config-bound; no global gossip view. All-neighbor collusion ⇒ biased medians only. See [`ATTACK_PLAYBOOK.md`](ATTACK_PLAYBOOK.md) §10. |
+| **`majority_k` collusion** | **Partial** | Default `majority_k = 2`; K colluding admitted reporters can shift median at half weight. Lab may set `majority_k = 1` — not for production. |
+| Nullifier merge eclipse | **Partial** | File export/merge is operator-authenticated out-of-band; no wire consensus. |
+| Issuer learns identity at issue | **Open by design (Partial AC)** | Blinded request still binds at issue; not unlinkable multi-show AC. |
+
+**Operator guidance:** diversify gossip neighbors; keep `majority_k ≥ 2`; do not treat
+gossip median as sole ground truth; pair with independent health checks and charter
+dispute process ([`CONSORTIUM_CHARTER.md`](CONSORTIUM_CHARTER.md)).

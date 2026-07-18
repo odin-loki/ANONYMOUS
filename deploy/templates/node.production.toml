@@ -14,6 +14,8 @@ file = "kem.seeds"
 
 # Optional: bind inbound handshake MACs to roster KEM commitment (recommended).
 # kem_commitment = "<64 hex chars>"
+# Fail closed on ingress without KEM binding (requires kem_commitment above):
+# require_ingress_kem_commitment = true
 
 [link]
 handshake = "auto"

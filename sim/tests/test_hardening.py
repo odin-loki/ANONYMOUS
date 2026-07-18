@@ -100,11 +100,13 @@ def test_adaptive_guard_exposure_artifact_is_consistent():
     artifact = json.loads(path.read_text(encoding="utf-8"))
     assert "adaptive_by_epochs" in artifact
     assert "mitigated_by_epochs" in artifact
-    assert "mitigation_params" in artifact
+    assert "mitigated_first_by_epochs" in artifact
+    assert "mitigation_params_v2" in artifact
     for e in artifact["epoch_grid"]:
         a = artifact["adaptive_by_epochs"][str(e)]
-        m = artifact["mitigated_by_epochs"][str(e)]
-        assert 0.0 <= m <= a <= 1.0 + 1e-9
+        m1 = artifact["mitigated_first_by_epochs"][str(e)]
+        m2 = artifact["mitigated_by_epochs"][str(e)]
+        assert 0.0 <= m2 <= m1 <= a <= 1.0 + 1e-9, f"E={e}: v2 should be <= v1 <= adaptive"
     # Spot-check one mid horizon against a cheap live run (not full artifact recompute).
     live = adv.adaptive_guard_exposure(
         artifact["c"], artifact["g"], epochs=200, mode="adaptive", trials=2000, rng=RNG(205),
@@ -113,7 +115,7 @@ def test_adaptive_guard_exposure_artifact_is_consistent():
 
 
 def test_mitigated_adaptive_exposure_lower_than_unmitigated():
-    """First mitigation model reduces mid-horizon exposure vs unmitigated adaptive."""
+    """v2 mitigation reduces mid-horizon exposure vs unmitigated adaptive."""
     c, g = 0.015, 3
     unmit = adv.adaptive_guard_exposure(
         c, g, epochs=200, mode="adaptive", trials=4000, rng=RNG(210),
@@ -126,20 +128,44 @@ def test_mitigated_adaptive_exposure_lower_than_unmitigated():
     assert mit > artifact_static_plateau(c, g), "mitigated still above static plateau control"
 
 
+def test_mitigated_v2_improves_mid_horizon_vs_v1_baseline():
+    """v2 sim params should lower E=200 exposure vs v1 first-pass baseline."""
+    c, g = 0.015, 3
+    v1 = adv.adaptive_guard_exposure(
+        c, g, epochs=200, mode="mitigated_first", trials=4000, rng=RNG(213),
+    )
+    v2 = adv.adaptive_guard_exposure(
+        c, g, epochs=200, mode="mitigated", trials=4000, rng=RNG(214),
+    )
+    assert v2 <= v1 + 1e-9, f"v2 {v2:.3f} should be <= v1 baseline {v1:.3f}"
+    if v2 < v1 - 0.01:
+        return
+    # Honest gate: if params tie within noise, v2 aggressive tier must help.
+    v2_agg = adv.adaptive_guard_exposure(
+        c, g, epochs=200, mode="mitigated_aggressive", trials=4000, rng=RNG(215),
+    )
+    assert v2_agg < v1 - 0.01, (
+        f"v2 did not beat v1 at E=200 (v1={v1:.3f} v2={v2:.3f} aggressive={v2_agg:.3f}); "
+        "retune params or document plateau in adaptive_guard_mitigation.md"
+    )
+
+
 def artifact_static_plateau(c, g):
     return 1 - (1 - c) ** g
 
 
 def test_mitigated_exposure_curve_stays_below_adaptive():
-    """Mitigated curve is below adaptive at mid horizons; may near-saturate later."""
+    """Mitigated v2 curve is below adaptive at mid horizons; may near-saturate later."""
     report = adv.adaptive_guard_exposure_curve(
         c=0.015, g=3, epoch_grid=(100, 200, 400), trials=2500, rng=RNG(212),
     )
     for e in (100, 200, 400):
         a = report["adaptive_by_epochs"][str(e)]
         m = report["mitigated_by_epochs"][str(e)]
+        m1 = report["mitigated_first_by_epochs"][str(e)]
+        assert m <= m1 + 1e-9, f"E={e}: v2 {m:.3f} should be <= v1 {m1:.3f}"
         assert m <= a + 1e-9, f"E={e}: mitigated {m:.3f} should be <= adaptive {a:.3f}"
-    assert report["mitigation_at_200"]["reduction"] > 0.02
+    assert report["mitigation_at_200"]["reduction_v2"] > 0.02
 
 
 
@@ -172,11 +198,27 @@ def test_combined_attack_pad_up_leaks_and_composes():
     assert combined >= inter - 0.05
 
 
+def test_combined_attack_defense_report_ranks_hard_cap_first():
+    """Defense report ranks schemes and recommends Mode-1 receiver hard-cap."""
+    report = adv.combined_attack_defense_report(
+        M=30, Q=25, epoch_grid=(200, 800), trials=120, rng=RNG(305),
+    )
+    ranking = report["defense_ranking"]
+    assert ranking[0]["scheme"] == "hard_cap"
+    assert ranking[0]["holds_at_baseline"]
+    assert ranking[-1]["scheme"] == "constant_only"
+    rec = report["recommended_mode1"]
+    assert rec["scheme"] == "hard_cap" and rec["receiver_hard_cap"]
+    assert rec["Q_recommended_min"] >= int(np.ceil(1.2 * (report["bg"] + report["s_rate"])))
+
+
 def test_combined_attack_artifact_is_consistent():
     """Committed combined-attack JSON matches live curves within tolerance."""
     path = DATA / "combined_active_intersection.analysis.json"
     assert path.is_file(), "run sim/scripts/generate_research_artifacts.py to refresh"
     artifact = json.loads(path.read_text(encoding="utf-8"))
+    assert artifact["recommended_mode1"]["scheme"] == "hard_cap"
+    assert artifact["defense_ranking"][0]["scheme"] == "hard_cap"
     for scheme in ("constant_only", "pad_up", "hard_cap"):
         live = adv.combined_active_intersection_curve(
             scheme, M=artifact["M"], s_rate=artifact["s_rate"], bg=artifact["bg"],

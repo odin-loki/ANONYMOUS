@@ -53,6 +53,18 @@ def _inter_cell_gaps(timestamps: list[float]) -> np.ndarray:
     return np.diff(t)
 
 
+def _kolmogorov_smirnov_distance(a: np.ndarray, b: np.ndarray) -> float:
+    """Two-sample KS D statistic (partial distributional comparison, not a proof)."""
+    if a.size == 0 or b.size == 0:
+        return float("nan")
+    a_sorted = np.sort(a)
+    b_sorted = np.sort(b)
+    all_vals = np.sort(np.concatenate([a_sorted, b_sorted]))
+    cdf_a = np.searchsorted(a_sorted, all_vals, side="right") / a.size
+    cdf_b = np.searchsorted(b_sorted, all_vals, side="right") / b.size
+    return float(np.max(np.abs(cdf_a - cdf_b)))
+
+
 def _gap_stats(gaps: np.ndarray, tau: float) -> dict:
     if gaps.size == 0:
         return dict(
@@ -181,6 +193,19 @@ def compare_cover_modes(
         relay_cover_bursts_per_send=relay_cover_bursts_per_send,
         **kwargs,
     )
+    bulk_gaps = _inter_cell_gaps(
+        simulate_cell_timestamps("paced_bulk_only", tau_secs=tau_secs, n_sends=n_sends, **kwargs)
+    )
+    cover_gaps = _inter_cell_gaps(
+        simulate_cell_timestamps(
+            "paced_plus_tau_cover",
+            tau_secs=tau_secs,
+            n_sends=n_sends,
+            cover_secs=cover_secs,
+            relay_cover_bursts_per_send=relay_cover_bursts_per_send,
+            **kwargs,
+        )
+    )
     return {
         "disclaimer": bulk.disclaimer,
         "tau_secs": tau_secs,
@@ -192,6 +217,69 @@ def compare_cover_modes(
             "gap_cv_ratio_cover_over_bulk": (
                 cover.gap_cv / bulk.gap_cv if bulk.gap_cv > 1e-9 else float("nan")
             ),
+            "gap_ks_distance_cover_vs_bulk": _kolmogorov_smirnov_distance(cover_gaps, bulk_gaps),
+        },
+    }
+
+
+def compare_cover_modes_under_burst(
+    *,
+    tau_secs: float = 0.35,
+    n_sends: int = 6,
+    cover_secs: float = 2.0,
+    relay_cover_bursts_per_send: int = 3,
+    **kwargs,
+) -> dict:
+    """Burst-heavy partial GPA comparison (paced-only vs paced+cover under relay bursts)."""
+    bulk = characterize_gpa_timing(
+        "paced_bulk_only",
+        tau_secs=tau_secs,
+        n_sends=n_sends,
+        relay_cover_bursts_per_send=relay_cover_bursts_per_send,
+        **kwargs,
+    )
+    cover = characterize_gpa_timing(
+        "paced_plus_tau_cover",
+        tau_secs=tau_secs,
+        n_sends=n_sends,
+        cover_secs=cover_secs,
+        relay_cover_bursts_per_send=relay_cover_bursts_per_send,
+        **kwargs,
+    )
+    bulk_gaps = _inter_cell_gaps(
+        simulate_cell_timestamps(
+            "paced_bulk_only",
+            tau_secs=tau_secs,
+            n_sends=n_sends,
+            relay_cover_bursts_per_send=relay_cover_bursts_per_send,
+            **kwargs,
+        )
+    )
+    cover_gaps = _inter_cell_gaps(
+        simulate_cell_timestamps(
+            "paced_plus_tau_cover",
+            tau_secs=tau_secs,
+            n_sends=n_sends,
+            cover_secs=cover_secs,
+            relay_cover_bursts_per_send=relay_cover_bursts_per_send,
+            **kwargs,
+        )
+    )
+    return {
+        "disclaimer": bulk.disclaimer,
+        "scenario": "burst_heavy",
+        "tau_secs": tau_secs,
+        "n_sends": n_sends,
+        "relay_cover_bursts_per_send": relay_cover_bursts_per_send,
+        "paced_bulk_only": asdict(bulk),
+        "paced_plus_tau_cover": asdict(cover),
+        "delta": {
+            "gap_cv_bulk": bulk.gap_cv,
+            "gap_cv_cover": cover.gap_cv,
+            "gap_cv_ratio_cover_over_bulk": (
+                cover.gap_cv / bulk.gap_cv if bulk.gap_cv > 1e-9 else float("nan")
+            ),
+            "gap_ks_distance_cover_vs_bulk": _kolmogorov_smirnov_distance(cover_gaps, bulk_gaps),
         },
     }
 

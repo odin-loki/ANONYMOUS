@@ -292,6 +292,7 @@ mod tests {
             link: None,
             guard_mitigation: aegis_topology::GuardMitigationFileConfig {
                 adaptive_first: true,
+                preset: None,
             },
             path: Some(PathFileConfig {
                 client_seed: 99,

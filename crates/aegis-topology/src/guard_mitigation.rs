@@ -1,4 +1,4 @@
-//! Adaptive guard mitigation hooks (spec §13 first mitigation — partial).
+//! Adaptive guard mitigation hooks (spec §13 — partial, v1 + v2 presets).
 //!
 //! Ties Phase-7 anomaly / peer-health signals to guard rotation policy without
 //! changing production defaults. Does **not** close §13 adaptive exposure.
@@ -53,6 +53,16 @@ impl GuardMitigationPolicy {
             rotate_on_anomaly: true,
             rotate_on_peer_health_spike: true,
             peer_health_spike_threshold: 2,
+        }
+    }
+
+    /// v2 preset — tighter sticky cap, lower peer spike threshold (sim-aligned v2).
+    pub const fn adaptive_v2() -> Self {
+        Self {
+            max_sticky_epochs: 8,
+            rotate_on_anomaly: true,
+            rotate_on_peer_health_spike: true,
+            peer_health_spike_threshold: 1,
         }
     }
 
@@ -155,11 +165,15 @@ pub struct GuardMitigationSignals {
 
 /// TOML `[guard_mitigation]` — opt-in sticky-cap + rotate-on-signal guard policy.
 ///
-/// When omitted or `adaptive_first = false`, behavior matches production defaults
-/// ([`GuardMitigationPolicy::disabled()`]). See `docs/ops/adaptive_guard_mitigation.md`.
+/// When omitted, or when neither `preset` nor legacy `adaptive_first = true` is set,
+/// behavior matches production defaults ([`GuardMitigationPolicy::disabled()`]).
+/// See `docs/ops/adaptive_guard_mitigation.md`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GuardMitigationFileConfig {
-    /// Enable the [`GuardMitigationPolicy::adaptive_first()`] preset (default false).
+    /// Preset name: `"adaptive_first"` | `"adaptive_v2"`. Preferred over legacy bool.
+    #[serde(default)]
+    pub preset: Option<String>,
+    /// Legacy enable for [`GuardMitigationPolicy::adaptive_first()`] when `preset` is absent.
     #[serde(default)]
     pub adaptive_first: bool,
 }
@@ -167,6 +181,13 @@ pub struct GuardMitigationFileConfig {
 impl GuardMitigationFileConfig {
     /// Resolve the effective mitigation policy for path/guard selection hooks.
     pub fn resolve_policy(&self) -> GuardMitigationPolicy {
+        if let Some(ref name) = self.preset {
+            return match name.as_str() {
+                "adaptive_first" => GuardMitigationPolicy::adaptive_first(),
+                "adaptive_v2" => GuardMitigationPolicy::adaptive_v2(),
+                _ => GuardMitigationPolicy::disabled(),
+            };
+        }
         if self.adaptive_first {
             GuardMitigationPolicy::adaptive_first()
         } else {
@@ -222,8 +243,45 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_v2_rotates_on_sticky_cap_and_single_peer_spike() {
+        let p = GuardMitigationPolicy::adaptive_v2();
+        assert!(p.should_resample_guards(8, false, 0));
+        assert!(p.should_resample_guards(0, false, 1));
+        assert!(!p.should_resample_guards(7, false, 0));
+    }
+
+    #[test]
+    fn file_config_preset_adaptive_v2() {
+        let file = GuardMitigationFileConfig {
+            preset: Some("adaptive_v2".into()),
+            ..GuardMitigationFileConfig::default()
+        };
+        assert_eq!(file.resolve_policy(), GuardMitigationPolicy::adaptive_v2());
+    }
+
+    #[test]
+    fn file_config_unknown_preset_is_disabled() {
+        let file = GuardMitigationFileConfig {
+            preset: Some("unknown".into()),
+            ..GuardMitigationFileConfig::default()
+        };
+        assert_eq!(file.resolve_policy(), GuardMitigationPolicy::disabled());
+    }
+
+    #[test]
+    fn file_config_preset_overrides_legacy_adaptive_first() {
+        let file = GuardMitigationFileConfig {
+            preset: Some("adaptive_v2".into()),
+            adaptive_first: true,
+            ..GuardMitigationFileConfig::default()
+        };
+        assert_eq!(file.resolve_policy(), GuardMitigationPolicy::adaptive_v2());
+    }
+
+    #[test]
     fn file_config_defaults_disabled() {
         let file = GuardMitigationFileConfig::default();
+        assert!(file.preset.is_none());
         assert!(!file.adaptive_first);
         assert_eq!(file.resolve_policy(), GuardMitigationPolicy::disabled());
     }

@@ -41,5 +41,29 @@
       "800": 0.01,
       "1600": 0.01
     }
+  },
+  "defense_ranking": [
+    {
+      "scheme": "hard_cap",
+      "p_confirm_at_long_horizon": 0.01,
+      "holds_at_baseline": true
+    },
+    {
+      "scheme": "pad_up",
+      "p_confirm_at_long_horizon": 0.085,
+      "holds_at_baseline": false
+    },
+    {
+      "scheme": "constant_only",
+      "p_confirm_at_long_horizon": 1.0,
+      "holds_at_baseline": false
+    }
+  ],
+  "recommended_mode1": {
+    "scheme": "hard_cap",
+    "receiver_hard_cap": true,
+    "Q_min_sustained_multiple": 1.2,
+    "Q_recommended_min": 25,
+    "operator_note": "Keep receiver-side hard-cap padding enabled in production Mode-1; pad-up and constant-rate observables remain vulnerable to fused attack."
   }
 }

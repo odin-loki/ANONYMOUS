@@ -127,14 +127,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let roster_mode = use_roster_path(&file, cli.roster_path);
     if roster_mode {
-        eprintln!(
-            "building bound path from roster{}",
-            if file.guard_mitigation.adaptive_first {
-                " with adaptive_first guard mitigation"
-            } else {
+        let mitigation_note = match file.guard_mitigation.preset.as_deref() {
+            Some("adaptive_v2") => " with adaptive_v2 guard mitigation",
+            Some("adaptive_first") => " with adaptive_first guard mitigation",
+            Some(other) => {
+                eprintln!("warning: unknown guard_mitigation preset {other:?}; using disabled");
                 ""
             }
-        );
+            None if file.guard_mitigation.adaptive_first => {
+                " with adaptive_first guard mitigation"
+            }
+            None => "",
+        };
+        eprintln!("building bound path from roster{mitigation_note}");
     } else if !file.hops.is_empty() {
         eprintln!("using explicit [[hops]] path ({} hops)", file.hops.len());
     }

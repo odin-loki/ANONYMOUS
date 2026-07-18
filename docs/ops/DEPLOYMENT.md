@@ -23,6 +23,8 @@ Fails closed on lab flags (`allow_unverified_roster`, inline KEM, `[trace].path`
 | Hop handshake | **`handshake = "auto"`** with **`noise_static_secret`** (+ peer **`noise_static_public`**) on every link | Auto selects Noise_IK when keys present ([`noise_link_auth.md`](noise_link_auth.md)) |
 | Cover egress | Cover pacing **on** (default τ-paced emitter; do not disable for “performance”) | Sender-side unobservability depends on constant-rate cover |
 | Ingress limits | Token bucket enabled; tune **`max_cells_per_sec`** / peer budgets for your τ | Prevents adversarial flood ([`RESEARCH_OPS_STATUS.md`](RESEARCH_OPS_STATUS.md) #8) |
+| Ingress KEM binding | Optional **`kem_commitment`** + **`link.require_ingress_kem_commitment = true`** | Binds ingress handshake MAC to roster KEM; fails closed without commitment ([`AEGIS_implementation_threat_model.md`](../AEGIS_implementation_threat_model.md)) |
+| Coarse metrics scrape | Poll **`RelayHandle::coarse_stats`** at most **once per 30s** | High-frequency scrape of `processed_fail` / `queue_dropped` retains GPA residual under flood |
 | Health gossip | **`[health_gossip] enabled = true`**, **`signing_seed`** or **`signing_key_file`**, peer **`gossip_verifying_key`** set | Signed neighbor health with BFT-lite quorum ([`health_gossip.md`](health_gossip.md)) |
 | Reputation | Issuer pubkey loaded; **`verify_and_spend`** / nullifier registry; presentations **signed** by issuer | Anonymous reputation path is Partial — do not skip verifier steps ([`anonymous_reputation.md`](anonymous_reputation.md)) |
 | Lab flags off | **`allow_unverified_roster = false`**; no `load_from_file_unverified` in production wiring | Explicit unverified roster is test/lab only |

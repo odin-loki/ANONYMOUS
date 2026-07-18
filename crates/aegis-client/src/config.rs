@@ -118,4 +118,39 @@ adaptive_first = true
             GuardMitigationPolicy::adaptive_first()
         );
     }
+
+    #[test]
+    fn guard_mitigation_preset_adaptive_v2_parses_and_resolves() {
+        let file: ClientConfigFile = toml::from_str(
+            r#"
+first_hop_addr = "127.0.0.1:9000"
+ingress_link_key = "0000000000000000000000000000000000000000000000000000000000000001"
+
+[guard_mitigation]
+preset = "adaptive_v2"
+"#,
+        )
+        .unwrap();
+        assert_eq!(file.guard_mitigation.preset.as_deref(), Some("adaptive_v2"));
+        assert_eq!(
+            file.guard_mitigation.resolve_policy(),
+            GuardMitigationPolicy::adaptive_v2()
+        );
+    }
+
+    #[test]
+    fn path_epoch_age_parses_for_mitigation_signals() {
+        let file: ClientConfigFile = toml::from_str(
+            r#"
+first_hop_addr = "127.0.0.1:9000"
+ingress_link_key = "0000000000000000000000000000000000000000000000000000000000000001"
+
+[path]
+epoch_age = 7
+"#,
+        )
+        .unwrap();
+        let path = file.path.expect("path section");
+        assert_eq!(path.epoch_age, 7);
+    }
 }

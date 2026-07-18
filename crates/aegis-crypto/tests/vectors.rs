@@ -162,6 +162,59 @@ fn max_hops_multi_forward_preserves_packet_length() {
     }
 }
 
+/// Property gate: peel at hop *i* always exposes `path[i+1].id` before any later hop.
+/// Not a formal Sphinx proof — guards ordering regressions in routing-slot layout.
+#[test]
+fn hop_peel_ordering_exposes_next_hop_ids() {
+    let mut rng = OsRng;
+    let (path, secrets) = make_path(MAX_HOPS);
+    let packet = build(&path, b"ordering-kat", &mut rng).expect("build");
+
+    let mut current = packet;
+    for hop in 0..MAX_HOPS - 1 {
+        let mut replay = ReplayCache::new();
+        let out = process(&current, &secrets[hop], &mut replay).expect("peel");
+        match out {
+            Processed::Forward { next_hop, packet: next } => {
+                assert_eq!(
+                    next_hop, path[hop + 1].id,
+                    "hop {hop} must reveal next id in path order"
+                );
+                current = next;
+            }
+            other => panic!("expected forward at hop {hop}, got {other:?}"),
+        }
+    }
+}
+
+/// Max-path build yields exactly `MAX_HOPS - 1` forward peels (terminal hop still Forward to exit id).
+#[test]
+fn max_hops_forward_count_is_layers_minus_one() {
+    let mut rng = OsRng;
+    let (path, secrets) = make_path(MAX_HOPS);
+    let packet = build(&path, b"forward-count", &mut rng).expect("build");
+
+    let mut current = packet;
+    for hop in 0..MAX_HOPS - 1 {
+        let mut replay = ReplayCache::new();
+        let out = process(&current, &secrets[hop], &mut replay).expect("process");
+        match out {
+            Processed::Forward { next_hop, packet: next } => {
+                assert_eq!(next_hop, path[hop + 1].id);
+                current = next;
+            }
+            other => panic!("expected forward at hop {hop}, got {other:?}"),
+        }
+    }
+    // One more peel at the exit hop still returns Forward (payload delivered out-of-band).
+    let mut replay = ReplayCache::new();
+    let terminal = process(&current, &secrets[MAX_HOPS - 1], &mut replay).expect("exit peel");
+    assert!(
+        matches!(terminal, Processed::Forward { .. }),
+        "exit hop peel remains Forward for delivery sink"
+    );
+}
+
 #[test]
 fn peel_preserves_beta_length_and_tail_slot() {
     let mut rng = OsRng;

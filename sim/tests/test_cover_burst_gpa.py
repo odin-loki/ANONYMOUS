@@ -76,6 +76,32 @@ def test_compare_cover_modes_structure():
     assert data["delta"]["extra_cells"] > 0
 
 
+def test_compare_cover_modes_includes_gap_ks_metric():
+    data = cover_timing.compare_cover_modes(
+        tau_secs=TAU,
+        n_sends=N_SENDS,
+        cover_secs=COVER_SECS,
+        relay_cover_bursts_per_send=1,
+    )
+    assert "gap_ks_distance_cover_vs_bulk" in data["delta"]
+    assert 0.0 <= data["delta"]["gap_ks_distance_cover_vs_bulk"] <= 1.0
+
+
+def test_burst_cover_modes_partial_characterization():
+    """Under burst load, cover adds cells and shifts gap CV / KS vs paced-only."""
+    data = cover_timing.compare_cover_modes_under_burst(
+        tau_secs=TAU,
+        n_sends=6,
+        cover_secs=COVER_SECS,
+        relay_cover_bursts_per_send=3,
+    )
+    assert data["scenario"] == "burst_heavy"
+    assert data["paced_plus_tau_cover"]["n_cells"] > data["paced_bulk_only"]["n_cells"]
+    assert "gap_cv_ratio_cover_over_bulk" in data["delta"]
+    ks = data["delta"]["gap_ks_distance_cover_vs_bulk"]
+    assert ks == ks and 0.0 <= ks <= 1.0
+
+
 def test_characterization_artifact_optional():
     """Artifact is optional; when present it must match the in-memory comparison."""
     data = cover_timing.compare_cover_modes(

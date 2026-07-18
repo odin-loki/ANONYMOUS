@@ -77,6 +77,10 @@ impl fmt::Display for ValidationReport {
             f,
             "  failure_rate = processed_fail / (processed_ok + processed_fail)"
         )?;
+        writeln!(
+            f,
+            "  scrape: poll coarse_stats at most once per 30s (GPA residual if scraped faster under flood)"
+        )?;
         Ok(())
     }
 }
@@ -193,6 +197,25 @@ pub fn validate_production_config(config_path: &Path) -> Result<ValidationReport
         report.checks.push(error(
             "link.global_max_cells_per_sec",
             "global ingress cap disabled (0) — lab/test only",
+        ));
+    }
+
+    if !file.link.identity_binding {
+        report.checks.push(warn(
+            "link.identity_binding",
+            "false — production should bind handshake MACs to roster relay id",
+        ));
+    }
+
+    if file.link.require_ingress_kem_commitment && file.kem_commitment.is_none() {
+        report.checks.push(error(
+            "link.require_ingress_kem_commitment",
+            "true but kem_commitment unset — ingress KEM binding fails closed",
+        ));
+    } else if file.link.require_ingress_kem_commitment {
+        report.checks.push(warn(
+            "link.require_ingress_kem_commitment",
+            "ingress peers must present matching KEM commitment in link handshake (client hop config)",
         ));
     }
 

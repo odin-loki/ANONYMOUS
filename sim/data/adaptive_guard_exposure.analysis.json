@@ -4,9 +4,9 @@
   "mitigation_partial_not_closed": true,
   "c": 0.015,
   "g": 3,
-  "trials": 20000,
+  "trials": 15000,
   "static_plateau_closed_form": 0.044328375000000086,
-  "static_sim": 0.04505,
+  "static_sim": 0.043666666666666666,
   "epoch_grid": [
     5,
     20,
@@ -18,39 +18,95 @@
     2000
   ],
   "adaptive_by_epochs": {
-    "5": 0.20815,
-    "20": 0.5834,
-    "50": 0.89925,
-    "100": 0.9902,
+    "5": 0.20793333333333333,
+    "20": 0.5912,
+    "50": 0.8977333333333334,
+    "100": 0.9893333333333333,
     "200": 1.0,
     "500": 1.0,
     "800": 1.0,
     "2000": 1.0
   },
-  "mitigated_by_epochs": {
-    "5": 0.20565,
-    "20": 0.54135,
-    "50": 0.72565,
-    "100": 0.80405,
-    "200": 0.9026,
-    "500": 0.98815,
-    "800": 0.9981,
+  "mitigated_first_by_epochs": {
+    "5": 0.20726666666666665,
+    "20": 0.5402,
+    "50": 0.7238,
+    "100": 0.8014666666666667,
+    "200": 0.9016666666666666,
+    "500": 0.9888,
+    "800": 0.9982,
     "2000": 1.0
   },
-  "mitigation_params": {
+  "mitigated_by_epochs": {
+    "5": 0.199,
+    "20": 0.45986666666666665,
+    "50": 0.5620666666666667,
+    "100": 0.6431333333333333,
+    "200": 0.7723333333333333,
+    "500": 0.9425333333333333,
+    "800": 0.9849333333333333,
+    "2000": 0.9999333333333333
+  },
+  "mitigated_aggressive_by_epochs": {
+    "5": 0.19293333333333335,
+    "20": 0.4241333333333333,
+    "50": 0.49666666666666665,
+    "100": 0.5688,
+    "200": 0.7013333333333334,
+    "500": 0.8957333333333334,
+    "800": 0.969,
+    "2000": 0.9994
+  },
+  "mitigation_params_v1": {
     "max_sticky_epochs": 10,
     "demotion_decay": 0.72,
-    "demotion_floor": 0.15
+    "demotion_floor": 0.15,
+    "demotion_linger": 0,
+    "aggressive": false
+  },
+  "mitigation_params_v2": {
+    "max_sticky_epochs": 8,
+    "demotion_decay": 0.55,
+    "demotion_floor": 0.1,
+    "demotion_linger": 5,
+    "aggressive": false
+  },
+  "mitigation_params_v2_aggressive": {
+    "max_sticky_epochs": 7,
+    "demotion_decay": 0.5,
+    "demotion_floor": 0.08,
+    "demotion_linger": 6,
+    "aggressive": true
   },
   "mitigation_at_200": {
     "epochs": 200,
-    "adaptive_unmitigated": 0.9999,
-    "mitigated_first": 0.9032,
-    "reduction": 0.09670000000000001,
-    "mitigation_params": {
+    "adaptive_unmitigated": 0.9998,
+    "mitigated_first": 0.8995333333333333,
+    "mitigated_v2": 0.7646666666666667,
+    "mitigated_aggressive": 0.7034666666666667,
+    "reduction_v1": 0.10026666666666673,
+    "reduction_v2": 0.2351333333333333,
+    "v2_improvement_vs_v1": 0.13486666666666658,
+    "mitigation_params_v1": {
       "max_sticky_epochs": 10,
       "demotion_decay": 0.72,
-      "demotion_floor": 0.15
+      "demotion_floor": 0.15,
+      "demotion_linger": 0,
+      "aggressive": false
+    },
+    "mitigation_params_v2": {
+      "max_sticky_epochs": 8,
+      "demotion_decay": 0.55,
+      "demotion_floor": 0.1,
+      "demotion_linger": 5,
+      "aggressive": false
+    },
+    "mitigation_params_v2_aggressive": {
+      "max_sticky_epochs": 7,
+      "demotion_decay": 0.5,
+      "demotion_floor": 0.08,
+      "demotion_linger": 6,
+      "aggressive": true
     }
   }
 }

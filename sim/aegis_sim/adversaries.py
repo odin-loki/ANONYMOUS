@@ -178,8 +178,54 @@ def bulk_correlation(config, k=20, W=100.0, n_buckets=4, n_rounds=5, trials=200,
 # Tag: [O] -- this quantifies the open item, it does not close it (real
 # adversaries' recompromise *rate* is unknown; here it is a free parameter).
 # ---------------------------------------------------------------------------
+# v1 first-pass mitigation params (baseline for v2 comparison).
+_MITIGATION_V1 = dict(
+    max_sticky_epochs=10, demotion_decay=0.72, demotion_floor=0.15,
+    demotion_linger=0, aggressive=False,
+)
+# v2 improved mitigation — tighter sticky cap, stronger demotion, linger after dirty.
+_MITIGATION_V2 = dict(
+    max_sticky_epochs=8, demotion_decay=0.55, demotion_floor=0.10,
+    demotion_linger=5, aggressive=False,
+)
+_MITIGATION_V2_AGGRESSIVE = dict(
+    max_sticky_epochs=7, demotion_decay=0.50, demotion_floor=0.08,
+    demotion_linger=6, aggressive=True,
+)
+
+
+def _mitigation_params_for_mode(mode, max_sticky_epochs, demotion_decay,
+                                demotion_floor, demotion_linger, aggressive):
+    """Resolve effective mitigation knobs for mitigated* modes."""
+    if mode == "mitigated_first":
+        p = _MITIGATION_V1.copy()
+    elif mode == "mitigated_aggressive":
+        p = _MITIGATION_V2_AGGRESSIVE.copy()
+    elif mode == "mitigated":
+        p = _MITIGATION_V2.copy()
+    else:
+        raise ValueError(f"unknown mitigation mode {mode!r}")
+    overrides = {
+        "max_sticky_epochs": max_sticky_epochs,
+        "demotion_decay": demotion_decay,
+        "demotion_floor": demotion_floor,
+        "demotion_linger": demotion_linger,
+        "aggressive": aggressive,
+    }
+    defaults = {
+        "max_sticky_epochs": None, "demotion_decay": None, "demotion_floor": None,
+        "demotion_linger": None, "aggressive": None,
+    }
+    for key, val in overrides.items():
+        if val is not None and val != defaults.get(key):
+            p[key] = val
+    return p
+
+
 def adaptive_guard_exposure(c, g, epochs=50, mode="static", trials=2000, rng=None,
-                           max_sticky_epochs=10, demotion_decay=0.72, demotion_floor=0.15):
+                           max_sticky_epochs=None, demotion_decay=None,
+                           demotion_floor=None, demotion_linger=None,
+                           aggressive=None):
     """P(a client's g stable guards include a compromised relay within
     `epochs`), for a large relay pool, per-relay compromise prob `c`.
 
@@ -191,11 +237,13 @@ def adaptive_guard_exposure(c, g, epochs=50, mode="static", trials=2000, rng=Non
                      exposure now grows with `epochs` even for a stable guard
                      set, since a clean guard this epoch may be dirty next
                      epoch.
-    mode='mitigated': first mitigation model — on anomaly/recompromise signal
-                     (any guard dirty this epoch) or sticky-cap expiry
-                     (`max_sticky_epochs`), re-sample guards and shrink effective
-                     `c` (pool demotion / rotate pin). Reduces long-horizon
-                     exposure vs `adaptive` in sim; does NOT close §13.
+    mode='mitigated_first': v1 mitigation — sticky cap + re-sample on dirty
+                     epoch + effective `c` demotion (baseline for v2).
+    mode='mitigated': v2 mitigation — tighter sticky cap, stronger demotion,
+                     linger after dirty signal; optional kwargs override presets.
+    mode='mitigated_aggressive': v2 second tier — extra demotion on dirty epoch.
+                     Reduces long-horizon exposure vs `adaptive` in sim;
+                     does NOT close §13.
     """
     rng = rng or np.random.default_rng(0)
     hits = 0
@@ -211,75 +259,98 @@ def adaptive_guard_exposure(c, g, epochs=50, mode="static", trials=2000, rng=Non
                     ever = True
                     break
             hits += ever
-        elif mode == "mitigated":
+        elif mode in ("mitigated", "mitigated_first", "mitigated_aggressive"):
+            params = _mitigation_params_for_mode(
+                mode, max_sticky_epochs, demotion_decay, demotion_floor,
+                demotion_linger, aggressive,
+            )
             ever = False
             eff_c = float(c)
             sticky = 0
-            floor_c = c * demotion_floor
+            floor_c = c * params["demotion_floor"]
+            linger = 0
             for _ in range(epochs):
                 sticky += 1
                 dirty = rng.random(g) < eff_c
                 if dirty.any():
                     ever = True
-                if dirty.any() or sticky >= max_sticky_epochs:
+                if dirty.any() or sticky >= params["max_sticky_epochs"]:
                     sticky = 0
-                    eff_c = max(floor_c, eff_c * demotion_decay)
-                eff_c = max(floor_c, eff_c * (1.0 - 2e-4))
+                    decay = params["demotion_decay"]
+                    if dirty.any() and params["aggressive"]:
+                        decay *= 0.75
+                    eff_c = max(floor_c, eff_c * decay)
+                    linger = params["demotion_linger"]
+                if linger > 0:
+                    linger -= 1
+                else:
+                    eff_c = max(floor_c, eff_c * (1.0 - 2e-4))
+                if ever:
+                    break
             hits += ever
         else:
             raise ValueError(f"unknown mode {mode!r}")
     return hits / trials
 
 
-def adaptive_guard_exposure_mitigation_report(c, g, epochs=200, trials=20000, rng=None,
-                                              max_sticky_epochs=10, demotion_decay=0.72,
-                                              demotion_floor=0.15):
-    """Compare unmitigated adaptive vs first mitigation at one horizon."""
+def adaptive_guard_exposure_mitigation_report(c, g, epochs=200, trials=20000, rng=None):
+    """Compare unmitigated adaptive vs v1/v2 mitigation at one horizon."""
     rng = rng or np.random.default_rng(0)
     adaptive = adaptive_guard_exposure(
         c, g, epochs=epochs, mode="adaptive", trials=trials, rng=rng,
     )
-    mitigated = adaptive_guard_exposure(
+    mitigated_first = adaptive_guard_exposure(
+        c, g, epochs=epochs, mode="mitigated_first", trials=trials, rng=rng,
+    )
+    mitigated_v2 = adaptive_guard_exposure(
         c, g, epochs=epochs, mode="mitigated", trials=trials, rng=rng,
-        max_sticky_epochs=max_sticky_epochs, demotion_decay=demotion_decay,
-        demotion_floor=demotion_floor,
+    )
+    mitigated_aggressive = adaptive_guard_exposure(
+        c, g, epochs=epochs, mode="mitigated_aggressive", trials=trials, rng=rng,
     )
     return {
         "epochs": epochs,
         "adaptive_unmitigated": adaptive,
-        "mitigated_first": mitigated,
-        "reduction": adaptive - mitigated,
-        "mitigation_params": {
-            "max_sticky_epochs": max_sticky_epochs,
-            "demotion_decay": demotion_decay,
-            "demotion_floor": demotion_floor,
-        },
+        "mitigated_first": mitigated_first,
+        "mitigated_v2": mitigated_v2,
+        "mitigated_aggressive": mitigated_aggressive,
+        "reduction_v1": adaptive - mitigated_first,
+        "reduction_v2": adaptive - mitigated_v2,
+        "v2_improvement_vs_v1": mitigated_first - mitigated_v2,
+        "mitigation_params_v1": _MITIGATION_V1,
+        "mitigation_params_v2": _MITIGATION_V2,
+        "mitigation_params_v2_aggressive": _MITIGATION_V2_AGGRESSIVE,
     }
 
 
 def adaptive_guard_exposure_curve(c, g, epoch_grid=(5, 20, 50, 100, 200, 500, 800, 2000),
-                                  trials=20000, rng=None,
-                                  max_sticky_epochs=10, demotion_decay=0.72,
-                                  demotion_floor=0.15):
+                                  trials=20000, rng=None):
     """Exposure vs horizon for static (plateau) vs adaptive (redrawn each epoch).
 
-    Includes `mitigated_by_epochs` for the first mitigation model (sim only).
-    Returns a dict suitable for JSON commit under sim/data/. Tag [O]: characterizes
-    the open item; mitigation reduces but does not close it.
+    Includes `mitigated_by_epochs` (v2), `mitigated_first_by_epochs` (v1 baseline),
+    and optional `mitigated_aggressive_by_epochs`. Returns a dict suitable for JSON
+    commit under sim/data/. Tag [O]: characterizes the open item; mitigation reduces
+    but does not close it.
     """
     rng = rng or np.random.default_rng(divmod(hash((c, g)), 2**32)[1])
     static_plateau = 1 - (1 - c) ** g
     static_sim = adaptive_guard_exposure(c, g, mode="static", trials=trials, rng=rng)
     adaptive = {}
+    mitigated_first = {}
     mitigated = {}
+    mitigated_aggressive = {}
     for e in epoch_grid:
         adaptive[str(e)] = adaptive_guard_exposure(
             c, g, epochs=e, mode="adaptive", trials=trials, rng=rng
         )
+        mitigated_first[str(e)] = adaptive_guard_exposure(
+            c, g, epochs=e, mode="mitigated_first", trials=trials, rng=rng
+        )
         mitigated[str(e)] = adaptive_guard_exposure(
-            c, g, epochs=e, mode="mitigated", trials=trials, rng=rng,
-            max_sticky_epochs=max_sticky_epochs, demotion_decay=demotion_decay,
-            demotion_floor=demotion_floor,
+            c, g, epochs=e, mode="mitigated", trials=trials, rng=rng
+        )
+        mitigated_aggressive[str(e)] = adaptive_guard_exposure(
+            c, g, epochs=e, mode="mitigated_aggressive", trials=trials, rng=rng
         )
     return {
         "tag": "spec_13_O_adaptive_compromised_mix_set",
@@ -292,16 +363,14 @@ def adaptive_guard_exposure_curve(c, g, epoch_grid=(5, 20, 50, 100, 200, 500, 80
         "static_sim": static_sim,
         "epoch_grid": list(epoch_grid),
         "adaptive_by_epochs": adaptive,
+        "mitigated_first_by_epochs": mitigated_first,
         "mitigated_by_epochs": mitigated,
-        "mitigation_params": {
-            "max_sticky_epochs": max_sticky_epochs,
-            "demotion_decay": demotion_decay,
-            "demotion_floor": demotion_floor,
-        },
+        "mitigated_aggressive_by_epochs": mitigated_aggressive,
+        "mitigation_params_v1": _MITIGATION_V1,
+        "mitigation_params_v2": _MITIGATION_V2,
+        "mitigation_params_v2_aggressive": _MITIGATION_V2_AGGRESSIVE,
         "mitigation_at_200": adaptive_guard_exposure_mitigation_report(
             c, g, epochs=200, trials=trials, rng=rng,
-            max_sticky_epochs=max_sticky_epochs, demotion_decay=demotion_decay,
-            demotion_floor=demotion_floor,
         ),
     }
 
@@ -398,6 +467,20 @@ def combined_attack_report(M=30, s_rate=3.0, bg=8.0, Q=25, probe_frac=0.5,
                            epoch_grid=(50, 100, 200, 400, 800, 1600),
                            trials=200, rng=None):
     """Analysis dict for JSON commit: combined attack curves per Mode-1 scheme."""
+    return combined_attack_defense_report(
+        M=M, s_rate=s_rate, bg=bg, Q=Q, probe_frac=probe_frac,
+        epoch_grid=epoch_grid, trials=trials, rng=rng,
+    )
+
+
+def combined_attack_defense_report(M=30, s_rate=3.0, bg=8.0, Q=25, probe_frac=0.5,
+                                   epoch_grid=(50, 100, 200, 400, 800, 1600),
+                                   trials=200, rng=None):
+    """Defense ranking for Mode-1 schemes under fused active+intersection attack.
+
+    Ranks `constant_only`, `pad_up`, and `hard_cap` by long-horizon P(confirm).
+    Recommends receiver hard-cap (Mode-1 core) with Q >= ~1.2x sustained mean.
+    """
     rng = rng or np.random.default_rng(0)
     baseline = 1 / M
     schemes = ("constant_only", "pad_up", "hard_cap")
@@ -410,6 +493,20 @@ def combined_attack_report(M=30, s_rate=3.0, bg=8.0, Q=25, probe_frac=0.5,
                 epoch_grid=epoch_grid, trials=trials, rng=rng,
             ).items()
         }
+    long_e = max(epoch_grid)
+    ranking = []
+    for sch in schemes:
+        curve = curves[sch]
+        p_long = curve[str(long_e)]
+        ranking.append({
+            "scheme": sch,
+            "p_confirm_at_long_horizon": p_long,
+            "holds_at_baseline": p_long <= baseline + 0.05,
+        })
+    ranking.sort(key=lambda row: row["p_confirm_at_long_horizon"])
+    recommended = "hard_cap"
+    sustained_mean = bg + s_rate
+    q_min = max(Q, int(np.ceil(1.2 * sustained_mean)))
     return {
         "tag": "spec_13_O_combined_active_intersection_mode1",
         "characterizes_not_closes": True,
@@ -422,6 +519,17 @@ def combined_attack_report(M=30, s_rate=3.0, bg=8.0, Q=25, probe_frac=0.5,
         "trials": trials,
         "epoch_grid": list(epoch_grid),
         "curves": curves,
+        "defense_ranking": ranking,
+        "recommended_mode1": {
+            "scheme": recommended,
+            "receiver_hard_cap": True,
+            "Q_min_sustained_multiple": 1.2,
+            "Q_recommended_min": q_min,
+            "operator_note": (
+                "Keep receiver-side hard-cap padding enabled in production Mode-1; "
+                "pad-up and constant-rate observables remain vulnerable to fused attack."
+            ),
+        },
     }
 
 

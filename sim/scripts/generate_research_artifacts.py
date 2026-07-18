@@ -18,7 +18,7 @@ def main():
         epoch_grid=(5, 20, 50, 100, 200, 500, 800, 2000),
         trials=20000,
     )
-    combined = adv.combined_attack_report(
+    combined = adv.combined_attack_defense_report(
         M=30, s_rate=3.0, bg=8.0, Q=25, probe_frac=0.5,
         epoch_grid=(50, 100, 200, 400, 800, 1600),
         trials=200,

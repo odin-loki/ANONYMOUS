@@ -28,9 +28,12 @@ See also `docs/AEGIS_phase8_hardening_notes.md` for Phase 8 context.
 **Findings (characterizes, does not close):**
 - `mode='static'`: exposure plateaus at `1-(1-c)^g` (control; matches §12).
 - `mode='adaptive'`: exposure **grows with horizon** even for a stable guard set.
-- `mode='mitigated'`: first mitigation — sticky cap + demotion on signal; **lower** than adaptive at E=200/800; may still saturate at E=2000. See [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md).
+- `mode='mitigated_first'`: v1 baseline — sticky cap + demotion on signal.
+- `mode='mitigated'`: v2 — tighter cap, stronger demotion, linger after dirty; **~13 pp lower than v1 at E=200** in sim; may still saturate at E=2000.
+- `mode='mitigated_aggressive'`: v2 second tier — extra demotion on dirty epoch.
+- See [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md).
 
-**Artifact:** `sim/data/adaptive_guard_exposure.analysis.json` (includes `mitigated_by_epochs`, `mitigation_at_200`)
+**Artifact:** `sim/data/adaptive_guard_exposure.analysis.json` (includes `mitigated_by_epochs`, `mitigated_first_by_epochs`, `mitigation_at_200`)
 
 **Pytest:** `sim/tests/test_hardening.py` (`test_adaptive_*`)
 
@@ -46,7 +49,7 @@ independent per-epoch redraw, not detected/slow recompromise.
 **Simulator:** `sim/aegis_sim/adversaries.py`
 - `combined_active_intersection(scheme, E, ...)` — single horizon
 - `combined_active_intersection_curve(...)` — P(deanonymize) vs epochs
-- `combined_attack_report(...)` — JSON export
+- `combined_attack_defense_report(...)` — JSON export + defense ranking
 
 **Mode-1 schemes:**
 | Scheme | Observable | Expected |
@@ -73,6 +76,11 @@ independent per-epoch redraw, not detected/slow recompromise.
 **Artifact:** `sim/data/combined_active_intersection.analysis.json`
 
 **Pytest:** `sim/tests/test_hardening.py` (`test_combined_*`)
+
+**Operator note (Mode-1):** Production receivers **must keep hard-cap padding
+enabled** (`Q` exactly caps observable counts; set `Q >= ~1.2×` sustained mean
+receiver rate). Pad-up and constant-rate observables remain vulnerable to the
+fused attack quantified here — do not disable hard-cap for "efficiency."
 
 **Honest limits:** Synthetic Poisson traffic; global passive + partial active
 (n-1) model; no multi-hop mix delay, guard rotation, or Sphinx crypto proofs.

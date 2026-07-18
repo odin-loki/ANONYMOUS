@@ -368,6 +368,11 @@ pub struct LinkNetConfig {
     /// Bind handshake MACs to the peer roster relay id (recommended).
     #[serde(default = "default_identity_binding")]
     pub identity_binding: bool,
+    /// Require local `kem_commitment` in inbound handshake MAC binding (ingress fail-closed).
+    /// When true, config must set top-level `kem_commitment`; ingress peers must present
+    /// matching KEM commitment in the link handshake (no relay-id-only ingress).
+    #[serde(default)]
+    pub require_ingress_kem_commitment: bool,
     /// Sustained inbound cell/frame accept rate (cells/sec). Default ≈ 1/τ (Mode-1).
     /// Set to `0.0` to disable per-connection ingress rate limiting.
     #[serde(default = "default_max_cells_per_sec")]
@@ -412,6 +417,7 @@ impl Default for LinkNetConfig {
             read_timeout_secs: default_link_read_timeout_secs(),
             max_inbound_connections: default_max_inbound_connections(),
             identity_binding: default_identity_binding(),
+            require_ingress_kem_commitment: false,
             max_cells_per_sec: default_max_cells_per_sec(),
             burst: default_ingress_burst(),
             global_max_cells_per_sec: default_global_max_cells_per_sec(),
@@ -869,6 +875,11 @@ impl NodeConfigFile {
             .as_deref()
             .map(parse_hex32)
             .transpose()?;
+        if self.link.require_ingress_kem_commitment && local_kem_commitment.is_none() {
+            return Err(ConfigError::Hex(
+                "link.require_ingress_kem_commitment requires top-level kem_commitment",
+            ));
+        }
         let mut peer_table = HashMap::new();
         for peer in self.peers {
             let id = RelayId(parse_hex32(&peer.id)?);
@@ -925,6 +936,7 @@ impl NodeConfigFile {
                 read_timeout: std::time::Duration::from_secs(self.link.read_timeout_secs),
                 max_inbound_connections: self.link.max_inbound_connections,
                 identity_binding: self.link.identity_binding,
+                require_ingress_kem_commitment: self.link.require_ingress_kem_commitment,
                 handshake,
                 noise_static_secret,
                 ingress_noise_static_public,
@@ -1725,6 +1737,21 @@ adaptive_first = true
         let policy = file.guard_mitigation.resolve_policy();
         assert_eq!(policy, GuardMitigationPolicy::adaptive_first());
         assert!(policy.should_resample_guards(12, false, 0));
+    }
+
+    #[test]
+    fn guard_mitigation_preset_adaptive_v2_parses_and_resolves() {
+        let toml = r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[guard_mitigation]
+preset = "adaptive_v2"
+"#;
+        let file: NodeConfigFile = toml::from_str(toml).unwrap();
+        let policy = file.guard_mitigation.resolve_policy();
+        assert_eq!(policy, GuardMitigationPolicy::adaptive_v2());
+        assert!(policy.should_resample_guards(8, false, 0));
     }
 
     #[test]

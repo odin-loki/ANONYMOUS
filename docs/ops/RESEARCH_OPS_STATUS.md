@@ -12,7 +12,7 @@ Legend: **Done** = in-tree code + tests/docs as scoped · **Partial** = useful m
 | 2 | Consortium key ceremony | **Partial** | Shamir + `Pkcs11CustodyOps`; HSM fail-closed + lab `SimulatedHsmProvider`; `docs/ops/consortium_key_ceremony.md` | **External:** PKCS#11 / vendor HSM SDK + interactive MPC |
 | 3 | Noise / roster-key link auth | **Partial/Mitigated** | `handshake=auto` → `snow` Noise_IK when static keys present | Pre-snow SHA3 peers; ingress static |
 | 4 | Unix / keychain KEM store | **Partial** | Unix `kem-keyring` + Windows DPAPI; refuse group/world-readable `kem.seeds` | **External:** HSM / cross-user secret store |
-| 5 | Cover-burst timing | **Partial** | τ-paced cover egress | Not info-theoretic indistinguishability |
+| 5 | Cover-burst timing | **Partial** | τ-paced cover egress; gap CV + KS comparison in `sim/aegis_sim/cover_timing.py` | Not info-theoretic indistinguishability |
 | 6 | Cross-relay health gossip | **Partial** | Authority-set quorum log + `majority_k` + optional `HealthEpochCheckpoint`; `docs/ops/health_gossip.md` | **External:** multi-org BFT |
 | 7 | ZK anonymous reputation | **Partial** | Issuer + blinded issue types + epoch rotate + nullifier merge; `docs/ops/anonymous_reputation.md` | **External:** interactive AC / real ZK show |
 | 8 | Adversarial multi-conn flood | **Done** | Global ingress budget 8/τ | Tunable caps only |

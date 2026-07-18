@@ -1,0 +1,227 @@
+# AEGIS attack playbook (operator / research)
+
+**Date:** 2026-07-18  
+**Tip baseline:** 29e89f5  
+**Adversary baseline:** nation-state global passive adversary (GPA) + active fraction `f` of compromised mixes on a **permissioned consortium** mixnet.
+
+This document maps named attack primitives to **current mitigation status**, **residual risk**, and **in-repo evidence**. It does **not** claim spec §13 closed, formal Sphinx proofs, or operational C2 validation.
+
+**Cross-references:** [`AEGIS_implementation_threat_model.md`](../AEGIS_implementation_threat_model.md) · [`AEGIS_phase8_hardening_notes.md`](../AEGIS_phase8_hardening_notes.md) · [`RESEARCH_AGENDA.md`](RESEARCH_AGENDA.md) · [`RESEARCH_UPGRADE_PLAN.md`](RESEARCH_UPGRADE_PLAN.md) · [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md) · [`anonymous_reputation.md`](anonymous_reputation.md) · [`health_gossip.md`](health_gossip.md) · [`CONSORTIUM_CHARTER.md`](CONSORTIUM_CHARTER.md)
+
+**Legend:** **Mitigated** · **Partial** · **Open [O]** · **By design** · **External**
+
+---
+
+## How to read mitigation vs residual
+
+| Column | Meaning |
+|--------|---------|
+| **Mitigation status** | What the codebase + ops defaults do today |
+| **Residual** | What a capable adversary can still do |
+| **Evidence** | Sim artifact, test, or threat-model citation |
+
+---
+
+## 1. Global passive adversary (GPA)
+
+**Threat:** Observer on all links and ingress/egress sees timing, volume, and (where unshaped) cadence.
+
+| Surface | Mitigation status | Residual | Evidence |
+|---------|-------------------|----------|----------|
+| Client TCP ingress (default paced CLI) | **Partial** — `PacedSession` + continuous dummy cover; τ-aligned cells | Raw/`--raw`/`send_payload` bypass emitter; handshake per session; adversarial custom client | Threat model §6 `aegis-client`; Phase 8 §4 benign vs malicious traces |
+| Per-hop mixing delay Exp(μ) | **By design** — delay visible on link | GPA learns delay samples; not the primary hiding primitive | Threat model §2 `aegis-relay` |
+| Relay cover bursts (τ-paced) | **Partial (2026-07-17)** — cover cells AEAD-sealed, same width; τ dispatcher | Multi-hop Sphinx semantics differ (cover discarded; invalid onion); shape GPA on long horizons | `cover_flow.rs`, `sim/data/cover_burst_gpa_characterization.json` |
+| Exit → clearnet server | **By design (weaker tier)** — sender-side shaping to exit; receiver not in AEGIS | GPA at exit server link sees ordinary TLS/volume; no receiver hard-cap | Phase 8 §3 exit-tier; spec §8 |
+| Sticky guard entry pin | **By design** — GPA learns one guard id per client epoch | Bounded by plateau math if `c` small; adaptive adversary worsens (§4) | Threat model §3 guards; `adaptive_guard_exposure.analysis.json` |
+
+**GPA summary:** Default product path is **Partial** against link timing correlation. Deliberate raw APIs and exit-tier traffic remain the largest honest residuals.
+
+---
+
+## 2. Fraction `f` compromised mixes
+
+**Threat:** Adversary controls fraction `f` of relays; learns plaintext at owned hops; biases routing if guards/path selection fail.
+
+| Control | Mitigation status | Residual | Evidence |
+|---------|-------------------|----------|----------|
+| Path inner hops (CSPRNG per packet) | **Mitigated** | Compromised hop still sees peel plaintext | Threat model §3 `path::select_path_indexed_impl` |
+| Guard set g=3 + reputation filter | **Mitigated (2026-07-17)** | Sticky **primary** is g=1 entry pin; honest-pool failure at extreme `c` | `sybil_admission.rs`; threat model §3 |
+| Probationary admission (0.1) + rate limit | **Mitigated** | Slow Sybil flood, not impossible with compromised consortium keys | `RosterAdmissionPolicy` default 5/24h |
+| M-of-N threshold roster admission | **Mitigated** | ≥M authority compromise or correlated keys | `ThresholdConsortium`, `CONSORTIUM_CHARTER.md` |
+| Compromised relay forward path | **Mitigated** — onion peel only | Standard mixnet assumption: owner sees one layer | Threat model §2 |
+
+**f-compromised summary:** Production APIs combine multi-guard + rep filter + signed roster. Residual is **standard mixnet layer compromise** plus **guard-entry observability** and **adaptive recompromise** (§4).
+
+---
+
+## 3. Adaptive compromise (varying compromised set)
+
+**Threat:** Adversary recompromises relays across epochs; guard stickiness lets exposure grow toward 1.0.
+
+| Layer | Mitigation status | Residual | Evidence |
+|-------|-------------------|----------|----------|
+| Sim quantification | **Open [O] QUANTIFIED** | Unmitigated adaptive → ~1.0 by E=200 (`c=0.015`, `g=3`) | `sim/data/adaptive_guard_exposure.analysis.json`; `test_hardening.py` |
+| v1 mitigation (`mode='mitigated_first'`) | **Partial** — lower curve, not closed | ~0.90 at E=200; → 1.0 at E=2000 | Artifact `mitigated_first_by_epochs` |
+| v2 mitigation (`mode='mitigated'`) | **Partial** — ~13 pp better than v1 at E=200 | ~0.78 at E=200; → 1.0 at E=2000 | Artifact `mitigated_by_epochs`; [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md) |
+| Rust client preset | **Partial** — sticky cap + resample hooks | Defaults **disabled**; `preset = "adaptive_v2"` or legacy `adaptive_first` | `aegis-topology/src/guard_mitigation.rs`; client `[guard_mitigation]` + `[path].epoch_age` |
+
+**Adaptive summary:** **Partial v1 + v2** lowers sim exposure; **does not close §13**. Operators enable `preset = "adaptive_v2"` on clients for pilot; field recompromise rates unmeasured.
+
+---
+
+## 4. Combined active (n−1) + intersection (Mode 1)
+
+**Threat:** Active sender suppression + long-horizon intersection on constant-rate Mode 1 traffic.
+
+| Defense | Mitigation status | Residual | Evidence |
+|---------|-------------------|----------|----------|
+| Hard-cap receiver padding | **Mitigated** (internal tier) | Exit / non-AEGIS receivers excluded | `HardCapPadder`; Phase 8 §3 |
+| Constant-rate emitter + cover | **Partial** | `constant_only` curve → ~1.0 by E=1600 in sim | `sim/data/combined_active_intersection.analysis.json` |
+| `pad_up` heuristic | **Partial** | Degrades to ~0.085 at E=1600 (not baseline) | Same artifact `curves.pad_up` |
+| Sim `hard_cap` mode | **Mitigated in model** | Synthetic model only; no WAN adversary | `combined_active_intersection`; `research_open_items.md` §B |
+
+**Combined attack summary:** **Open [O] QUANTIFIED**, **not mitigated** in production science sense. Hard-cap holds at ~baseline (0.01) in sim through E=1600; constant-only sender fails.
+
+---
+
+## 5. Malicious client
+
+**Threat:** Custom or `--raw` client floods ingress, picks paths, or skips paced/cover policy.
+
+| Vector | Mitigation status | Residual | Evidence |
+|--------|-------------------|----------|----------|
+| Unpaced flood at ingress | **Partial** — ingress token bucket + global budget; silent drop | TCP accept + handshake before limit; many connections | `IngressRateLimitConfig`; threat model §2, §6 |
+| Malicious burst trace | **Partial** — shapeability **cheap** tier when unpaced | `events_per_slot_max` 12 vs 4 benign; CV 0.34 | `sim/data/real_testnet_malicious_trace.csv`, `.analysis.json`; `trace_capture.rs` |
+| Path picking | **Open** if client ignores topology | Low severity — hurts sender anonymity, not relay integrity | Threat model §6 |
+| Default CLI paced session | **Mitigated** | Residual only if operator uses `--raw` or deprecated APIs | `aegis-client` session default |
+
+**Malicious client summary:** Relays **rate-limit** floods; product default **paces**. Raw integration paths remain **Partial** side channels for GPA.
+
+---
+
+## 6. Consortium faction / authority compromise
+
+**Threat:** Coalition of consortium authorities or operators signs bad relays, blocks good ones, or concentrates exit/guard roles.
+
+| Control | Mitigation status | Residual | Evidence |
+|---------|-------------------|----------|----------|
+| M-of-N threshold admission | **Mitigated** | Compromise ≥M distinct keys; correlated jurisdictions | `ThresholdConsortium`; [`consortium_key_ceremony.md`](consortium_key_ceremony.md) |
+| Admission rate limit | **Mitigated** | Slow Sybil pipeline | `sybil_admission.rs` |
+| Jurisdiction diversity | **External / policy** | Charter goals not enforced in code | [`CONSORTIUM_CHARTER.md`](CONSORTIUM_CHARTER.md) § diversity |
+| Exit concentration policy | **External / policy** | Code does not cap exits per jurisdiction | Charter § exit approval |
+| Compromised faction + honest rep | **Partial** — probation + gossip median | Colluding `majority_k` neighbors bias health merge | §10 below; threat model §4 |
+
+**Consortium faction summary:** Cryptographic admission is **Mitigated** with M-of-N; **governance and geographic diversity** remain **External**.
+
+---
+
+## 7. Exit observation
+
+**Threat:** Observer at exit relay or clearnet next hop learns payload timing, volume, or correlates flows.
+
+| Surface | Mitigation status | Residual | Evidence |
+|---------|-------------------|----------|----------|
+| Terminal peel delivery | **Partial** — optional `[exit]` sink on exit hops only | Mix relays must not enable exit sink | Phase 8 §5 `[exit]`; `exit_sink.rs` |
+| Payload extraction | **By design at exit** — exit operator sees delta | Trust exit operator; separate exit approval in charter | `sphinx::process` peel |
+| Sender anonymity set at exit | **Partial** — multi-client exit window | No receiver hard-cap on clearnet; long-horizon intersection weaker | Phase 8 §3 |
+| Trace `[trace].path` on mix hops | **Mitigated** — off by default in production template | Misconfig leaks forward timing | [`DEPLOYMENT.md`](DEPLOYMENT.md) |
+
+**Exit observation summary:** **Weaker tier by design.** Position as sender-anonymity-set to exit, not internal Mode 1 receiver guarantees.
+
+---
+
+## 8. Metrics scrape (coarse relay stats)
+
+**Threat:** GPA or operator scrapes relay load/error counters at high frequency to infer traffic.
+
+| Surface | Mitigation status | Residual | Evidence |
+|---------|-------------------|----------|----------|
+| External export | **Mitigated** — `RelayCoarseStats` only (`processed_ok/fail`, `cover_emitted`, queue drops) | High-frequency scrape under flood may still correlate load | Threat model exec summary #4; §2 `RelayCoarseStats` |
+| Fine-grained counters | **Mitigated** — `debug_stats` in-process / tests only | Leak if exported to Prometheus by mistake | `RelayHandle::debug_stats` docs |
+| Ingress drop counters | **Partial** — coarse `IngressRateLimitStats` | Confirms attack volume to observer with metrics access | `aegis-relay` net |
+
+**Metrics scrape summary:** **Do not export `debug_stats`.** Coarse buckets are **Mitigated** for intended ops; scraping under attack remains **Low–medium** residual.
+
+---
+
+## 9. Cover distinguishability (GPA timing)
+
+**Threat:** GPA distinguishes paced bulk Sphinx fragments from cover bursts or unpaced gaps.
+
+| Measurement | Mitigation status | Residual | Evidence |
+|-------------|-------------------|----------|----------|
+| Inter-cell gap τ alignment | **Partial** — paced bulk `fraction_near_tau` ≈ 0.96; cover+τ ≈ 0.98 | Not info-theoretic indistinguishability | `sim/data/cover_burst_gpa_characterization.json` |
+| Gap CV (bulk vs cover+bulk) | **Partial** — cover lowers CV ratio ~0.69 vs bulk-only | Multi-hop semantic difference remains | `cover_timing.py`; `test_cover_burst_gpa.py` |
+| Reserved-byte cover marker | **Mitigated** — cover never reassembled as Sphinx | Volume/count correlation still possible | Phase 8 cover marker notes |
+
+**Cover distinguishability summary:** **Open [O] QUANTIFIED** — timing improved by τ cover dispatcher; **formal indistinguishability not claimed**.
+
+---
+
+## 10. Reputation / gossip anonymity (eclipse, `majority_k`)
+
+**Threat:** Adversary eclipses a victim's gossip view, forges health adverts, or colludes `K` neighbors to demote honest relays; anonymous reputation replay or issuer linkage.
+
+See also [`anonymous_reputation.md`](anonymous_reputation.md) § anonymity bounds and [`health_gossip.md`](health_gossip.md).
+
+| Vector | Mitigation status | Residual | Evidence |
+|--------|-------------------|----------|----------|
+| **Gossip eclipse** | **Partial** — neighbor-only adverts; peer table from config | Victim with all neighbors adversarial sees only biased medians; no global view | `health_gossip.md` residual; threat model §4 |
+| **`majority_k` collusion** | **Partial** — K distinct authority reporters before median merge (default K=2) | K colluding admitted neighbors shift median at half weight | `PeerHealthTracker::apply_gossip_outcomes`; sim not modeling eclipse |
+| Equivocation | **Mitigated** — quorum log rejects conflicting `(epoch, reporter, subject)` | Local log only; not multi-org BFT | `health_quorum_log.rs` |
+| Anonymous presentation | **Partial** — no RelayId in proof blob | Issuer learns id at issue; local nullifier only | `anonymous_reputation.md` |
+| Cross-node nullifier | **Partial** — file export/merge | No wire gossip consensus; eclipse of merge path | `NullifierRegistry::merge_from_file` |
+| Multi-org BFT reputation | **External** | Not in scope | `RESEARCH_AGENDA.md` §1 |
+
+**Eclipse / majority_k guidance for operators:**
+
+- Set `majority_k ≥ 2` in production; **`majority_k = 1` is lab-only** (immediate merge).
+- Diversify gossip neighbors across operators/jurisdictions; monitor for partition.
+- Do not treat gossip median as ground truth without independent health checks.
+- Anonymous credentials: treat issuer as trusted at issue time; use epoch rotation + nullifier merge only with authenticated operator channels.
+
+---
+
+## 11. Sphinx crypto properties (non-proof)
+
+**Threat:** Implementation bugs in peel order, path bounds, MAC, replay.
+
+| Property | Mitigation status | Residual | Evidence |
+|----------|-------------------|----------|----------|
+| Fixed packet size | **Mitigated** | — | `vectors.rs` `constant_size_regardless_of_path_length` |
+| MAC before peel | **Mitigated** | Timing branch after verify (low) | Phase 2 gate; CT review |
+| Replay cache | **Mitigated** | O(capacity) CPU under flood | `replay.rs` |
+| Hop peel ordering / next-hop ids | **Partial [T]** — property tests, not proof | Per-hop DH blinding documented as best-effort in `kem.rs` | `vectors.rs` peel ordering KATs; `AEGIS_phase2_implementation_notes.md` |
+| Max-path forward count | **Partial [T]** | Terminal hop still Forward to exit id | `vectors.rs` `max_hops_forward_chain` |
+| Formal verification | **Open [O] External** | Mechanized proof not in repo | `RESEARCH_AGENDA.md` §5 |
+
+**Sphinx summary:** Phase-2 KATs/property tests pass; **formal proof explicitly not claimed**.
+
+---
+
+## 12. Regenerate evidence
+
+```bash
+# Sim §13 artifacts
+cd sim && PYTHONPATH=. python scripts/generate_research_artifacts.py
+cd sim && PYTHONPATH=. pytest -q tests/test_hardening.py tests/test_cover_burst_gpa.py
+
+# Sphinx property gates
+cargo test -p aegis-crypto
+
+# Malicious trace (ignored integration)
+cargo test -p aegis-node --test trace_capture -- --ignored
+```
+
+---
+
+## 13. Honest limits (this wave)
+
+| Claim | Status |
+|-------|--------|
+| Attack playbook closes §13 | **False** — maps status + residuals |
+| All attacks mitigated | **False** — see §4, §9, adaptive §3 |
+| Gossip eclipse solved | **False** — documented risks + operator guidance |
+| Sphinx formally verified | **False** — KATs/property tests only |
+
+**Upgrade plan:** W4 (this doc + Sphinx gates) and W5 (§10) tracked in [`RESEARCH_UPGRADE_PLAN.md`](RESEARCH_UPGRADE_PLAN.md).

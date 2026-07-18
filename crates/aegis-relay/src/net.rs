@@ -621,6 +621,9 @@ pub struct LinkBridgeConfig {
     pub max_inbound_connections: usize,
     /// When true, bind the peer roster relay id into handshake MAC inputs.
     pub identity_binding: bool,
+    /// When true, inbound ingress handshakes must bind the local roster KEM commitment
+    /// (fail closed if `local_kem_commitment` is unset at runtime).
+    pub require_ingress_kem_commitment: bool,
     /// Handshake protocol selection (`Auto` / `LegacyPsk` / `Noise`).
     pub handshake: LinkHandshakeMode,
     /// Local Noise static secret (32 bytes). Required when `handshake == Noise`;
@@ -652,6 +655,7 @@ impl Default for LinkBridgeConfig {
             read_timeout: DEFAULT_LINK_READ_TIMEOUT,
             max_inbound_connections: DEFAULT_MAX_INBOUND_CONNECTIONS,
             identity_binding: true,
+            require_ingress_kem_commitment: false,
             handshake: LinkHandshakeMode::default(),
             noise_static_secret: None,
             ingress_noise_static_public: None,
@@ -1308,6 +1312,11 @@ pub async fn run_responder_handshake<R: RngCore + CryptoRngCore>(
     let binding_ref = binding.as_ref();
 
     if let Some(psk) = ingress_link_key {
+        if bridge_config.require_ingress_kem_commitment && local_kem_commitment.is_none() {
+            return Err(NetError::Crypto(CryptoError::Malformed(
+                "ingress requires kem commitment binding but local commitment unset",
+            )));
+        }
         if verify_link_handshake_confirm_mac(&psk, &transcript, binding_ref, &confirm) {
             let session = link_handshake_responder_finish(
                 &psk,
@@ -2604,6 +2613,45 @@ mod tests {
             .unwrap();
         let (key_r, _) = server.await.unwrap();
         assert_eq!(key_i, key_r);
+    }
+
+    #[tokio::test]
+    async fn require_ingress_kem_commitment_fails_without_local_commitment() {
+        let psk = test_psk(0xB4);
+        let relay_id = test_relay_id(0xB4);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cfg = LinkBridgeConfig {
+            require_ingress_kem_commitment: true,
+            ..LinkBridgeConfig::default()
+        };
+        let cfg_server = cfg.clone();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut rng = OsRng;
+            run_responder_handshake(
+                &mut stream,
+                relay_id,
+                None,
+                Some(psk),
+                &HashMap::new(),
+                &mut rng,
+                &cfg_server,
+                None,
+            )
+            .await
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let mut rng = OsRng;
+        let _ = run_initiator_handshake(&mut client, &psk, relay_id, None, None, &mut rng, &cfg)
+            .await;
+        let server_err = server.await.unwrap();
+        assert!(matches!(
+            server_err,
+            Err(NetError::Crypto(CryptoError::Malformed(_)))
+        ));
     }
 
     #[tokio::test]
