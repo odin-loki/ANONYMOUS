@@ -1,7 +1,7 @@
 # AEGIS research agenda (honest backlog)
 
 **Date:** 2026-07-18  
-**Tip:** d304354  
+**Tip:** 1291e8d  
 **Wave status:** In-repo scaffolding and sim quantification advanced; **research is not closed.**
 
 This is the single backlog for what remains **open**, **partial**, or **External-only**.
@@ -38,10 +38,11 @@ From [`AEGIS_SPEC_v3_consolidated.md`](../AEGIS_SPEC_v3_consolidated.md) §13. N
 
 | §13 open item | Status | In-repo progress / pointers |
 |---------------|--------|----------------------------|
-| Adaptive adversary varying compromised-mix set across epochs | **[O] QUANTIFIED** | `sim/aegis_sim/adversaries.py` → `adaptive_guard_exposure(..., mode='adaptive')`; regression in `sim/tests/test_hardening.py` (`test_adaptive_adversary_increases_exposure_over_horizon`). Long-horizon exposure grows; **not mitigated**. |
-| Combined active(n−1) + intersection over long horizons (Mode 1) | **[O] NOT ADDRESSED** | Separate gates in `sim/aegis_sim/adversaries.py` (`active_confirm`, `intersection`); no combined attack sim yet. Future: compose on shared epoch timeline. |
-| Real-trace shapeability (actual C2/telemetry, not synthetic) | **[O] partial [T]** | Loopback testnet captures only — see §3 below. Pipeline: `sim/aegis_sim/traffic.py` (`load_trace_counts`, `synthetic_c2_like_counts`), `sim/aegis_sim/metrics.py` (`shapeability_report`), `sim/tests/test_hardening.py`. Traces: `sim/data/real_testnet_trace.csv`, `sim/data/real_multiprocess_trace.csv`, `sim/data/real_multiprocess_relay_forward_trace.csv` + `sim/scripts/analyze_*_trace.py`. |
-| Sphinx crypto correctness — proof / test vectors, not simulation | **[O] partial** | Phase 2 test vectors pass (`docs/AEGIS_phase2_implementation_notes.md`); formal proof does **not** exist. |
+| Adaptive adversary varying compromised-mix set across epochs | **[O] QUANTIFIED** | `adaptive_guard_exposure` / `adaptive_guard_exposure_curve`; artifact `sim/data/adaptive_guard_exposure.analysis.json`; gates in `sim/tests/test_hardening.py`. Long-horizon exposure grows; **not mitigated**. |
+| Combined active(n−1) + intersection over long horizons (Mode 1) | **[O] QUANTIFIED** | `combined_active_intersection` + `combined_attack_report`; artifact `sim/data/combined_active_intersection.analysis.json`; gates in `test_hardening.py`. Characterized, **not closed**. |
+| Cover-burst / GPA timing (related Partial) | **[O] QUANTIFIED** | `sim/aegis_sim/cover_timing.py`; artifact `sim/data/cover_burst_gpa_characterization.json`; `sim/tests/test_cover_burst_gpa.py`. Not info-theoretic indistinguishability. |
+| Real-trace shapeability (actual C2/telemetry, not synthetic) | **[O] partial [T]** | Loopback testnet captures only — see §3 below. Pipeline: `sim/aegis_sim/traffic.py` / `metrics.py`. Traces under `sim/data/real_*_trace.csv`. |
+| Sphinx crypto correctness — proof / test vectors, not simulation | **[O] partial** | Deeper KATs/edge tests in `aegis-crypto` (`vectors.rs`, peel invariants); formal proof does **not** exist (`docs/AEGIS_phase2_implementation_notes.md`). |
 | Consortium governance (who runs/vets relays across nations) | **[O] policy only** | See §4 below. |
 
 Detail and honest limits: [`AEGIS_phase8_hardening_notes.md`](../AEGIS_phase8_hardening_notes.md) §2 and §4–§5.
@@ -83,23 +84,23 @@ Use this checklist when writing release notes, README claims, or sales material.
 
 | Claim | Honest status |
 |-------|---------------|
-| "Research complete" / "all §13 closed" | **False** — adaptive adversary mitigated, combined attacks, operational C2 shapeability, formal Sphinx proof, and governance remain open or External. |
+| "Research complete" / "all §13 closed" | **False** — science items are quantified or partial; not closed. |
 | Platform TEE / HSM / BFT / AC / dudect "done" | **False** — scaffolding done; integration is **External**. |
 | Real-trace shapeability fully validated | **False** — loopback testnet only **[T]**; operational C2 **[O]**. |
-| Adaptive guard exposure neutralized | **False** — quantified and **not mitigated** (`test_hardening.py`). |
-| Combined active + intersection bounded | **False** — not simulated. |
-| Sphinx formally verified | **False** — test vectors only. |
+| Adaptive guard exposure neutralized | **False** — quantified and **not mitigated**. |
+| Combined active + intersection bounded | **False** — quantified (`combined_active_intersection.analysis.json`); **not mitigated**. |
+| Sphinx formally verified | **False** — KATs/edge tests only. |
 | Consortium governance solved | **False** — policy/business **[O]**. |
 | Call-site profiling / ops wave | **Closed** (2026-07-17/18) except B-class **External** — see [`RESEARCH_OPS_STATUS.md`](RESEARCH_OPS_STATUS.md). |
 
-**Wave closure (software):** In-repo work for listed residuals is advanced as far as software allows. Remaining blockers are operator/platform **External** integration and **science [O]** items above — not missing wiring in the default datapath.
+**Wave closure (software):** In-repo characterization of listed science items is as far as software allows. Remaining blockers are operator/platform **External** integration, formal proofs, operational C2 data, mitigation design, and governance — not missing wiring in the default datapath.
 
 ---
 
 ## 6. Suggested next sessions (priority-neutral backlog)
 
-1. **Combined attack sim** — compose `active_confirm` + `intersection` on shared Mode 1 population (`sim/aegis_sim/adversaries.py`).
-2. **Operational trace ingest** — point `load_trace_counts` / `shapeability_report` at a redacted real C2 or telemetry capture (operator-supplied; not in repo).
-3. **Adaptive mitigation design** — rate-limit / detect relay recompromise (candidate tie-in: Phase 7 anomaly detection); sim before code.
-4. **Platform integration pilots** — one External row at a time (TEE SDK, PKCS#11 HSM, multi-org gossip, AC issuer, isolated dudect lab) per ops runbooks.
+1. **Operational trace ingest** — point `load_trace_counts` / `shapeability_report` at a redacted real C2 or telemetry capture (operator-supplied; not in repo).
+2. **Adaptive / combined-attack mitigation design** — rate-limit / detect recompromise (Phase 7 anomaly tie-in); sim before code.
+3. **Platform integration pilots** — one External row at a time (TEE SDK, PKCS#11 HSM, multi-org gossip, AC issuer, isolated dudect lab) per ops runbooks.
+4. **Formal Sphinx proof** — external crypto review / mechanized proof (not more unit tests).
 5. **Governance artifact** — consortium charter / vetting policy (external to repo; link from ops docs when it exists).
