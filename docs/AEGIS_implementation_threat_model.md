@@ -91,7 +91,7 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| Ingress accepts TCP peers with correct ingress PSK; handshake MAC binds to responder relay id when `LinkBridgeConfig::identity_binding` is true (default). | `net::run_responder_handshake`, `link::LinkHandshakeBinding` | **Partial (2026-07-17)** — roster id binding blocks cross-peer PSK replay; any holder of the shared ingress key + correct first-hop id still admitted. Residual: no client roster proof at link layer. | **Low–medium** (was Medium) |
+| Ingress accepts TCP peers with correct ingress PSK; handshake MAC binds to responder relay id when `LinkBridgeConfig::identity_binding` is true (default). Optional `require_ingress_kem_commitment` binds roster KEM commitment into LegacyPsk confirm/finish MACs (fail-closed if unset; Noise+require fails closed — Noise does not bind KEM). | `net::run_responder_handshake`, `link::LinkHandshakeBinding` | **Partial (2026-07-18)** — id + optional KEM commitment binding; any holder of ingress PSK + matching commitment still admitted. Residual: no full client roster proof; Noise path cannot satisfy require flag. | **Low–medium** |
 | Forward routing uses `next_hop` from peeled Sphinx only. | `node::process_one_packet` | **Mitigated** — cannot forward to arbitrary id without valid onion. | — |
 
 ### Tampering

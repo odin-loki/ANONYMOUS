@@ -29,6 +29,9 @@ This pilot runs four `aegis-node` relays and a paced `aegis-client` on **127.0.0
 | `scripts/run_pilot.sh` | Unix equivalent |
 | `crates/aegis-topology/src/bin/aegis_pilot_gen.rs` | Deterministic key/roster/TOML generator |
 | `deploy/compose/` | Docker multi-node pilot (4 relays + optional client profile) |
+| `deploy/scripts/check_pilot_prereqs.*` | Probe docker/cargo/python; print unblock steps (no installs) |
+| `deploy/scripts/validate_compose_offline.py` | Compose YAML + pilot TOML lint without a Docker daemon |
+| `deploy/evidence/` | Probe / offline-validate artifacts (not proof of running containers) |
 
 ## Docker pilot (multi-container)
 
@@ -36,36 +39,89 @@ When Docker is available, a bridge-network variant exercises the same production
 
 | Path | Purpose |
 |------|---------|
-| `deploy/compose/Dockerfile` | Builds `aegis-node` + `aegis-client` (release) |
-| `deploy/compose/docker-compose.yml` | 4 relay services + optional `client` profile (one-shot send) |
+| `deploy/compose/Dockerfile` | Builds `aegis-node` + `aegis-client` (release); bash for TCP healthchecks |
+| `deploy/compose/docker-compose.yml` | 4 relays (healthchecks, restart, host ports) + optional `client` profile |
+| `deploy/compose/.env.example` | `AEGIS_RUST_LOG`, host ports, client payload/τ knobs |
 | `deploy/compose/generate_configs.ps1` / `generate_configs.sh` | Writes `deploy/compose/pilot_configs/` with `--network bridge` |
 
-**Generate bridge configs** (from repo root):
+**Honest status rule:** if `docker version` / engine is missing, do **not** claim the compose pilot ran. Use the offline pack checks below, then loopback `run_pilot.*`.
+
+### Offline pack validation (no Docker daemon)
+
+From repo root (Python 3.11+; PyYAML recommended):
+
+```powershell
+.\deploy\scripts\check_pilot_prereqs.ps1
+python deploy\scripts\validate_compose_offline.py
+```
+
+```bash
+chmod +x deploy/scripts/check_pilot_prereqs.sh
+./deploy/scripts/check_pilot_prereqs.sh
+python3 deploy/scripts/validate_compose_offline.py
+```
+
+This lints `docker-compose.yml`, checks pilot TOML shape (`[roster].path`, cover, gossip, Noise `auto`, Docker DNS peers), documents `adaptive_v3` / roster-path wiring in comments, and — if `aegis-node` is on PATH or under `crates/target/` — runs `aegis-node validate`. Pilot configs are **expected to FAIL** validate on lab KEM flags (`allow_plaintext_kem` + inline seeds) while roster verify succeeds when cwd is `pilot_configs/`. Evidence: `deploy/evidence/offline_validate.json`, `deploy/evidence/host_probe.txt`.
+
+### Windows Docker Desktop + WSL2 (operator install — interactive)
+
+These steps are **not** automated by repo scripts (Docker Desktop requires an installer UI). Run as administrator where noted; reboot when prompted.
+
+1. **BIOS/UEFI:** enable hardware virtualization (VT-x/AMD-V) if disabled.
+2. **Admin PowerShell** — enable WSL + Virtual Machine Platform (no Docker install yet):
+
+```powershell
+dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
+dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
+```
+
+3. **Reboot**, then install/update WSL2 Ubuntu:
+
+```powershell
+wsl --install -d Ubuntu
+# if WSL already present:
+wsl --update
+wsl --set-default-version 2
+wsl -l -v
+```
+
+4. **Docker Desktop for Windows:** download from [Docker’s Windows install docs](https://docs.docker.com/desktop/setup/install/windows-install/). Run the installer UI → enable **Use WSL 2 based engine** → finish wizard → **Start Docker Desktop** and wait until the engine reports running.
+5. **New terminal** verify:
+
+```powershell
+docker version
+docker compose version
+```
+
+6. **Pilot up** (from repo root):
 
 ```powershell
 .\deploy\compose\generate_configs.ps1
+# optional: copy deploy\compose\.env.example → deploy\compose\.env
+docker compose -f deploy/compose/docker-compose.yml up --build
+docker compose -f deploy/compose/docker-compose.yml --profile client run --rm client
+```
+
+Capture logs under `deploy/evidence/` if you need a run record (operator-authored). Until step 5 succeeds, treat the host as **Docker absent**.
+
+### Generate bridge configs + run (when Docker is present)
+
+```powershell
+.\deploy\compose\generate_configs.ps1
+docker compose -f deploy/compose/docker-compose.yml up --build
+docker compose -f deploy/compose/docker-compose.yml --profile client run --rm client
 ```
 
 ```bash
 chmod +x deploy/compose/generate_configs.sh
 ./deploy/compose/generate_configs.sh
-```
-
-**Run** (requires Docker Engine + Compose v2):
-
-```powershell
 docker compose -f deploy/compose/docker-compose.yml up --build
 docker compose -f deploy/compose/docker-compose.yml --profile client run --rm client
 ```
 
-```bash
-docker compose -f deploy/compose/docker-compose.yml up --build
-docker compose -f deploy/compose/docker-compose.yml --profile client run --rm client
-```
+Configs mount at `/config`; nodes listen on `0.0.0.0:17419–17422`, publish optional host ports, and peer via Docker DNS (`node0`…`node3`). Healthchecks probe local TCP listen; `restart: unless-stopped` on relays. Runtime logs land in `deploy/compose/pilot_configs/data/` on the bind mount. Inline `[kem]` seeds remain pilot-only (`allow_plaintext_kem = true`).
 
-Configs mount at `/config`; nodes listen on `0.0.0.0:17419–17422` and peer via Docker DNS (`node0`…`node3`). Inline `[kem]` seeds remain pilot-only (`allow_plaintext_kem = true`).
-
-**If Docker is unavailable** on your host, the files above are still shipped in-tree for CI or a later machine — use the loopback path (`run_pilot.ps1` / `run_pilot.sh`) locally.
+**If Docker is unavailable**, keep using offline validate + loopback (`run_pilot.ps1` / `run_pilot.sh`). Compose files stay in-tree for CI or another machine.
 
 ### Loopback vs bridge — honest limits
 
@@ -80,7 +136,7 @@ Configs mount at `/config`; nodes listen on `0.0.0.0:17419–17422` and peer via
 
 Neither path replaces staged **WAN soak** on distinct operator hosts, adversarial netem, or consortium ceremony. Docker bridge only proves that cross-container DNS + Noise + roster verify + cover + gossip wiring works beyond a single loopback namespace.
 
-**Opt-in adaptive guard mitigation** (default off): set `[guard_mitigation] adaptive_first = true` in **client** TOML (enforced at path build); node TOML accepts the same section for operator symmetry — see [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md).
+**Opt-in adaptive guard mitigation** (default off): on the **client**, set `[guard_mitigation] preset = "adaptive_v3"` (or `adaptive_v2` / legacy `adaptive_first = true`) and optional `[path]` signals; omit ordered `[[hops]]` or pass `--roster-path` for roster-driven paths (KEM registry by relay `id` still required). Node TOML accepts the same `[guard_mitigation]` section for operator symmetry but does not select client paths — see [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md).
 
 ## Step-by-step (manual)
 
@@ -139,11 +195,13 @@ noise_static_secret = "..."
 # NO [trace] section
 ```
 
-Optional adaptive guard mitigation (spec §13 first pass — **default off**):
+Optional adaptive guard mitigation (spec §13 — **default off**):
 
 ```toml
 # [guard_mitigation]
-# adaptive_first = true
+# preset = "adaptive_v3"   # preferred; or "adaptive_v2" / "adaptive_first"
+# [path]
+# epoch_age = 7
 ```
 
 Inline `[kem]` seeds use `allow_plaintext_kem = true` for pilot convenience only. Production WAN nodes should use external `kem.seeds` with `0600` per [`DEPLOYMENT.md`](DEPLOYMENT.md).

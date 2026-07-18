@@ -1,0 +1,88 @@
+{
+  "tag": "adaptive_mitigation_param_sweep",
+  "characterizes_not_closes": true,
+  "c": 0.015,
+  "g": 3,
+  "epochs": 200,
+  "trials": 1500,
+  "v2_baseline": 0.7846666666666666,
+  "v3_default": 0.44266666666666665,
+  "points": [
+    {
+      "id": 2,
+      "exposure": 0.39266666666666666,
+      "improvement_vs_v2": 0.39199999999999996,
+      "knobs": {
+        "max_sticky_epochs": 4,
+        "soft_sticky_epochs": 1,
+        "stickiness_decay": 0.6,
+        "demotion_decay": 0.38,
+        "demotion_floor": 0.04,
+        "demotion_linger": 12,
+        "rep_signal_scale": 0.5,
+        "rep_demotion_extra": 0.85,
+        "aggressive": true
+      }
+    },
+    {
+      "id": 0,
+      "exposure": 0.448,
+      "improvement_vs_v2": 0.3366666666666666,
+      "knobs": {
+        "max_sticky_epochs": 4,
+        "soft_sticky_epochs": 2,
+        "stickiness_decay": 0.62,
+        "demotion_decay": 0.4,
+        "demotion_floor": 0.05,
+        "demotion_linger": 10,
+        "rep_signal_scale": 0.45,
+        "rep_demotion_extra": 0.88,
+        "aggressive": true
+      }
+    },
+    {
+      "id": 3,
+      "exposure": 0.462,
+      "improvement_vs_v2": 0.3226666666666666,
+      "knobs": {
+        "max_sticky_epochs": 5,
+        "soft_sticky_epochs": 2,
+        "stickiness_decay": 0.65,
+        "demotion_decay": 0.4,
+        "demotion_floor": 0.05,
+        "demotion_linger": 10,
+        "rep_signal_scale": 0.0,
+        "rep_demotion_extra": 1.0,
+        "aggressive": true
+      }
+    },
+    {
+      "id": 1,
+      "exposure": 0.466,
+      "improvement_vs_v2": 0.3186666666666666,
+      "knobs": {
+        "max_sticky_epochs": 5,
+        "soft_sticky_epochs": 2,
+        "stickiness_decay": 0.7,
+        "demotion_decay": 0.42,
+        "demotion_floor": 0.05,
+        "demotion_linger": 10,
+        "rep_signal_scale": 0.4,
+        "rep_demotion_extra": 0.9,
+        "aggressive": true
+      }
+    }
+  ],
+  "best_point_id": 2,
+  "locked_v3_params": {
+    "max_sticky_epochs": 4,
+    "demotion_decay": 0.4,
+    "demotion_floor": 0.05,
+    "demotion_linger": 10,
+    "aggressive": true,
+    "soft_sticky_epochs": 2,
+    "stickiness_decay": 0.62,
+    "rep_signal_scale": 0.45,
+    "rep_demotion_extra": 0.88
+  }
+}

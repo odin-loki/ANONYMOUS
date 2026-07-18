@@ -1,0 +1,48 @@
+{
+  "label": "NOT_OPERATIONAL_C2",
+  "disclaimer": "Synthetic stress suite for shapeability pipeline testing only. Do not cite as evidence about real C2/telemetry or WAN deployments.",
+  "is_operational": false,
+  "n_slots": 20000,
+  "reports": {
+    "gaussian_cheap": {
+      "cv": 0.34870586130033704,
+      "hurst": 0.5014089272668905,
+      "min_multiple": 1.1,
+      "tier": "cheap",
+      "series_name": "gaussian_cheap",
+      "is_operational": false
+    },
+    "lognormal_feasible": {
+      "cv": 1.4687432536182772,
+      "hurst": 0.4950803744618867,
+      "min_multiple": 2.3,
+      "tier": "feasible",
+      "series_name": "lognormal_feasible",
+      "is_operational": false
+    },
+    "pareto_stress": {
+      "cv": 3.3446230345012258,
+      "hurst": 0.4886596164513507,
+      "min_multiple": 5.8,
+      "tier": "unshapeable",
+      "series_name": "pareto_stress",
+      "is_operational": false
+    },
+    "c2_like_standin": {
+      "cv": 1.1444597333006952,
+      "hurst": 0.7729550251119072,
+      "min_multiple": 2.5,
+      "tier": "feasible",
+      "series_name": "c2_like_standin",
+      "is_operational": false
+    },
+    "onoff_lrd": {
+      "cv": 0.11309755344210383,
+      "hurst": 0.8233120133557639,
+      "min_multiple": 1.1,
+      "tier": "cheap",
+      "series_name": "onoff_lrd",
+      "is_operational": false
+    }
+  }
+}

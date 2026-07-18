@@ -1,4 +1,6 @@
 # Operator pilot: 4-node loopback mix path with production-checklist defaults.
+# Docker bridge variant: deploy/compose/ (probe first: deploy/scripts/check_pilot_prereqs.ps1).
+# Offline compose lint (no daemon): python deploy/scripts/validate_compose_offline.py
 param(
     [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
     [switch]$EphemeralPorts,

@@ -132,3 +132,88 @@ def synthetic_c2_like_counts(n_slots, mean=10.0, rng=None):
     burst = (rng.pareto(2.2, n_slots) + 1)
     x = mean * diurnal * burst * np.exp(rng.normal(0, 0.15, n_slots))
     return np.clip(np.round(x), 0, None)
+
+
+# ---------------------------------------------------------------------------
+# Operational / WAN trace ingest helpers (additive).
+#
+# Drop a redacted operator CSV under sim/data/ (or any path) and point these
+# helpers at it. Formats accepted:
+#   - single column of event timestamps (seconds), optional header
+#   - timestamp,<ignored...> rows (first column = event time)
+#   - per-slot count CSV: slot_index,count  OR  count-only one integer/line
+#
+# NONE of the in-repo synthetic generators below are operational C2.
+# ---------------------------------------------------------------------------
+def load_timestamp_csv(path, *, timestamp_col=0):
+    """Load event timestamps from a CSV/text file (first numeric column by default).
+
+    Skips blank lines, `#` comments, and a header row whose first field is
+    non-numeric (e.g. `timestamp,...`). Suitable for future WAN / operational
+    redacted captures dropped into the tree by operators.
+    """
+    events = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if timestamp_col >= len(parts):
+                continue
+            field = parts[timestamp_col]
+            try:
+                events.append(float(field))
+            except ValueError:
+                # Header or non-numeric row.
+                continue
+    if not events:
+        raise ValueError(f"no timestamps parsed from {path}")
+    return events
+
+
+def load_slot_count_csv(path):
+    """Load per-slot counts from CSV (`count` alone, or `slot,count`).
+
+    Returns a 1D float array of counts. Used when an operator pre-bins a WAN
+    capture offline rather than shipping raw timestamps.
+    """
+    counts = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            field = parts[-1]
+            try:
+                counts.append(float(field))
+            except ValueError:
+                continue
+    if not counts:
+        raise ValueError(f"no slot counts parsed from {path}")
+    return np.asarray(counts, float)
+
+
+def synthetic_c2_stress_suite(n_slots=20000, rng=None):
+    """Labeled synthetic stress suite for pipeline characterization — NOT operational C2.
+
+    Returns a dict of named count series spanning cheap → unshapeable tiers so CI
+    and operators can verify ingest → `shapeability_report` wiring before a real
+    WAN trace is available.
+    """
+    rng = rng or np.random.default_rng(20260718)
+    return {
+        "label": "NOT_OPERATIONAL_C2",
+        "disclaimer": (
+            "Synthetic stress suite for shapeability pipeline testing only. "
+            "Do not cite as evidence about real C2/telemetry or WAN deployments."
+        ),
+        "series": {
+            "gaussian_cheap": marginal_counts("gaussian", n_slots, mean=10.0, rng=rng),
+            "lognormal_feasible": marginal_counts("lognormal:1.1", n_slots, mean=10.0, rng=rng),
+            "pareto_stress": marginal_counts("pareto:1.4", n_slots, mean=10.0, rng=rng),
+            "c2_like_standin": synthetic_c2_like_counts(n_slots, mean=10.0, rng=rng),
+            "onoff_lrd": onoff_aggregate("pareto:1.5", n_slots, n_sources=80, rng=rng),
+        },
+    }

@@ -267,13 +267,13 @@ non-compiling (`Cell` lacks `Debug`).
   see §4. Synthetic stand-in CV was close but slightly lower (1.25 vs 1.39–1.48
   real); synthetic overstated shaping cost (min_multiple 2.6 vs 1.1–1.2).
 - "Combined active(n-1)+intersection over long horizons on Mode 1." [O -> O,
-  QUANTIFIED] `combined_active_intersection` / `_curve` in
-  `sim/aegis_sim/adversaries.py` fuses cumulative-volume (intersection under
-  constant-rate sender) with sender-suppression correlation on a shared timeline.
-  Hard-cap holds at baseline through E=800+; constant-only and pad-up degrade.
-  Artifacts: `sim/data/combined_active_intersection.analysis.json`; parameters
-  and limits in `docs/ops/research_open_items.md`. Does NOT close the item
-  (synthetic model; no crypto proof).
+  QUANTIFIED] `sim/aegis_sim/combined_active_intersection.py` (re-exported from
+  `adversaries.py`) fuses cumulative-volume with sender-suppression on a shared
+  timeline; ranks hard_cap/deferred_hard_cap vs pad_up/truncate/noisy; includes
+  M/Q sensitivity and offline E≤6400. Hard-cap holds at baseline; no scheme beats
+  it honestly. Artifacts: `sim/data/combined_active_intersection.analysis.json`;
+  mapping `docs/ops/combined_attack_mode1_hardcap.md`. Does NOT close the item
+  (synthetic model; exit-tier exclusion; no crypto proof).
 - "Sphinx crypto correctness -- proof/test vectors, not simulation." [O ->
   partially addressed] — see `docs/AEGIS_phase2_implementation_notes.md` for
   the Phase 2 implementation's concrete packet layout and its test-vector

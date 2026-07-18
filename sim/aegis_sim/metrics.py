@@ -49,3 +49,97 @@ def shapeability_report(counts, budget_slots=5.0, hi=6.0):
     else:
         tier = "unshapeable"
     return dict(cv=c, hurst=h, min_multiple=m, tier=tier)
+
+
+def characterize_trace_file(
+    path,
+    *,
+    slot_seconds=1.0,
+    budget_slots=5.0,
+    hi=6.0,
+    source_label="operator_trace",
+    is_operational=False,
+):
+    """Ingest a timestamp or slot-count CSV and return an honest shapeability report.
+
+    Additive helper for future WAN / operational drops. Set `is_operational=True`
+    only when the file is a genuine redacted operational capture (never for
+    synthetic stress outputs).
+    """
+    from pathlib import Path
+
+    from . import traffic as _traffic
+
+    p = Path(path)
+    # Heuristic: prefer timestamps when values look like an event timeline
+    # (epoch-scale, or strictly increasing); else treat as pre-binned counts.
+    text = p.read_text(encoding="utf-8")
+    sample_lines = [
+        ln.strip()
+        for ln in text.splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ][:40]
+    use_counts = False
+    if sample_lines:
+        first_fields: list[float] = []
+        headerish = False
+        for ln in sample_lines:
+            parts = [x.strip() for x in ln.split(",")]
+            try:
+                first_fields.append(float(parts[0]))
+            except ValueError:
+                if parts[0].lower().startswith("timestamp") or parts[0].lower() == "time":
+                    headerish = True
+                continue
+        if first_fields:
+            epochish = any(v >= 1e6 for v in first_fields)
+            strictly_increasing = len(first_fields) >= 3 and all(
+                first_fields[i] < first_fields[i + 1] for i in range(len(first_fields) - 1)
+            )
+            looks_like_timestamps = headerish or epochish or strictly_increasing
+            use_counts = not looks_like_timestamps
+
+    if use_counts:
+        counts = _traffic.load_slot_count_csv(p)
+        ingest = "slot_count_csv"
+    else:
+        events = _traffic.load_timestamp_csv(p)
+        counts = _traffic.load_trace_counts(events, slot_seconds=slot_seconds)
+        ingest = "timestamp_csv"
+
+    report = shapeability_report(counts, budget_slots=budget_slots, hi=hi)
+    report.update(
+        dict(
+            path=str(p),
+            ingest=ingest,
+            n_slots=int(len(counts)),
+            source_label=source_label,
+            is_operational=bool(is_operational),
+            disclaimer=(
+                "Operational C2 evidence"
+                if is_operational
+                else "Non-operational / pipeline characterization — not evidence about real C2."
+            ),
+        )
+    )
+    return report
+
+
+def characterize_synthetic_stress_suite(n_slots=20000, budget_slots=5.0, hi=6.0, rng=None):
+    """Run `shapeability_report` on the labeled synthetic stress suite (NOT operational C2)."""
+    from . import traffic as _traffic
+
+    suite = _traffic.synthetic_c2_stress_suite(n_slots=n_slots, rng=rng)
+    reports = {}
+    for name, series in suite["series"].items():
+        r = shapeability_report(series, budget_slots=budget_slots, hi=hi)
+        r["series_name"] = name
+        r["is_operational"] = False
+        reports[name] = r
+    return {
+        "label": suite["label"],
+        "disclaimer": suite["disclaimer"],
+        "is_operational": False,
+        "n_slots": n_slots,
+        "reports": reports,
+    }

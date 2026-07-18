@@ -1,6 +1,7 @@
 {
   "tag": "spec_13_O_combined_active_intersection_mode1",
   "characterizes_not_closes": true,
+  "status": "[O] QUANTIFIED",
   "M": 30,
   "baseline": 0.03333333333333333,
   "s_rate": 3.0,
@@ -15,6 +16,14 @@
     400,
     800,
     1600
+  ],
+  "schemes_evaluated": [
+    "constant_only",
+    "pad_up",
+    "truncate_only",
+    "noisy_hard_cap",
+    "deferred_hard_cap",
+    "hard_cap"
   ],
   "curves": {
     "constant_only": {
@@ -33,30 +42,75 @@
       "800": 0.055,
       "1600": 0.085
     },
+    "truncate_only": {
+      "50": 0.98,
+      "100": 1.0,
+      "200": 1.0,
+      "400": 1.0,
+      "800": 1.0,
+      "1600": 1.0
+    },
+    "noisy_hard_cap": {
+      "50": 0.98,
+      "100": 1.0,
+      "200": 1.0,
+      "400": 1.0,
+      "800": 1.0,
+      "1600": 1.0
+    },
+    "deferred_hard_cap": {
+      "50": 0.035,
+      "100": 0.035,
+      "200": 0.035,
+      "400": 0.035,
+      "800": 0.035,
+      "1600": 0.035
+    },
     "hard_cap": {
-      "50": 0.01,
-      "100": 0.01,
-      "200": 0.01,
-      "400": 0.01,
-      "800": 0.01,
-      "1600": 0.01
+      "50": 0.035,
+      "100": 0.035,
+      "200": 0.035,
+      "400": 0.035,
+      "800": 0.035,
+      "1600": 0.035
     }
   },
   "defense_ranking": [
     {
       "scheme": "hard_cap",
-      "p_confirm_at_long_horizon": 0.01,
-      "holds_at_baseline": true
+      "p_confirm_at_long_horizon": 0.035,
+      "holds_at_baseline": true,
+      "hard_cap_family": true
+    },
+    {
+      "scheme": "deferred_hard_cap",
+      "p_confirm_at_long_horizon": 0.035,
+      "holds_at_baseline": true,
+      "hard_cap_family": true
     },
     {
       "scheme": "pad_up",
       "p_confirm_at_long_horizon": 0.085,
-      "holds_at_baseline": false
+      "holds_at_baseline": false,
+      "hard_cap_family": false
     },
     {
       "scheme": "constant_only",
       "p_confirm_at_long_horizon": 1.0,
-      "holds_at_baseline": false
+      "holds_at_baseline": false,
+      "hard_cap_family": false
+    },
+    {
+      "scheme": "noisy_hard_cap",
+      "p_confirm_at_long_horizon": 1.0,
+      "holds_at_baseline": false,
+      "hard_cap_family": false
+    },
+    {
+      "scheme": "truncate_only",
+      "p_confirm_at_long_horizon": 1.0,
+      "holds_at_baseline": false,
+      "hard_cap_family": false
     }
   ],
   "recommended_mode1": {
@@ -64,6 +118,164 @@
     "receiver_hard_cap": true,
     "Q_min_sustained_multiple": 1.2,
     "Q_recommended_min": 25,
-    "operator_note": "Keep receiver-side hard-cap padding enabled in production Mode-1; pad-up and constant-rate observables remain vulnerable to fused attack."
+    "beats_hard_cap_in_sim": false,
+    "operator_note": "Keep receiver-side hard-cap padding enabled in production Mode-1 (Q>=25); pad-up, truncate-only, noisy, and constant-rate observables remain vulnerable to the fused attack (or only match hard_cap when Q exceeds the traffic ceiling \u2014 same cost, weaker invariant). Exit/non-AEGIS receivers are excluded from this claim."
+  },
+  "sim_to_product": {
+    "sim_scheme_recommended": "hard_cap",
+    "sim_equivalent_product_model": "deferred_hard_cap",
+    "rust_type": "aegis_client::HardCapPadder / CountHardCapPadder",
+    "rust_config": "HardCapConfig { q }",
+    "invariant": "observable deliveries per round == Q (real + dummy filler)",
+    "deferral": "excess real arrivals FIFO-deferred (latency cost, not shape leak)",
+    "Q_rule": "Q >= ~1.2 \u00d7 sustained mean arrival rate per round",
+    "Q_recommended_min": 25,
+    "operator_must_enable": [
+      "Mode-1 paced client session (not --raw / unpaced send APIs)",
+      "Receiver-side hard-cap padding with Q meeting the 1.2\u00d7 rule",
+      "Internal-tier peers (both endpoints run AEGIS)"
+    ],
+    "exit_tier_exclusion_residual": "Clearnet exit / non-AEGIS receivers cannot apply HardCapPadder; receiver-side fused-attack resistance does not transfer to that tier. Sender-side constant-rate emission may still hold to the exit relay.",
+    "mapping_doc": "docs/ops/combined_attack_mode1_hardcap.md"
+  },
+  "sensitivity": {
+    "anonymity_set_M": {
+      "E": 800,
+      "trials": 80,
+      "Q": 15,
+      "M_grid": [
+        10,
+        20,
+        30,
+        50
+      ],
+      "results": {
+        "10": {
+          "baseline": 0.1,
+          "by_scheme": {
+            "hard_cap": 0.075,
+            "pad_up": 1.0,
+            "constant_only": 1.0
+          }
+        },
+        "20": {
+          "baseline": 0.05,
+          "by_scheme": {
+            "hard_cap": 0.0875,
+            "pad_up": 1.0,
+            "constant_only": 1.0
+          }
+        },
+        "30": {
+          "baseline": 0.033333,
+          "by_scheme": {
+            "hard_cap": 0.05,
+            "pad_up": 1.0,
+            "constant_only": 1.0
+          }
+        },
+        "50": {
+          "baseline": 0.02,
+          "by_scheme": {
+            "hard_cap": 0.0375,
+            "pad_up": 1.0,
+            "constant_only": 1.0
+          }
+        }
+      },
+      "note": "hard_cap tracks ~1/M. constant_only saturates regardless of M. pad_up at high Q can sit near baseline at moderate E; use Q-sweep and offline curves \u2014 larger n alone does not close the attack."
+    },
+    "padding_budget_Q": {
+      "E": 800,
+      "trials": 80,
+      "M": 30,
+      "sustained_mean": 11.0,
+      "Q_grid": [
+        12,
+        15,
+        20,
+        25,
+        33,
+        40
+      ],
+      "results": {
+        "12": {
+          "Q_over_sustained_mean": 1.091,
+          "by_scheme": {
+            "hard_cap": 0.025,
+            "pad_up": 1.0
+          }
+        },
+        "15": {
+          "Q_over_sustained_mean": 1.364,
+          "by_scheme": {
+            "hard_cap": 0.025,
+            "pad_up": 1.0
+          }
+        },
+        "20": {
+          "Q_over_sustained_mean": 1.818,
+          "by_scheme": {
+            "hard_cap": 0.0375,
+            "pad_up": 0.6875
+          }
+        },
+        "25": {
+          "Q_over_sustained_mean": 2.273,
+          "by_scheme": {
+            "hard_cap": 0.025,
+            "pad_up": 0.1
+          }
+        },
+        "33": {
+          "Q_over_sustained_mean": 3.0,
+          "by_scheme": {
+            "hard_cap": 0.0375,
+            "pad_up": 0.0125
+          }
+        },
+        "40": {
+          "Q_over_sustained_mean": 3.636,
+          "by_scheme": {
+            "hard_cap": 0.05,
+            "pad_up": 0.0375
+          }
+        }
+      },
+      "note": "hard_cap stays near baseline for any Q >= sustained mean. pad_up improves with Q; when Q exceeds the traffic ceiling it collapses toward hard_cap (same bandwidth cost). Prefer explicit hard_cap (HardCapPadder) over hoping pad_up Q is large enough. Offline at Q=25 still shows pad_up rising with E."
+    }
+  },
+  "offline_long_horizon": {
+    "characterizes_not_closes": true,
+    "epoch_grid": [
+      3200,
+      6400
+    ],
+    "trials": 100,
+    "schemes": [
+      "constant_only",
+      "pad_up",
+      "hard_cap",
+      "deferred_hard_cap"
+    ],
+    "curves": {
+      "constant_only": {
+        "3200": 1.0,
+        "6400": 1.0
+      },
+      "pad_up": {
+        "3200": 0.21,
+        "6400": 0.27
+      },
+      "hard_cap": {
+        "3200": 0.04,
+        "6400": 0.04
+      },
+      "deferred_hard_cap": {
+        "3200": 0.04,
+        "6400": 0.04
+      }
+    },
+    "note": "Offline-only extension past the CI epoch grid. hard_cap / deferred_hard_cap remain near baseline; constant_only saturates; pad_up continues above baseline. Not a production close claim."
   }
 }

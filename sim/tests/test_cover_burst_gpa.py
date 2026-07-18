@@ -63,6 +63,26 @@ def test_inter_cell_gaps_stay_near_tau_during_active_emission():
     assert abs(report.gap_mean_secs - TAU) <= TAU * 0.15
 
 
+def test_gap_histogram_sums_to_one():
+    report = cover_timing.characterize_gpa_timing(
+        "paced_plus_tau_cover",
+        tau_secs=TAU,
+        n_sends=N_SENDS,
+        cover_secs=COVER_SECS,
+        relay_cover_bursts_per_send=1,
+    )
+    hist = report.gap_histogram
+    assert hist["n_gaps"] == report.n_gaps
+    assert sum(hist["counts"]) == report.n_gaps
+    assert abs(sum(hist["fractions"]) - 1.0) < 1e-9
+    # Most mass should sit in near-τ bins ([0.75,1.0) ∪ [1.0,1.25)) under paced emission.
+    near = 0.0
+    for label, frac in zip(hist["bin_labels"], hist["fractions"]):
+        if label.startswith("[0.75,") or label.startswith("[1,"):
+            near += frac
+    assert near >= 0.85
+
+
 def test_compare_cover_modes_structure():
     data = cover_timing.compare_cover_modes(
         tau_secs=TAU,
@@ -70,21 +90,28 @@ def test_compare_cover_modes_structure():
         cover_secs=COVER_SECS,
         relay_cover_bursts_per_send=1,
     )
+    assert data["claims_info_theoretic_indistinguishability"] is False
     assert "disclaimer" in data
     assert data["paced_bulk_only"]["mode"] == "paced_bulk_only"
     assert data["paced_plus_tau_cover"]["mode"] == "paced_plus_tau_cover"
     assert data["delta"]["extra_cells"] > 0
 
 
-def test_compare_cover_modes_includes_gap_ks_metric():
+def test_compare_cover_modes_includes_gap_ks_and_cv_metrics():
     data = cover_timing.compare_cover_modes(
         tau_secs=TAU,
         n_sends=N_SENDS,
         cover_secs=COVER_SECS,
         relay_cover_bursts_per_send=1,
     )
-    assert "gap_ks_distance_cover_vs_bulk" in data["delta"]
-    assert 0.0 <= data["delta"]["gap_ks_distance_cover_vs_bulk"] <= 1.0
+    delta = data["delta"]
+    assert "gap_ks_distance_cover_vs_bulk" in delta
+    assert 0.0 <= delta["gap_ks_distance_cover_vs_bulk"] <= 1.0
+    assert "histogram_l1_distance" in delta
+    assert delta["histogram_l1_distance"] == delta["histogram_l1_distance"]
+    # Stronger CI gate: τ-cover must not worsen CV vs bulk-only in this model.
+    assert delta["gap_cv_ratio_cover_over_bulk"] < 1.0
+    assert delta["fraction_near_tau_cover"] >= delta["fraction_near_tau_bulk"] - 1e-9
 
 
 def test_burst_cover_modes_partial_characterization():
@@ -100,17 +127,27 @@ def test_burst_cover_modes_partial_characterization():
     assert "gap_cv_ratio_cover_over_bulk" in data["delta"]
     ks = data["delta"]["gap_ks_distance_cover_vs_bulk"]
     assert ks == ks and 0.0 <= ks <= 1.0
+    assert data["delta"]["gap_cv_ratio_cover_over_bulk"] < 1.0
+    assert "gap_histogram" in data["paced_plus_tau_cover"]
 
 
-def test_characterization_artifact_optional():
-    """Artifact is optional; when present it must match the in-memory comparison."""
-    data = cover_timing.compare_cover_modes(
+def test_characterization_artifact_matches_bundle():
+    """Committed artifact must match regenerated full characterization bundle."""
+    data = cover_timing.full_characterization_bundle(
         tau_secs=TAU,
         n_sends=N_SENDS,
         cover_secs=COVER_SECS,
+        relay_cover_bursts_per_send=1,
     )
     if not ARTIFACT.exists():
         pytest.skip(f"optional artifact not committed: {ARTIFACT}")
     on_disk = json.loads(ARTIFACT.read_text(encoding="utf-8"))
+    assert on_disk["claims_info_theoretic_indistinguishability"] is False
     assert on_disk["paced_bulk_only"]["n_cells"] == data["paced_bulk_only"]["n_cells"]
     assert on_disk["paced_plus_tau_cover"]["n_cells"] == data["paced_plus_tau_cover"]["n_cells"]
+    assert "gap_ks_distance_cover_vs_bulk" in on_disk["delta"]
+    assert "gap_histogram" in on_disk["paced_plus_tau_cover"]
+    assert "burst_heavy" in on_disk
+    assert on_disk["burst_heavy"]["scenario"] == "burst_heavy"
+    # Gate: cover CV strictly below bulk CV in committed baseline.
+    assert on_disk["delta"]["gap_cv_ratio_cover_over_bulk"] < 1.0

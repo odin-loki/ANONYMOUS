@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Operator pilot: 4-node loopback mix path with production-checklist defaults.
+# Docker bridge variant: deploy/compose/ (probe: deploy/scripts/check_pilot_prereqs.sh).
+# Offline compose lint (no daemon): python3 deploy/scripts/validate_compose_offline.py
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"

@@ -62,10 +62,11 @@ This document maps named attack primitives to **current mitigation status**, **r
 |-------|-------------------|----------|----------|
 | Sim quantification | **Open [O] QUANTIFIED** | Unmitigated adaptive → ~1.0 by E=200 (`c=0.015`, `g=3`) | `sim/data/adaptive_guard_exposure.analysis.json`; `test_hardening.py` |
 | v1 mitigation (`mode='mitigated_first'`) | **Partial** — lower curve, not closed | ~0.90 at E=200; → 1.0 at E=2000 | Artifact `mitigated_first_by_epochs` |
-| v2 mitigation (`mode='mitigated'`) | **Partial** — ~13 pp better than v1 at E=200 | ~0.78 at E=200; → 1.0 at E=2000 | Artifact `mitigated_by_epochs`; [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md) |
-| Rust client preset | **Partial** — sticky cap + resample hooks | Defaults **disabled**; `preset = "adaptive_v2"` or legacy `adaptive_first` | `aegis-topology/src/guard_mitigation.rs`; client `[guard_mitigation]` + `[path].epoch_age` |
+| v2 mitigation (`mode='mitigated'`) | **Partial** — ~13 pp better than v1 at E=200 | ~0.77 at E=200; → 1.0 at E=2000 | Artifact `mitigated_by_epochs` |
+| v3 mitigation (`mode='mitigated_v3'`) | **Partial** — ~32 pp better than v2 at E=200 | ~0.45 at E=200; still → ~0.99 at E=2000 (saturation residual) | Artifact `mitigated_v3_by_epochs`; [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md) |
+| Rust client preset | **Partial** — hard/soft sticky + resample hooks | Defaults **disabled**; prefer `preset = "adaptive_v3"` (or `adaptive_v2` / legacy `adaptive_first`) | `aegis-topology/src/guard_mitigation.rs`; client `[guard_mitigation]` + `[path].epoch_age` |
 
-**Adaptive summary:** **Partial v1 + v2** lowers sim exposure; **does not close §13**. Operators enable `preset = "adaptive_v2"` on clients for pilot; field recompromise rates unmeasured.
+**Adaptive summary:** **Partial v1–v3** lowers sim exposure (v3 best mid-horizon); **does not close §13**. Operators enable `preset = "adaptive_v3"` on clients for pilot; field recompromise rates unmeasured.
 
 ---
 
@@ -75,12 +76,15 @@ This document maps named attack primitives to **current mitigation status**, **r
 
 | Defense | Mitigation status | Residual | Evidence |
 |---------|-------------------|----------|----------|
-| Hard-cap receiver padding | **Mitigated** (internal tier) | Exit / non-AEGIS receivers excluded | `HardCapPadder`; Phase 8 §3 |
-| Constant-rate emitter + cover | **Partial** | `constant_only` curve → ~1.0 by E=1600 in sim | `sim/data/combined_active_intersection.analysis.json` |
-| `pad_up` heuristic | **Partial** | Degrades to ~0.085 at E=1600 (not baseline) | Same artifact `curves.pad_up` |
-| Sim `hard_cap` mode | **Mitigated in model** | Synthetic model only; no WAN adversary | `combined_active_intersection`; `research_open_items.md` §B |
+| Hard-cap receiver padding (`HardCapPadder`) | **Mitigated** (internal tier only) | Exit / non-AEGIS receivers **excluded** | Rust `padding.rs`; [`combined_attack_mode1_hardcap.md`](combined_attack_mode1_hardcap.md) |
+| Sim `hard_cap` / `deferred_hard_cap` | **Mitigated in model** | Synthetic; no WAN adversary | `combined_active_intersection.analysis.json` ranking |
+| Constant-rate without receiver hard-cap | **Partial** | `constant_only` → ~1.0 by E=1600 | Same artifact `curves.constant_only` |
+| `pad_up` / `truncate_only` / `noisy_hard_cap` | **Partial** | pad_up ~0.085@E=1600 / ~0.27@E=6400 (Q=25); truncate/noisy → ~1.0; high Q collapses pad_up toward hard_cap | Artifact curves + sensitivity_Q + offline |
+| Larger anonymity set M | **Does not close** | hard_cap ~1/M; pad_up stays high | Artifact `sensitivity.anonymity_set_M` |
 
-**Combined attack summary:** **Open [O] QUANTIFIED**, **not mitigated** in production science sense. Hard-cap holds at ~baseline (0.01) in sim through E=1600; constant-only sender fails.
+**Operators must enable:** Mode-1 paced sessions + receiver hard-cap with `Q ≥ ~1.2×` sustained mean on internal-tier peers. Do not swap in pad-up for “efficiency.”
+
+**Combined attack summary:** **Open [O] QUANTIFIED**, **not mitigated** in production-science sense (exit-tier exclusion + synthetic model). Recommended defense remains **hard-cap**; no ranked scheme beats it without lying about production observables. Offline curves extend to E=6400 in the artifact.
 
 ---
 
@@ -150,11 +154,14 @@ This document maps named attack primitives to **current mitigation status**, **r
 
 | Measurement | Mitigation status | Residual | Evidence |
 |-------------|-------------------|----------|----------|
-| Inter-cell gap τ alignment | **Partial** — paced bulk `fraction_near_tau` ≈ 0.96; cover+τ ≈ 0.98 | Not info-theoretic indistinguishability | `sim/data/cover_burst_gpa_characterization.json` |
-| Gap CV (bulk vs cover+bulk) | **Partial** — cover lowers CV ratio ~0.69 vs bulk-only | Multi-hop semantic difference remains | `cover_timing.py`; `test_cover_burst_gpa.py` |
+| Inter-cell gap τ alignment | **Partial** — paced bulk / cover+τ `fraction_near_tau` high under active emission | Not info-theoretic indistinguishability | `sim/data/cover_burst_gpa_characterization.json` |
+| Gap CV (bulk vs cover+bulk) | **Partial** — cover lowers CV (`gap_cv_ratio_cover_over_bulk` < 1 in model) | Multi-hop semantic difference remains | `cover_timing.py`; `test_cover_burst_gpa.py` |
+| Gap KS + histogram L1 | **Partial** — two-sample KS D + τ-multiple gap histograms in artifact | Distributional comparison only; not a proof | artifact `delta.gap_ks_distance_*`, `gap_histogram` |
+| Burst-heavy scenario | **Partial** — baseline + `burst_heavy` bundle in same artifact | Lab model; not WAN GPA | `compare_cover_modes_under_burst` |
 | Reserved-byte cover marker | **Mitigated** — cover never reassembled as Sphinx | Volume/count correlation still possible | Phase 8 cover marker notes |
+| Ingress KEM client-binding | **Partial** — `require_ingress_kem_commitment` fail-closed on LegacyPsk; matching binding required | Noise_IK does not bind KEM commitment (fails closed if require+Noise); holders of ingress PSK + correct commitment still admitted | `aegis-relay` `net.rs`; node `[link].require_ingress_kem_commitment` |
 
-**Cover distinguishability summary:** **Open [O] QUANTIFIED** — timing improved by τ cover dispatcher; **formal indistinguishability not claimed**.
+**Cover distinguishability summary:** **Open [O] QUANTIFIED** — CV/KS/histogram gates in CI; **formal indistinguishability not claimed**.
 
 ---
 
@@ -191,11 +198,14 @@ See also [`anonymous_reputation.md`](anonymous_reputation.md) § anonymity bound
 | Fixed packet size | **Mitigated** | — | `vectors.rs` `constant_size_regardless_of_path_length` |
 | MAC before peel | **Mitigated** | Timing branch after verify (low) | Phase 2 gate; CT review |
 | Replay cache | **Mitigated** | O(capacity) CPU under flood | `replay.rs` |
-| Hop peel ordering / next-hop ids | **Partial [T]** — property tests, not proof | Per-hop DH blinding documented as best-effort in `kem.rs` | `vectors.rs` peel ordering KATs; `AEGIS_phase2_implementation_notes.md` |
-| Max-path forward count | **Partial [T]** | Terminal hop still Forward to exit id | `vectors.rs` `max_hops_forward_chain` |
+| Hop peel ordering / next-hop ids | **Partial [T]** — 2/3/max-hop KATs + all-length property | Per-hop DH blinding documented as best-effort in `kem.rs` | `vectors.rs` `hop_peel_ordering_*`, `peel_order_property_all_path_lengths` |
+| Wrong-hop / later-secret peel | **Partial [T]** — integrity fail | Not a formal unlinkability proof | `wrong_hop_secret_rejected_*`, `later_hop_secret_cannot_peel_*` |
+| Seeded relay-key structural KAT | **Partial [T]** — size + peel-order stability | Encapsulation RNG still live (`OsRng`); no official cross-impl vector | `seeded_relay_keys_build_size_and_peel_kat` |
+| Alpha/gamma tamper | **Mitigated** | — | `tamper_alpha_or_gamma_rejected` |
+| Max-path forward count | **Partial [T]** | Terminal hop still Forward to exit id | `vectors.rs` `max_hops_forward_count_is_layers_minus_one` |
 | Formal verification | **Open [O] External** | Mechanized proof not in repo | `RESEARCH_AGENDA.md` §5 |
 
-**Sphinx summary:** Phase-2 KATs/property tests pass; **formal proof explicitly not claimed**.
+**Sphinx summary:** Phase-2 KATs/property tests pass (expanded peel-order gates); **formal proof explicitly not claimed**.
 
 ---
 
@@ -204,10 +214,15 @@ See also [`anonymous_reputation.md`](anonymous_reputation.md) § anonymity bound
 ```bash
 # Sim §13 artifacts
 cd sim && PYTHONPATH=. python scripts/generate_research_artifacts.py
-cd sim && PYTHONPATH=. pytest -q tests/test_hardening.py tests/test_cover_burst_gpa.py
+cd sim && PYTHONPATH=. python scripts/run_cover_burst_gpa_characterization.py
+cd sim && PYTHONPATH=. python scripts/run_c2_shapeability_pipeline.py --synthetic-stress
+cd sim && PYTHONPATH=. pytest -q tests/test_hardening.py tests/test_cover_burst_gpa.py tests/test_c2_shapeability_pipeline.py
 
 # Sphinx property gates
-cargo test -p aegis-crypto
+cargo test -p aegis-crypto --test vectors
+
+# Ingress KEM commitment (Partial)
+cargo test -p aegis-relay require_ingress_kem_commitment
 
 # Malicious trace (ignored integration)
 cargo test -p aegis-node --test trace_capture -- --ignored

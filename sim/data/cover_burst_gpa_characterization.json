@@ -1,5 +1,306 @@
 {
   "disclaimer": "Partial characterization of inter-cell gaps \u2014 not info-theoretic indistinguishability or a formal Sphinx proof.",
+  "claims_info_theoretic_indistinguishability": false,
+  "baseline": {
+    "disclaimer": "Partial characterization of inter-cell gaps \u2014 not info-theoretic indistinguishability or a formal Sphinx proof.",
+    "characterization": "partial_gpa_gap_stats",
+    "claims_info_theoretic_indistinguishability": false,
+    "tau_secs": 0.35,
+    "n_sends": 4,
+    "paced_bulk_only": {
+      "mode": "paced_bulk_only",
+      "tau_secs": 0.35,
+      "n_sends": 4,
+      "n_cells": 72,
+      "n_gaps": 71,
+      "gap_mean_secs": 0.37112676056338023,
+      "gap_std_secs": 0.10058349899356132,
+      "gap_cv": 0.2710219517466267,
+      "gap_p50_secs": 0.34999999999999964,
+      "gap_p95_secs": 0.3500000000000014,
+      "gap_p99_secs": 0.8500000000000002,
+      "gap_max_secs": 0.8500000000000014,
+      "fraction_near_tau": 0.9577464788732394,
+      "cover_secs": 0.0,
+      "relay_cover_bursts_per_send": 0,
+      "gap_histogram": {
+        "edges_tau_mult": [
+          0.0,
+          0.5,
+          0.75,
+          1.0,
+          1.25,
+          1.5,
+          2.0,
+          3.0,
+          5.0,
+          Infinity
+        ],
+        "bin_labels": [
+          "[0,0.5)*tau",
+          "[0.5,0.75)*tau",
+          "[0.75,1)*tau",
+          "[1,1.25)*tau",
+          "[1.25,1.5)*tau",
+          "[1.5,2)*tau",
+          "[2,3)*tau",
+          "[3,5)*tau",
+          ">=5*tau"
+        ],
+        "counts": [
+          0,
+          0,
+          37,
+          31,
+          0,
+          0,
+          3,
+          0,
+          0
+        ],
+        "fractions": [
+          0.0,
+          0.0,
+          0.5211267605633803,
+          0.43661971830985913,
+          0.0,
+          0.0,
+          0.04225352112676056,
+          0.0,
+          0.0
+        ],
+        "n_gaps": 71
+      },
+      "disclaimer": "Partial characterization of inter-cell gaps \u2014 not info-theoretic indistinguishability or a formal Sphinx proof."
+    },
+    "paced_plus_tau_cover": {
+      "mode": "paced_plus_tau_cover",
+      "tau_secs": 0.35,
+      "n_sends": 4,
+      "n_cells": 164,
+      "n_gaps": 163,
+      "gap_mean_secs": 0.35920245398772993,
+      "gap_std_secs": 0.06720522177977493,
+      "gap_cv": 0.18709566439065453,
+      "gap_p50_secs": 0.3500000000000014,
+      "gap_p95_secs": 0.3500000000000014,
+      "gap_p99_secs": 0.8499999999999985,
+      "gap_max_secs": 0.8500000000000014,
+      "fraction_near_tau": 0.9815950920245399,
+      "cover_secs": 2.0,
+      "relay_cover_bursts_per_send": 1,
+      "gap_histogram": {
+        "edges_tau_mult": [
+          0.0,
+          0.5,
+          0.75,
+          1.0,
+          1.25,
+          1.5,
+          2.0,
+          3.0,
+          5.0,
+          Infinity
+        ],
+        "bin_labels": [
+          "[0,0.5)*tau",
+          "[0.5,0.75)*tau",
+          "[0.75,1)*tau",
+          "[1,1.25)*tau",
+          "[1.25,1.5)*tau",
+          "[1.5,2)*tau",
+          "[2,3)*tau",
+          "[3,5)*tau",
+          ">=5*tau"
+        ],
+        "counts": [
+          0,
+          0,
+          61,
+          99,
+          0,
+          0,
+          3,
+          0,
+          0
+        ],
+        "fractions": [
+          0.0,
+          0.0,
+          0.37423312883435583,
+          0.6073619631901841,
+          0.0,
+          0.0,
+          0.018404907975460124,
+          0.0,
+          0.0
+        ],
+        "n_gaps": 163
+      },
+      "disclaimer": "Partial characterization of inter-cell gaps \u2014 not info-theoretic indistinguishability or a formal Sphinx proof."
+    },
+    "delta": {
+      "extra_cells": 92,
+      "gap_cv_bulk": 0.2710219517466267,
+      "gap_cv_cover": 0.18709566439065453,
+      "gap_cv_ratio_cover_over_bulk": 0.6903339865457346,
+      "gap_ks_distance_cover_vs_bulk": 0.24228808433422616,
+      "fraction_near_tau_bulk": 0.9577464788732394,
+      "fraction_near_tau_cover": 0.9815950920245399,
+      "histogram_l1_distance": 0.3414844897606498
+    }
+  },
+  "burst_heavy": {
+    "disclaimer": "Partial characterization of inter-cell gaps \u2014 not info-theoretic indistinguishability or a formal Sphinx proof.",
+    "characterization": "partial_gpa_gap_stats",
+    "claims_info_theoretic_indistinguishability": false,
+    "scenario": "burst_heavy",
+    "tau_secs": 0.35,
+    "n_sends": 6,
+    "relay_cover_bursts_per_send": 3,
+    "paced_bulk_only": {
+      "mode": "paced_bulk_only",
+      "tau_secs": 0.35,
+      "n_sends": 6,
+      "n_cells": 108,
+      "n_gaps": 107,
+      "gap_mean_secs": 0.3733644859813083,
+      "gap_std_secs": 0.10552887654800203,
+      "gap_cv": 0.2826430485758693,
+      "gap_p50_secs": 0.3500000000000001,
+      "gap_p95_secs": 0.3500000000000014,
+      "gap_p99_secs": 0.8500000000000013,
+      "gap_max_secs": 0.8500000000000014,
+      "fraction_near_tau": 0.9532710280373832,
+      "cover_secs": 0.0,
+      "relay_cover_bursts_per_send": 0,
+      "gap_histogram": {
+        "edges_tau_mult": [
+          0.0,
+          0.5,
+          0.75,
+          1.0,
+          1.25,
+          1.5,
+          2.0,
+          3.0,
+          5.0,
+          Infinity
+        ],
+        "bin_labels": [
+          "[0,0.5)*tau",
+          "[0.5,0.75)*tau",
+          "[0.75,1)*tau",
+          "[1,1.25)*tau",
+          "[1.25,1.5)*tau",
+          "[1.5,2)*tau",
+          "[2,3)*tau",
+          "[3,5)*tau",
+          ">=5*tau"
+        ],
+        "counts": [
+          0,
+          0,
+          48,
+          54,
+          0,
+          0,
+          5,
+          0,
+          0
+        ],
+        "fractions": [
+          0.0,
+          0.0,
+          0.4485981308411215,
+          0.5046728971962616,
+          0.0,
+          0.0,
+          0.04672897196261682,
+          0.0,
+          0.0
+        ],
+        "n_gaps": 107
+      },
+      "disclaimer": "Partial characterization of inter-cell gaps \u2014 not info-theoretic indistinguishability or a formal Sphinx proof."
+    },
+    "paced_plus_tau_cover": {
+      "mode": "paced_plus_tau_cover",
+      "tau_secs": 0.35,
+      "n_sends": 6,
+      "n_cells": 462,
+      "n_gaps": 461,
+      "gap_mean_secs": 0.3554229934924078,
+      "gap_std_secs": 0.051788878031728304,
+      "gap_cv": 0.14571054484320767,
+      "gap_p50_secs": 0.34999999999999964,
+      "gap_p95_secs": 0.35000000000002274,
+      "gap_p99_secs": 0.55,
+      "gap_max_secs": 0.8500000000000227,
+      "fraction_near_tau": 0.9891540130151844,
+      "cover_secs": 2.0,
+      "relay_cover_bursts_per_send": 3,
+      "gap_histogram": {
+        "edges_tau_mult": [
+          0.0,
+          0.5,
+          0.75,
+          1.0,
+          1.25,
+          1.5,
+          2.0,
+          3.0,
+          5.0,
+          Infinity
+        ],
+        "bin_labels": [
+          "[0,0.5)*tau",
+          "[0.5,0.75)*tau",
+          "[0.75,1)*tau",
+          "[1,1.25)*tau",
+          "[1.25,1.5)*tau",
+          "[1.5,2)*tau",
+          "[2,3)*tau",
+          "[3,5)*tau",
+          ">=5*tau"
+        ],
+        "counts": [
+          0,
+          0,
+          254,
+          202,
+          0,
+          0,
+          5,
+          0,
+          0
+        ],
+        "fractions": [
+          0.0,
+          0.0,
+          0.5509761388286334,
+          0.43817787418655096,
+          0.0,
+          0.0,
+          0.010845986984815618,
+          0.0,
+          0.0
+        ],
+        "n_gaps": 461
+      },
+      "disclaimer": "Partial characterization of inter-cell gaps \u2014 not info-theoretic indistinguishability or a formal Sphinx proof."
+    },
+    "delta": {
+      "extra_cells": 354,
+      "gap_cv_bulk": 0.2826430485758693,
+      "gap_cv_cover": 0.14571054484320767,
+      "gap_cv_ratio_cover_over_bulk": 0.5155284928371231,
+      "gap_ks_distance_cover_vs_bulk": 0.40012569181178664,
+      "fraction_near_tau_bulk": 0.9532710280373832,
+      "fraction_near_tau_cover": 0.9891540130151844,
+      "histogram_l1_distance": 0.20475601597502377
+    }
+  },
   "tau_secs": 0.35,
   "n_sends": 4,
   "paced_bulk_only": {
@@ -11,11 +312,61 @@
     "gap_mean_secs": 0.37112676056338023,
     "gap_std_secs": 0.10058349899356132,
     "gap_cv": 0.2710219517466267,
+    "gap_p50_secs": 0.34999999999999964,
     "gap_p95_secs": 0.3500000000000014,
+    "gap_p99_secs": 0.8500000000000002,
     "gap_max_secs": 0.8500000000000014,
     "fraction_near_tau": 0.9577464788732394,
     "cover_secs": 0.0,
     "relay_cover_bursts_per_send": 0,
+    "gap_histogram": {
+      "edges_tau_mult": [
+        0.0,
+        0.5,
+        0.75,
+        1.0,
+        1.25,
+        1.5,
+        2.0,
+        3.0,
+        5.0,
+        Infinity
+      ],
+      "bin_labels": [
+        "[0,0.5)*tau",
+        "[0.5,0.75)*tau",
+        "[0.75,1)*tau",
+        "[1,1.25)*tau",
+        "[1.25,1.5)*tau",
+        "[1.5,2)*tau",
+        "[2,3)*tau",
+        "[3,5)*tau",
+        ">=5*tau"
+      ],
+      "counts": [
+        0,
+        0,
+        37,
+        31,
+        0,
+        0,
+        3,
+        0,
+        0
+      ],
+      "fractions": [
+        0.0,
+        0.0,
+        0.5211267605633803,
+        0.43661971830985913,
+        0.0,
+        0.0,
+        0.04225352112676056,
+        0.0,
+        0.0
+      ],
+      "n_gaps": 71
+    },
     "disclaimer": "Partial characterization of inter-cell gaps \u2014 not info-theoretic indistinguishability or a formal Sphinx proof."
   },
   "paced_plus_tau_cover": {
@@ -27,15 +378,71 @@
     "gap_mean_secs": 0.35920245398772993,
     "gap_std_secs": 0.06720522177977493,
     "gap_cv": 0.18709566439065453,
+    "gap_p50_secs": 0.3500000000000014,
     "gap_p95_secs": 0.3500000000000014,
+    "gap_p99_secs": 0.8499999999999985,
     "gap_max_secs": 0.8500000000000014,
     "fraction_near_tau": 0.9815950920245399,
     "cover_secs": 2.0,
     "relay_cover_bursts_per_send": 1,
+    "gap_histogram": {
+      "edges_tau_mult": [
+        0.0,
+        0.5,
+        0.75,
+        1.0,
+        1.25,
+        1.5,
+        2.0,
+        3.0,
+        5.0,
+        Infinity
+      ],
+      "bin_labels": [
+        "[0,0.5)*tau",
+        "[0.5,0.75)*tau",
+        "[0.75,1)*tau",
+        "[1,1.25)*tau",
+        "[1.25,1.5)*tau",
+        "[1.5,2)*tau",
+        "[2,3)*tau",
+        "[3,5)*tau",
+        ">=5*tau"
+      ],
+      "counts": [
+        0,
+        0,
+        61,
+        99,
+        0,
+        0,
+        3,
+        0,
+        0
+      ],
+      "fractions": [
+        0.0,
+        0.0,
+        0.37423312883435583,
+        0.6073619631901841,
+        0.0,
+        0.0,
+        0.018404907975460124,
+        0.0,
+        0.0
+      ],
+      "n_gaps": 163
+    },
     "disclaimer": "Partial characterization of inter-cell gaps \u2014 not info-theoretic indistinguishability or a formal Sphinx proof."
   },
   "delta": {
     "extra_cells": 92,
-    "gap_cv_ratio_cover_over_bulk": 0.6903339865457346
+    "gap_cv_bulk": 0.2710219517466267,
+    "gap_cv_cover": 0.18709566439065453,
+    "gap_cv_ratio_cover_over_bulk": 0.6903339865457346,
+    "gap_ks_distance_cover_vs_bulk": 0.24228808433422616,
+    "fraction_near_tau_bulk": 0.9577464788732394,
+    "fraction_near_tau_cover": 0.9815950920245399,
+    "histogram_l1_distance": 0.3414844897606498
   }
 }

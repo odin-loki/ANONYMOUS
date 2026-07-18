@@ -128,6 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let roster_mode = use_roster_path(&file, cli.roster_path);
     if roster_mode {
         let mitigation_note = match file.guard_mitigation.preset.as_deref() {
+            Some("adaptive_v3") => " with adaptive_v3 guard mitigation",
             Some("adaptive_v2") => " with adaptive_v2 guard mitigation",
             Some("adaptive_first") => " with adaptive_first guard mitigation",
             Some(other) => {

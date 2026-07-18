@@ -1,0 +1,54 @@
+# AEGIS operator pilot — deterministic test material (not production secrets).
+# See docs/ops/PILOT.md. [roster].path = roster.json (compose mount /config).
+# Opt-in adaptive guard mitigation (default off; node parses for operator symmetry):
+# [guard_mitigation]
+# preset = "adaptive_v3"   # preferred; or "adaptive_v2" / "adaptive_first"
+# Clients enforce path policy — see docs/ops/adaptive_guard_mitigation.md
+
+relay_id = "8816cc9e3e54955da3021b38fb7749c14c5177f7fe4e09f7b723d7c904cd7388"
+listen = "0.0.0.0:17421"
+mu = 80.0
+
+[kem]
+allow_plaintext_kem = true
+x25519_seed = "a2b2000000000000000000000000000000000000000000000000000000000000"
+mlkem_d = "c2d2000000000000000000000000000000000000000000000000000000000000"
+mlkem_z = "e2f2000000000000000000000000000000000000000000000000000000000000"
+
+kem_commitment = "d5a57deccab3c705d7f974849f5f6c8f10dd3372f10fddc6773051291d5b8195"
+
+[roster]
+path = "roster.json"
+threshold = 1
+authority_pubkeys = ["2c0e2c6c299cde735e527506c5ab4ac3eef994741d3ced645de588c2d9b25258"]
+allow_unverified_roster = false
+
+[cover]
+enabled = true
+require = true
+
+[health_gossip]
+enabled = true
+signing_seed = "7fe14327d8c0970cd4a88b20aa8de76aa36876420e2fcf49375c3c2e1b2b3b01"
+interval_secs = 60
+majority_k = 2
+quorum_log_path = "data/health_quorum.log"
+
+[link]
+handshake = "auto"
+noise_static_secret = "e0b3e4ffedd9a8f922641564ac952a100e11ae5005c21a757422e05057f26f0a"
+
+[[peers]]
+id = "96b9b4a39fda2cc119e0a2a67c0c5948b49eab1ac569169ceef9f35d0509910a"
+addr = "node1:17420"
+link_key = "02a5000000000000000000000000000000000000000000000000000000000000"
+noise_static_public = "af38fb58b7ce41b963910bd3a1d16b4564daf5778edd5e63a12920efc93e485c"
+gossip_verifying_key = "0a61823fdeab76239e4288fc52d73c4e9932731e4f8d8b9f247c2ec3faadf981"
+
+[[peers]]
+id = "7035fd1502c22b36d4fad0146dd4ab3c5363d596288efd64f28595b073251f46"
+addr = "node3:17422"
+link_key = "03a5000000000000000000000000000000000000000000000000000000000000"
+noise_static_public = "eaa66a8142682863ef05ba1cab12b4de538360724dff09adb7ed413f6916553b"
+gossip_verifying_key = "defefc67e8bb73cd1b805331cdad07e75e7748f37d300c2a2ae5f124f16978cb"
+

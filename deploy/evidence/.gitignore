@@ -1,0 +1,4 @@
+# Keep directory; ignore regenerable probe outputs if desired — tracked samples OK.
+# Uncomment to stop committing local probes:
+# host_probe.txt
+# offline_validate.json

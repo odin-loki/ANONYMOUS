@@ -1,4 +1,4 @@
-//! Adaptive guard mitigation hooks (spec §13 — partial, v1 + v2 presets).
+//! Adaptive guard mitigation hooks (spec §13 — partial, v1 + v2 + v3 presets).
 //!
 //! Ties Phase-7 anomaly / peer-health signals to guard rotation policy without
 //! changing production defaults. Does **not** close §13 adaptive exposure.
@@ -13,8 +13,12 @@ use crate::guards::{GuardConfig, GuardPinMode};
 /// When to force guard-set re-sample or pin-mode rotation after demotion / health spikes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GuardMitigationPolicy {
-    /// Force guard re-sample after this many epochs on the same held set (sticky cap).
+    /// Force guard re-sample after this many epochs on the same held set (hard sticky cap).
     pub max_sticky_epochs: u64,
+    /// Soft sticky age: after this many epochs, apply deterministic decaying-stickiness
+    /// re-sample pressure until [`Self::max_sticky_epochs`]. When `>= max_sticky_epochs`,
+    /// soft band is disabled (v1/v2 behavior).
+    pub soft_sticky_epochs: u64,
     /// Re-sample + rotate pin when an anomaly demotion flag is observed this epoch.
     pub rotate_on_anomaly: bool,
     /// Re-sample + rotate when peer-health anomaly count crosses [`Self::peer_health_spike_threshold`].
@@ -28,6 +32,7 @@ impl Default for GuardMitigationPolicy {
     fn default() -> Self {
         Self {
             max_sticky_epochs: u64::MAX,
+            soft_sticky_epochs: u64::MAX,
             rotate_on_anomaly: false,
             rotate_on_peer_health_spike: false,
             peer_health_spike_threshold: 3,
@@ -40,6 +45,7 @@ impl GuardMitigationPolicy {
     pub const fn disabled() -> Self {
         Self {
             max_sticky_epochs: u64::MAX,
+            soft_sticky_epochs: u64::MAX,
             rotate_on_anomaly: false,
             rotate_on_peer_health_spike: false,
             peer_health_spike_threshold: 3,
@@ -50,6 +56,7 @@ impl GuardMitigationPolicy {
     pub const fn adaptive_first() -> Self {
         Self {
             max_sticky_epochs: 12,
+            soft_sticky_epochs: 12,
             rotate_on_anomaly: true,
             rotate_on_peer_health_spike: true,
             peer_health_spike_threshold: 2,
@@ -60,10 +67,47 @@ impl GuardMitigationPolicy {
     pub const fn adaptive_v2() -> Self {
         Self {
             max_sticky_epochs: 8,
+            soft_sticky_epochs: 8,
             rotate_on_anomaly: true,
             rotate_on_peer_health_spike: true,
             peer_health_spike_threshold: 1,
         }
+    }
+
+    /// v3 preset — hard epoch-age cap 4, decaying stickiness from age 2, rotate on
+    /// anomaly / single peer-health spike (sim `mode='mitigated_v3'`).
+    ///
+    /// Best in-tree sim mid-horizon defense vs v2; long horizons still saturate — §13 [O].
+    pub const fn adaptive_v3() -> Self {
+        Self {
+            max_sticky_epochs: 4,
+            soft_sticky_epochs: 2,
+            rotate_on_anomaly: true,
+            rotate_on_peer_health_spike: true,
+            peer_health_spike_threshold: 1,
+        }
+    }
+
+    /// Deterministic decaying-stickiness soft re-sample in `[soft, hard)` ages.
+    ///
+    /// Probability of soft re-sample rises with age into the soft band (maps sim
+    /// `stickiness_decay` pressure without requiring RNG at the policy layer).
+    fn soft_sticky_resample(&self, epoch_age: u64) -> bool {
+        if self.soft_sticky_epochs >= self.max_sticky_epochs {
+            return false;
+        }
+        if epoch_age < self.soft_sticky_epochs {
+            return false;
+        }
+        let into = epoch_age - self.soft_sticky_epochs + 1;
+        let span = self
+            .max_sticky_epochs
+            .saturating_sub(self.soft_sticky_epochs)
+            .max(1);
+        // threshold grows toward ~100% as age approaches the hard cap
+        let threshold = into.saturating_mul(100) / (span + 1);
+        let roll = epoch_age.wrapping_mul(0x9E37_79B9_7F4A_7C15) % 100;
+        roll < threshold
     }
 
     /// Whether the held guard set should be re-sampled for the next epoch.
@@ -74,6 +118,9 @@ impl GuardMitigationPolicy {
         peer_anomaly_count: u32,
     ) -> bool {
         if epoch_age >= self.max_sticky_epochs {
+            return true;
+        }
+        if self.soft_sticky_resample(epoch_age) {
             return true;
         }
         if self.rotate_on_anomaly && anomaly_demotion_flag {
@@ -170,7 +217,8 @@ pub struct GuardMitigationSignals {
 /// See `docs/ops/adaptive_guard_mitigation.md`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GuardMitigationFileConfig {
-    /// Preset name: `"adaptive_first"` | `"adaptive_v2"`. Preferred over legacy bool.
+    /// Preset name: `"adaptive_first"` | `"adaptive_v2"` | `"adaptive_v3"`.
+    /// Preferred over legacy bool.
     #[serde(default)]
     pub preset: Option<String>,
     /// Legacy enable for [`GuardMitigationPolicy::adaptive_first()`] when `preset` is absent.
@@ -185,6 +233,7 @@ impl GuardMitigationFileConfig {
             return match name.as_str() {
                 "adaptive_first" => GuardMitigationPolicy::adaptive_first(),
                 "adaptive_v2" => GuardMitigationPolicy::adaptive_v2(),
+                "adaptive_v3" => GuardMitigationPolicy::adaptive_v3(),
                 _ => GuardMitigationPolicy::disabled(),
             };
         }
@@ -251,12 +300,35 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_v3_hard_cap_and_soft_sticky_band() {
+        let p = GuardMitigationPolicy::adaptive_v3();
+        assert_eq!(p.max_sticky_epochs, 4);
+        assert_eq!(p.soft_sticky_epochs, 2);
+        assert!(p.should_resample_guards(4, false, 0));
+        assert!(p.should_resample_guards(0, false, 1));
+        assert!(!p.should_resample_guards(0, false, 0));
+        assert!(!p.should_resample_guards(1, false, 0));
+        // Soft band: at least one age in [2, 4) must soft-resample (deterministic).
+        let soft_hits = (2u64..4).filter(|&a| p.should_resample_guards(a, false, 0)).count();
+        assert!(soft_hits >= 1, "v3 soft sticky band should fire for some ages");
+    }
+
+    #[test]
     fn file_config_preset_adaptive_v2() {
         let file = GuardMitigationFileConfig {
             preset: Some("adaptive_v2".into()),
             ..GuardMitigationFileConfig::default()
         };
         assert_eq!(file.resolve_policy(), GuardMitigationPolicy::adaptive_v2());
+    }
+
+    #[test]
+    fn file_config_preset_adaptive_v3() {
+        let file = GuardMitigationFileConfig {
+            preset: Some("adaptive_v3".into()),
+            ..GuardMitigationFileConfig::default()
+        };
+        assert_eq!(file.resolve_policy(), GuardMitigationPolicy::adaptive_v3());
     }
 
     #[test]
@@ -271,11 +343,11 @@ mod tests {
     #[test]
     fn file_config_preset_overrides_legacy_adaptive_first() {
         let file = GuardMitigationFileConfig {
-            preset: Some("adaptive_v2".into()),
+            preset: Some("adaptive_v3".into()),
             adaptive_first: true,
             ..GuardMitigationFileConfig::default()
         };
-        assert_eq!(file.resolve_policy(), GuardMitigationPolicy::adaptive_v2());
+        assert_eq!(file.resolve_policy(), GuardMitigationPolicy::adaptive_v3());
     }
 
     #[test]
@@ -298,6 +370,16 @@ mod tests {
         let p = GuardMitigationPolicy::adaptive_first();
         let signals = GuardMitigationSignals {
             epoch_age: 12,
+            ..GuardMitigationSignals::default()
+        };
+        assert_ne!(p.client_seed_for_guards(42, &signals), 42);
+    }
+
+    #[test]
+    fn client_seed_resamples_on_v3_hard_cap() {
+        let p = GuardMitigationPolicy::adaptive_v3();
+        let signals = GuardMitigationSignals {
+            epoch_age: 4,
             ..GuardMitigationSignals::default()
         };
         assert_ne!(p.client_seed_for_guards(42, &signals), 42);

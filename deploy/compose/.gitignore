@@ -1,1 +1,5 @@
-pilot_configs/
+# Optional local env (keep .env.example tracked)
+.env
+
+# Runtime artifacts under the bind-mounted config dir
+pilot_configs/data/

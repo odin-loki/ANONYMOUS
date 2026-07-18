@@ -1,0 +1,114 @@
+{
+  "tag": "adaptive_mitigation_offline_characterization",
+  "characterizes_not_closes": true,
+  "mitigation_partial_not_closed": true,
+  "c": 0.015,
+  "g": 3,
+  "epoch_grid": [
+    50,
+    100,
+    200,
+    500,
+    800,
+    2000
+  ],
+  "ci_scale": {
+    "trials": 2000,
+    "by_epochs": {
+      "50": {
+        "adaptive": 0.9065,
+        "mitigated_v2": 0.5595,
+        "mitigated_v3": 0.246
+      },
+      "100": {
+        "adaptive": 0.989,
+        "mitigated_v2": 0.644,
+        "mitigated_v3": 0.337
+      },
+      "200": {
+        "adaptive": 0.9995,
+        "mitigated_v2": 0.778,
+        "mitigated_v3": 0.4415
+      },
+      "500": {
+        "adaptive": 1.0,
+        "mitigated_v2": 0.948,
+        "mitigated_v3": 0.724
+      },
+      "800": {
+        "adaptive": 1.0,
+        "mitigated_v2": 0.989,
+        "mitigated_v3": 0.8485
+      },
+      "2000": {
+        "adaptive": 1.0,
+        "mitigated_v2": 1.0,
+        "mitigated_v3": 0.994
+      }
+    }
+  },
+  "offline_scale": {
+    "trials": 5000,
+    "by_epochs": {
+      "50": {
+        "adaptive": 0.8932,
+        "mitigated_v2": 0.5606,
+        "mitigated_v3": 0.2408
+      },
+      "100": {
+        "adaptive": 0.9908,
+        "mitigated_v2": 0.6284,
+        "mitigated_v3": 0.306
+      },
+      "200": {
+        "adaptive": 1.0,
+        "mitigated_v2": 0.7656,
+        "mitigated_v3": 0.4592
+      },
+      "500": {
+        "adaptive": 1.0,
+        "mitigated_v2": 0.9354,
+        "mitigated_v3": 0.7154
+      },
+      "800": {
+        "adaptive": 1.0,
+        "mitigated_v2": 0.9878,
+        "mitigated_v3": 0.8562
+      },
+      "2000": {
+        "adaptive": 1.0,
+        "mitigated_v2": 1.0,
+        "mitigated_v3": 0.9912
+      }
+    }
+  },
+  "summary_at_200": {
+    "adaptive": 1.0,
+    "mitigated_v2": 0.7656,
+    "mitigated_v3": 0.4592,
+    "v3_improvement_vs_v2": 0.30639999999999995
+  },
+  "mitigation_params_v2": {
+    "max_sticky_epochs": 8,
+    "demotion_decay": 0.55,
+    "demotion_floor": 0.1,
+    "demotion_linger": 5,
+    "aggressive": false,
+    "soft_sticky_epochs": 8,
+    "stickiness_decay": 1.0,
+    "rep_signal_scale": 0.0,
+    "rep_demotion_extra": 1.0
+  },
+  "mitigation_params_v3": {
+    "max_sticky_epochs": 4,
+    "demotion_decay": 0.4,
+    "demotion_floor": 0.05,
+    "demotion_linger": 10,
+    "aggressive": true,
+    "soft_sticky_epochs": 2,
+    "stickiness_decay": 0.62,
+    "rep_signal_scale": 0.45,
+    "rep_demotion_extra": 0.88
+  },
+  "honest_limit": "v3 lowers mid-horizon exposure vs v2 but long horizons still saturate toward 1.0; spec \u00a713 remains [O]."
+}

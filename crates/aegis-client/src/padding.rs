@@ -262,4 +262,22 @@ mod tests {
         assert!(stats.cap > 0.0);
         assert_eq!(stats.stable, stats.cap > counts.iter().sum::<f64>() / counts.len() as f64);
     }
+
+    /// Mode-1 / combined-attack provisioning rule: Q ≥ ~1.2× sustained mean
+    /// (see `docs/ops/combined_attack_mode1_hardcap.md` and sim defense report).
+    #[test]
+    fn q_meets_combined_attack_sustained_mean_rule() {
+        let sustained_mean = 8.0_f64 + 3.0; // matches sim bg + s_rate defaults
+        let q_min = (1.2 * sustained_mean).ceil() as u32;
+        assert_eq!(q_min, 14);
+        assert!(HardCapPadder::<()>::is_stable_for_mean_arrival(sustained_mean, q_min));
+        assert!(!HardCapPadder::<()>::is_stable_for_mean_arrival(sustained_mean, 11));
+
+        let mut padder = CountHardCapPadder::new(HardCapConfig::new(q_min.max(25)));
+        for _ in 0..100 {
+            padder.arrive(sustained_mean.round() as u32);
+            let out = padder.round_tick();
+            assert_eq!(out.observable_count(), padder.q());
+        }
+    }
 }

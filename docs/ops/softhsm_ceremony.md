@@ -1,8 +1,12 @@
 # SoftHSM2 ceremony pilot (PKCS#11)
 
-**Status:** ops pilot runbook (2026-07-18) — **not required for CI**  
+**Status:** **Succeeded** on OdinsPC WSL (2026-07-18, tip `ae536f1`) — SoftHSM2
+user-local build + token `aegis-ceremony` initialized. SoftHSM remains a **software
+token**, not hardware custody. **Not required for CI.**
+
 **Parent:** [`consortium_key_ceremony.md`](consortium_key_ceremony.md)  
-**APIs:** `Pkcs11CustodyOps`, `HsmCustodyProvider`, `SimulatedHsmProvider`, `select_ceremony_custody`
+**APIs:** `Pkcs11CustodyOps`, `HsmCustodyProvider`, `SimulatedHsmProvider`, `select_ceremony_custody`  
+**Evidence:** [`sim/softhsm_init_evidence.txt`](../../sim/softhsm_init_evidence.txt)
 
 This document is the operator path for standing up **SoftHSM2** under WSL/Linux as a
 PKCS#11 stand-in before linking a vendor HSM. The in-tree Rust workspace remains
@@ -20,9 +24,30 @@ to a real module.
 
 **Do not** claim hardware custody with SoftHSM or `SimulatedHsmProvider`.
 
-## Install (WSL / Debian-family Linux)
+## Quick start (operator)
 
-### Option A — system packages (requires sudo)
+From repo root on WSL/Linux:
+
+```bash
+bash scripts/softhsm_probe.sh          # non-interactive; never hangs on sudo
+bash scripts/softhsm_user_build.sh     # no sudo; builds into ~/.local if needed
+bash scripts/softhsm_init.sh           # init token label aegis-ceremony
+bash scripts/softhsm_init.sh --dry-run # probe only
+bash scripts/softhsm_init.sh --evidence sim/softhsm_init_evidence.txt
+```
+
+From Windows PowerShell (path helper → WSL user `odin`):
+
+```powershell
+powershell -File scripts/softhsm_wsl.ps1 -Action probe
+powershell -File scripts/softhsm_wsl.ps1 -Action user-build
+powershell -File scripts/softhsm_wsl.ps1 -Action init -Evidence
+powershell -File scripts/softhsm_wsl.ps1 -Action dry-run
+```
+
+## Install paths
+
+### Option A — system packages (requires sudo password)
 
 ```bash
 sudo apt-get update
@@ -35,26 +60,22 @@ Common module path (set `AEGIS_PKCS11_MODULE` if different):
 /usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so
 ```
 
-### Option B — user-local build (no sudo after build deps)
+Non-interactive agents: probe with `sudo -n true` first. If it prints
+`a password is required`, **do not** run bare `sudo` (it will hang). Use Option B.
 
-When `sudo` needs a password and you cannot install `softhsm2` system-wide, build
-SoftHSM2 into `~/.local` after one-time build dependencies are present:
+### Option B — user-local build (no sudo) — **recommended when sudo needs a password**
+
+`scripts/softhsm_user_build.sh` will:
+
+1. Detect missing `uuid-dev` / `libtool`
+2. `apt-get download` those debs + extract into `~/.local/aegis-build-deps` (no sudo)
+3. Build SoftHSM2 2.6.1 into `~/.local`
 
 ```bash
-# One-time build deps (requires sudo password once):
-sudo apt-get update
-sudo apt-get install -y build-essential libssl-dev uuid-dev libtool autoconf automake
-
-mkdir -p ~/src && cd ~/src
-curl -LO https://github.com/opendnssec/SoftHSMv2/archive/refs/tags/2.6.1.tar.gz
-tar xzf 2.6.1.tar.gz && cd SoftHSMv2-2.6.1
-./autogen.sh
-./configure --prefix="$HOME/.local" --disable-gost
-make -j"$(nproc)"
-make install
+bash scripts/softhsm_user_build.sh
+# rebuild: AEGIS_SOFTHSM_FORCE_REBUILD=1 bash scripts/softhsm_user_build.sh
+# dry-run: bash scripts/softhsm_user_build.sh --dry-run
 ```
-
-User-local paths (used automatically by `scripts/softhsm_init.sh` when present):
 
 | Artifact | Path |
 |----------|------|
@@ -62,39 +83,42 @@ User-local paths (used automatically by `scripts/softhsm_init.sh` when present):
 | PKCS#11 module | `~/.local/lib/softhsm/libsofthsm2.so` |
 | `AEGIS_PKCS11_MODULE` | `$HOME/.local/lib/softhsm/libsofthsm2.so` |
 
-Ensure `~/.local/bin` is on `PATH` (and `~/.local/lib` on `LD_LIBRARY_PATH` if the
-module fails to load).
+Ensure `~/.local/bin` is on `PATH` (script does this for the session). Set
+`LD_LIBRARY_PATH=$HOME/.local/lib` if a tool fails to load companion libs.
+
+**Note:** Extracting the Ubuntu `softhsm2` `.deb` alone is **not** enough —
+`softhsm2-util` hardcodes `/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so`. Prefer
+Option B (configure `--prefix=$HOME/.local`) so the util and module match.
+
+### Option C — optional `pkcs11-tool` without sudo
+
+```bash
+bash scripts/softhsm_fix_pkcs11_tool.sh
+```
+
+Token init does **not** require OpenSC; `softhsm2-util --show-slots` is sufficient.
 
 ## Init token (safe helper)
-
-From repo root:
 
 ```bash
 bash scripts/softhsm_init.sh
 ```
 
-If `softhsm2-util` is missing, the script prints an install hint and exits **0**
+If `softhsm2-util` is missing, the script prints an unblock checklist and exits **0**
 (so CI/agents without SoftHSM do not fail).
 
-Environment overrides:
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
+| Variable / flag | Default | Purpose |
+|-----------------|---------|---------|
 | `AEGIS_SOFTHSM_SLOT` | `0` | Token slot |
 | `AEGIS_SOFTHSM_TOKEN_LABEL` | `aegis-ceremony` | Token label |
 | `AEGIS_SOFTHSM_SO_PIN` / `AEGIS_SOFTHSM_USER_PIN` | `1234` | **Change in real ops** |
-| `SOFTHSM2_CONF` | `~/.config/softhsm2/softhsm2.conf` | SoftHSM config file |
-| `AEGIS_PKCS11_MODULE` | `~/.local/lib/softhsm/libsofthsm2.so` if user-local build exists, else `/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so` | PKCS#11 module for `pkcs11-tool` smoke |
+| `SOFTHSM2_CONF` | `~/.config/softhsm2/softhsm2.conf` | SoftHSM config |
+| `AEGIS_PKCS11_MODULE` | `~/.local/...` if present else system path | PKCS#11 module |
+| `--dry-run` | off | Probe only |
+| `--evidence FILE` | unset | Append `RESULT_CODE=...` block |
 
-Manual equivalent:
-
-```bash
-export SOFTHSM2_CONF="$HOME/.config/softhsm2/softhsm2.conf"
-softhsm2-util --init-token --slot 0 --label "aegis-ceremony" \
-  --so-pin "$SO_PIN" --pin "$USER_PIN"
-softhsm2-util --show-slots
-pkcs11-tool --module "$AEGIS_PKCS11_MODULE" --list-slots
-```
+Evidence `RESULT_CODE` values: `SUCCEEDED`, `ALREADY_INITIALIZED`, `MISSING_SOFTHSM`,
+`SHOW_SLOTS_FAIL`, `INIT_FAIL`, `DRY_RUN`.
 
 ## Map to `Pkcs11CustodyOps` / `HsmCustodyProvider`
 
@@ -113,67 +137,47 @@ Until wired, `select_ceremony_custody(CeremonyCustodyMode::Hardware)` returns
 Suggested integration env (future Rust build):
 
 ```bash
-export AEGIS_PKCS11_MODULE=/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so
-export AEGIS_PKCS11_SLOT=0
+export AEGIS_PKCS11_MODULE=$HOME/.local/lib/softhsm/libsofthsm2.so
+export AEGIS_PKCS11_SLOT=0   # note: SoftHSM may reassign slot id after init
 export AEGIS_PKCS11_PIN=...
 ```
 
-## Smoke notes (operator host)
-
-Run on a WSL/Linux host **with** SoftHSM installed:
+### Lab smoke (no SoftHSM required)
 
 ```bash
-bash scripts/softhsm_init.sh
+cd crates
+cargo test -p aegis-topology custody::tests::simulated_hsm_lab_only_roundtrip
+cargo test -p aegis-topology custody::tests::hsm_provider_fails_closed_on_this_host
 ```
 
-Capture `softhsm2-util --show-slots` output in your ops log. Expected:
+One-liner after SoftHSM success (ops host):
 
-- Token label `aegis-ceremony` (or your `AEGIS_SOFTHSM_TOKEN_LABEL`)
-- `pkcs11-tool --list-slots` lists the same slot when `opensc` is installed
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/.local/lib:${LD_LIBRARY_PATH:-}"
+export AEGIS_PKCS11_MODULE="$HOME/.local/lib/softhsm/libsofthsm2.so"
+export SOFTHSM2_CONF="${SOFTHSM2_CONF:-$HOME/.config/softhsm2/softhsm2.conf}"
+softhsm2-util --show-slots | grep -A2 'aegis-ceremony'
+# Rust PKCS#11 link still External — SimulatedHsmProvider remains the in-tree lab path.
+```
 
-**This repo does not commit host-specific slot dumps.** If SoftHSM is absent (typical
-Windows CI), the init script is a no-op with install instructions — that is intentional.
-
-### Host run: OdinsPC (2026-07-18, tip `9ce640f`)
+## Host run: OdinsPC (2026-07-18, tip `ae536f1`) — **SUCCEEDED**
 
 Evidence: [`sim/softhsm_init_evidence.txt`](../../sim/softhsm_init_evidence.txt)
 
 | Step | Result |
 |------|--------|
-| WSL build-deps pre-check (no sudo) | **Blocked** — `uuid-dev` and `libtool` not installed; `gcc`, `make`, `openssl`, `libssl-dev`, `autoconf`, `automake` present |
-| SoftHSM2 source build to `~/.local` | **Not run** — missing `/usr/include/uuid/uuid.h` and `libtool` |
-| `bash scripts/softhsm_init.sh` | **Graceful no-op** (exit 0) — `softhsm2-util` absent |
-| Token init / `pkcs11-tool` smoke | **Not run** |
+| `sudo -n true` | **Blocked** — password required (not used) |
+| `apt-get download` uuid-dev/libtool + extract | **OK** (no sudo) |
+| `scripts/softhsm_user_build.sh` → `~/.local` | **OK** — SoftHSM2 2.6.1 |
+| `scripts/softhsm_init.sh` | **OK** — token `aegis-ceremony` initialized (slot reassigned by SoftHSM) |
+| `pkcs11-tool --list-slots` | **OK** after `softhsm_fix_pkcs11_tool.sh` (libeac + opensc into `~/.local/lib`) |
+| Hardware custody claim | **No** — software token only |
 
-**Unblock (minimal sudo, one password prompt):**
+### Prior blocked runs (same host)
 
-```bash
-sudo apt-get update && sudo apt-get install -y uuid-dev libtool
-# then build per Option B above, or:
-sudo apt-get install -y softhsm2 opensc
-cd /mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS
-bash scripts/softhsm_init.sh | tee -a sim/softhsm_init_evidence.txt
-```
-
-### Host run: OdinsPC (2026-07-18, tip `f531480`)
-
-Evidence: [`sim/softhsm_init_evidence.txt`](../../sim/softhsm_init_evidence.txt)
-
-| Step | Result |
-|------|--------|
-| `sudo apt-get install softhsm2 opensc` (WSL Ubuntu 24.04) | **Blocked** — `sudo -n` requires password; non-interactive install not possible |
-| `bash scripts/softhsm_init.sh` | **Graceful no-op** (exit 0) — prints install hint; `softhsm2-util` absent |
-| Token init / `pkcs11-tool` smoke | **Not run** — packages not installed |
-| Optional Rust PKCS#11 smoke | **Skipped** — no in-tree PKCS#11 crate; default workspace unchanged |
-| `cargo test --workspace` (WSL, `crates/`) | **6 pre-existing `aegis-node` keyring failures** — KemProtect/keyring on this host; unrelated to SoftHSM |
-
-**Unblock on this host:** run interactively in WSL:
-
-```bash
-sudo apt-get update && sudo apt-get install -y softhsm2 opensc
-cd /mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS
-bash scripts/softhsm_init.sh | tee -a sim/softhsm_init_evidence.txt
-```
+Earlier tips (`f531480`, `9ce640f`) documented sudo password + missing uuid-dev/libtool.
+Those are superseded by the no-sudo user-build path above.
 
 ## Ceremony workflow (unchanged logic)
 
@@ -190,3 +194,4 @@ shares, and roster TOML.
 - SoftHSM is a **software token**, not a tamper-resistant HSM.
 - No in-tree PKCS#11 dependency yet — pilot is ops + contract only.
 - MPC / proactive refresh remain **External**.
+- Default SO/User PINs in the helper are lab defaults — change for any real ceremony.

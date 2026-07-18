@@ -15,6 +15,21 @@ cargo run -p aegis-node -- validate --config /path/to/node.toml
 
 Fails closed on lab flags (`allow_unverified_roster`, inline KEM, `[trace].path`, disabled ingress caps). See [`PILOT.md`](PILOT.md) for the full pilot sequence.
 
+### Docker compose pilot (optional)
+
+Multi-container bridge pilot lives under [`deploy/compose/`](../../deploy/compose/) (healthchecked relays, `.env.example`, bridge `pilot_configs/`). Full steps, Windows Docker Desktop + WSL2 install, and honest “containers ran” rules: [`PILOT.md`](PILOT.md) § Docker pilot.
+
+**Without a Docker daemon** (common on fresh Windows hosts):
+
+```powershell
+.\deploy\scripts\check_pilot_prereqs.ps1
+python deploy\scripts\validate_compose_offline.py
+```
+
+That path validates compose YAML + pilot TOML shape only — it does **not** start containers. Pilot node TOMLs intentionally fail `aegis-node validate` on lab KEM flags; production templates must pass validate after placeholders are replaced.
+
+**Adaptive / roster-path (client):** production client template documents `[guard_mitigation] preset = "adaptive_v2"` and `[path]` / `--roster-path` wiring — see [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md). Defaults remain off.
+
 ## Pre-flight
 
 | Check | Production setting | Why |

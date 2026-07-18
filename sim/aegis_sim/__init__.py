@@ -10,6 +10,8 @@ Modules:
     shaper       - constant-rate hard-cap shaper (the core Mode-1 defense)
     adversaries  - timing, volume, intersection, confirmation, bulk attacks,
                    plus (Phase 8) an adaptive compromised-mix-set adversary
+    combined_active_intersection
+                 - fused active(n-1)+intersection ranking, sensitivity, offline horizons
     metrics      - anonymity metrics (matching accuracy, disclosure, Hurst),
                    plus (Phase 8) shapeability_report for honest per-trace tiering
 
@@ -19,4 +21,4 @@ results so that any future change that weakens a defense fails a test.
 from spec §13: real-trace shapeability, adaptive compromised-mix set, and
 combined active+intersection long-horizon attacks.
 """
-__all__ = ["traffic", "shaper", "adversaries", "metrics"]
+__all__ = ["traffic", "shaper", "adversaries", "combined_active_intersection", "metrics"]

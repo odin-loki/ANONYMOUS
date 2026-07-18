@@ -371,6 +371,8 @@ pub struct LinkNetConfig {
     /// Require local `kem_commitment` in inbound handshake MAC binding (ingress fail-closed).
     /// When true, config must set top-level `kem_commitment`; ingress peers must present
     /// matching KEM commitment in the link handshake (no relay-id-only ingress).
+    /// Use with `handshake = "legacy_psk"` (or Auto without Noise keys): Noise_IK does not
+    /// bind KEM commitments and will fail closed if this flag is set while Noise is selected.
     #[serde(default)]
     pub require_ingress_kem_commitment: bool,
     /// Sustained inbound cell/frame accept rate (cells/sec). Default ≈ 1/τ (Mode-1).
@@ -1752,6 +1754,22 @@ preset = "adaptive_v2"
         let policy = file.guard_mitigation.resolve_policy();
         assert_eq!(policy, GuardMitigationPolicy::adaptive_v2());
         assert!(policy.should_resample_guards(8, false, 0));
+    }
+
+    #[test]
+    fn guard_mitigation_preset_adaptive_v3_parses_and_resolves() {
+        let toml = r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[guard_mitigation]
+preset = "adaptive_v3"
+"#;
+        let file: NodeConfigFile = toml::from_str(toml).unwrap();
+        let policy = file.guard_mitigation.resolve_policy();
+        assert_eq!(policy, GuardMitigationPolicy::adaptive_v3());
+        assert!(policy.should_resample_guards(4, false, 0));
+        assert_eq!(policy.soft_sticky_epochs, 2);
     }
 
     #[test]

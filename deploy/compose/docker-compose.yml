@@ -3,72 +3,106 @@
 #
 #   docker compose -f deploy/compose/docker-compose.yml up --build
 #   docker compose -f deploy/compose/docker-compose.yml --profile client run --rm client
+#
+# Offline (no daemon): python deploy/scripts/validate_compose_offline.py
+# Env knobs: copy deploy/compose/.env.example → deploy/compose/.env
+#
+# HONEST: this file alone does not mean containers are running.
 
 name: aegis-pilot
 
+x-node-common: &node-common
+  build:
+    context: ../..
+    dockerfile: deploy/compose/Dockerfile
+  restart: unless-stopped
+  # Interpolated from deploy/compose/.env (see .env.example); no daemon required to edit.
+  environment:
+    RUST_LOG: ${AEGIS_RUST_LOG:-info}
+  volumes:
+    - ./pilot_configs:/config
+  working_dir: /config
+  networks:
+    - aegis-pilot
+
 services:
   node0:
-    build:
-      context: ../..
-      dockerfile: deploy/compose/Dockerfile
+    <<: *node-common
     command: ["--config", "/config/node0.toml"]
-    volumes:
-      - ./pilot_configs:/config
-    networks:
-      - aegis-pilot
+    ports:
+      - "${AEGIS_NODE0_HOST_PORT:-17419}:17419"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo >/dev/tcp/127.0.0.1/17419'"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 40s
 
   node1:
-    build:
-      context: ../..
-      dockerfile: deploy/compose/Dockerfile
+    <<: *node-common
     command: ["--config", "/config/node1.toml"]
-    volumes:
-      - ./pilot_configs:/config
-    networks:
-      - aegis-pilot
+    ports:
+      - "${AEGIS_NODE1_HOST_PORT:-17420}:17420"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo >/dev/tcp/127.0.0.1/17420'"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 40s
 
   node2:
-    build:
-      context: ../..
-      dockerfile: deploy/compose/Dockerfile
+    <<: *node-common
     command: ["--config", "/config/node2.toml"]
-    volumes:
-      - ./pilot_configs:/config
-    networks:
-      - aegis-pilot
+    ports:
+      - "${AEGIS_NODE2_HOST_PORT:-17421}:17421"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo >/dev/tcp/127.0.0.1/17421'"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 40s
 
   node3:
-    build:
-      context: ../..
-      dockerfile: deploy/compose/Dockerfile
+    <<: *node-common
     command: ["--config", "/config/node3.toml"]
-    volumes:
-      - ./pilot_configs:/config
-    networks:
-      - aegis-pilot
+    ports:
+      - "${AEGIS_NODE3_HOST_PORT:-17422}:17422"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo >/dev/tcp/127.0.0.1/17422'"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 40s
 
   client:
     profiles: ["client"]
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile
+    environment:
+      RUST_LOG: ${AEGIS_RUST_LOG:-info}
     entrypoint: ["aegis-client"]
     command:
       - "--config"
       - "/config/client.toml"
       - "--payload"
-      - "docker-pilot"
+      - "${AEGIS_CLIENT_PAYLOAD:-docker-pilot}"
       - "--cover-secs"
-      - "2"
+      - "${AEGIS_COVER_SECS:-2}"
       - "--tau-secs"
-      - "0.35"
+      - "${AEGIS_TAU_SECS:-0.35}"
     volumes:
       - ./pilot_configs:/config
+    working_dir: /config
     depends_on:
-      - node0
-      - node1
-      - node2
-      - node3
+      node0:
+        condition: service_healthy
+      node1:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+      node3:
+        condition: service_healthy
     networks:
       - aegis-pilot
 

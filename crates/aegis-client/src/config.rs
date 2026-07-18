@@ -139,6 +139,24 @@ preset = "adaptive_v2"
     }
 
     #[test]
+    fn guard_mitigation_preset_adaptive_v3_parses_and_resolves() {
+        let file: ClientConfigFile = toml::from_str(
+            r#"
+first_hop_addr = "127.0.0.1:9000"
+ingress_link_key = "0000000000000000000000000000000000000000000000000000000000000001"
+
+[guard_mitigation]
+preset = "adaptive_v3"
+"#,
+        )
+        .unwrap();
+        assert_eq!(file.guard_mitigation.preset.as_deref(), Some("adaptive_v3"));
+        let policy = file.guard_mitigation.resolve_policy();
+        assert_eq!(policy, GuardMitigationPolicy::adaptive_v3());
+        assert!(policy.should_resample_guards(4, false, 0));
+    }
+
+    #[test]
     fn path_epoch_age_parses_for_mitigation_signals() {
         let file: ClientConfigFile = toml::from_str(
             r#"

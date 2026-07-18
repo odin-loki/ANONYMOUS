@@ -1,143 +1,179 @@
 # AEGIS SoftHSM init smoke evidence
 # Host: Windows 10 (win32 10.0.26200) + WSL2 Ubuntu 24.04.1 LTS
-# Repo tip: f531480 Ship productization wave: pilot pack, SoftHSM path, adaptive mitigation, charter.
-# Captured: 2026-07-18T05:02:11Z (UTC)
+# Repo tip: ae536f1 Land research anonymity upgrade: adaptive_v2, attack playbook, cover/ingress Partial.
+# Captured: 2026-07-18T07:24:51Z (UTC)
+# Operator user: odin (sudo group; password required for interactive sudo)
 
-## Step 1 — apt install (blocked)
+## RESULT_CODE=SUCCEEDED
+
+SoftHSM is a software token only. Do NOT claim hardware custody.
+
+## Step 1 — non-interactive sudo
 
 Command:
-  wsl -e bash -lc "sudo -n true"
+  sudo -n true
 
 Result:
   sudo: a password is required
-  SUDO_NEEDS_PASSWORD
+  STATUS SUDO_NOPASSWD=no
+  STATUS SUDO_BLOCKER=password_required_or_denied
 
-Command (not run — would require interactive sudo password):
-  sudo apt-get update && sudo apt-get install -y softhsm2 opensc
+System apt install of softhsm2/opensc: NOT ATTEMPTED (would hang on password prompt).
 
-Pre-check:
-  which softhsm2-util → NOT_INSTALLED
-
-Blocker: WSL sudo requires a password on this host; non-interactive install cannot proceed.
-
-## Step 2 — scripts/softhsm_init.sh (graceful no-op)
+## Step 2 — apt-get download + user-local SoftHSM build (no sudo)
 
 Command:
-  wsl -e bash -lc "cd /mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS && bash scripts/softhsm_init.sh"
+  bash scripts/softhsm_user_build.sh
+
+Pre-check (system):
+  uuid-dev (/usr/include/uuid/uuid.h) → MISSING
+  libtool → MISSING
+  libtoolize, gcc, make, openssl headers, autoconf, automake, curl → OK
+
+Unblock used:
+  apt-get download uuid-dev libuuid1 libtool libtool-bin
+  dpkg-deb -x → ~/.local/aegis-build-deps
+  SoftHSMv2 2.6.1 → configure --prefix=$HOME/.local --disable-gost && make install
+
+Result:
+  softhsm2-util --version → 2.6.1
+  module → /home/odin/.local/lib/softhsm/libsofthsm2.so
+  softhsm2-util --show-slots → OK
+
+## Step 3 — ceremony token init
+
+Command:
+  export PATH=$HOME/.local/bin:$PATH
+  export LD_LIBRARY_PATH=$HOME/.local/lib:$LD_LIBRARY_PATH
+  export AEGIS_PKCS11_MODULE=$HOME/.local/lib/softhsm/libsofthsm2.so
+  bash scripts/softhsm_init.sh
 
 Exit code: 0
+RESULT_CODE=SUCCEEDED (first init) / ALREADY_INITIALIZED (re-check)
 
-Output:
-  SoftHSM2 not found (softhsm2-util missing).
+Output (abridged):
+  The token has been initialized and is reassigned to slot 2027565271
+  Label:            aegis-ceremony
+  Serial number:    d372e589f8da30d7
+  Initialized:      yes
+  User PIN init.:   yes
 
-  Install on Debian/Ubuntu WSL:
-    sudo apt-get update && sudo apt-get install -y softhsm2 opensc
+Note: SoftHSM reassigns the initialized token to a new slot id; match by label.
 
-  Then re-run:
-    bash scripts/softhsm_init.sh
+## Step 4 — pkcs11-tool (optional)
 
-  See docs/ops/softhsm_ceremony.md for PKCS#11 module path and AEGIS wiring.
+Command:
+  bash scripts/softhsm_fix_pkcs11_tool.sh
+  # ensures libeac.so.3 + opensc libs under ~/.local/lib
 
-Token init: NOT PERFORMED (softhsm2-util absent)
-pkcs11-tool smoke: NOT PERFORMED (opensc not installed)
+Result: OK
+  pkcs11-tool --module $HOME/.local/lib/softhsm/libsofthsm2.so --list-slots
+  token label: aegis-ceremony
+  serial num:  d372e589f8da30d7
 
-## Step 3 — PKCS#11 Rust/Python smoke
+## Step 5 — Rust custody tests (no SoftHSM required)
 
-Skipped intentionally: SoftHSM not installed; no optional in-tree PKCS#11 crate added.
-Default workspace build unchanged (no native PKCS#11 deps).
+Command:
+  cd crates && cargo test -p aegis-topology custody::tests
 
-## Step 4 — default cargo test (no SoftHSM)
+Result: 8 passed; 0 failed
+  simulated_hsm_lab_only_roundtrip
+  hsm_provider_fails_closed_on_this_host
+  hsm_pkcs11_ops_fail_closed_with_hint
+  select_ceremony_custody_hardware_fails_closed
+  (+ software custody tests)
 
-Windows PowerShell: cargo not on PATH.
+HsmCustodyProvider remains fail-closed until a PKCS#11 crate is wired.
 
-WSL (crates/ workspace):
-  cd crates && cargo test --workspace
+## Deb-extract dead-end (documented)
 
-Result (2026-07-18): 6 failures in aegis-node — all KemProtect/keyring
-  ("keyring get_password: No matching entry found in secure storage").
-  Unrelated to SoftHSM; no PKCS#11 crates in workspace. Other crates passed.
-
-  Failed tests:
-    config::tests::kem_first_run_writes_external_file_by_default
-    config::tests::kem_load_from_external_file_with_custom_path
-    config::tests::kem_load_or_init_is_idempotent
-    config::tests::kem_persist_roundtrip_via_protect_layer
-    config::tests::link_and_ingress_toml_wire_ingress_rate_limit
-    kem_seed_protect::tests::keyring_protect_unprotect_roundtrip_or_fallback
+apt-get download softhsm2 + dpkg-deb -x alone is insufficient: Ubuntu softhsm2-util
+hardcodes /usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so. Prefer user-build
+(--prefix=$HOME/.local).
 
 ## WSL host metadata
 
 Linux OdinsPC 6.6.87.2-microsoft-standard-WSL2 x86_64 GNU/Linux
 PRETTY_NAME="Ubuntu 24.04.1 LTS"
+SOFTHSM2_CONF=/home/odin/.config/softhsm2/softhsm2.conf
 
-## Unblock for real token smoke
+## Unblock commands (clean host)
 
-On this machine, run interactively in WSL:
+If SoftHSM missing and sudo needs a password:
+
+  bash scripts/softhsm_probe.sh
+  bash scripts/softhsm_user_build.sh
+  bash scripts/softhsm_fix_pkcs11_tool.sh   # optional
+  bash scripts/softhsm_init.sh --evidence sim/softhsm_init_evidence.txt
+
+If interactive sudo is available:
 
   sudo apt-get update && sudo apt-get install -y softhsm2 opensc
-  cd /mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS
-  bash scripts/softhsm_init.sh | tee -a sim/softhsm_init_evidence.txt
+  bash scripts/softhsm_init.sh
 
-Expected after install: token label aegis-ceremony on slot 0, pkcs11-tool --list-slots OK.
+From Windows:
+
+  powershell -File scripts/softhsm_wsl.ps1 -Action probe
+  powershell -File scripts/softhsm_wsl.ps1 -Action user-build
+  powershell -File scripts/softhsm_wsl.ps1 -Action init -Evidence
 
 ---
-
-# AEGIS SoftHSM no-sudo build attempt (tip 9ce640f)
-# Captured: 2026-07-18T05:13:05Z (UTC)
-
-## Step 1 — WSL build-deps pre-check (no sudo)
-
-Host: WSL2 Ubuntu 24.04.1 LTS, user odin (sudo group, password required)
-
-| Dependency | Status |
-|------------|--------|
-| gcc (13.3.0) | OK — /usr/bin/gcc |
-| make (4.3) | OK — /usr/bin/make |
-| openssl (3.0.13) | OK — /usr/bin/openssl |
-| libssl-dev headers (/usr/include/openssl/ssl.h) | OK |
-| pkg-config openssl | OK — 3.0.13 |
-| autoconf | OK — /usr/bin/autoconf |
-| automake | OK — /usr/bin/automake |
-| uuid-dev (/usr/include/uuid/uuid.h) | **MISSING** |
-| libtool | **MISSING** |
-
-Exact packages needed (one sudo password prompt):
-  sudo apt-get update && sudo apt-get install -y uuid-dev libtool
-
-Optional full build chain if not already present:
-  sudo apt-get install -y build-essential libssl-dev autoconf automake
-
-## Step 2 — SoftHSM2 source build to ~/.local
-
-Result: **NOT RUN** — blocked by missing uuid-dev and libtool.
-Would run after deps installed:
-  mkdir -p ~/src && cd ~/src
-  curl -LO https://github.com/opendnssec/SoftHSMv2/archive/refs/tags/2.6.1.tar.gz
-  tar xzf 2.6.1.tar.gz && cd SoftHSMv2-2.6.1
-  ./autogen.sh && ./configure --prefix=$HOME/.local --disable-gost
-  make -j$(nproc) && make install
-
-## Step 3 — scripts/softhsm_init.sh (graceful no-op)
-
-Command:
-  wsl -u odin bash -c "cd /mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS && bash scripts/softhsm_init.sh"
-
-Exit code: 0
-
-Output:
-  SoftHSM2 not found (softhsm2-util missing).
-  (install hints for system packages and ~/.local build path)
-
-Token init: NOT PERFORMED
-pkcs11-tool smoke: NOT PERFORMED
-~/.local/bin/softhsm2-util: NOT PRESENT
-
-## Step 4 — repo updates (this tip)
-
-- docs/ops/softhsm_ceremony.md — added Option B (~/.local prefix paths)
-- scripts/softhsm_init.sh — prefers $HOME/.local/bin/softhsm2-util and module path
-
-## Remaining blocker
-
-Non-interactive sudo unavailable. Install uuid-dev + libtool (or softhsm2 opensc)
-with one interactive password, then re-run init script.
+# SoftHSM init evidence block
+# Captured: 2026-07-18T07:24:51Z
+# Host: Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
+# User: odin
+# Repo: /mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS
+RESULT_CODE=ALREADY_INITIALIZED
+RESULT_DETAIL=label=aegis-ceremony
+SOFTHSM2_UTIL=/home/odin/.local/bin/softhsm2-util
+AEGIS_PKCS11_MODULE=/home/odin/.local/lib/softhsm/libsofthsm2.so
+SOFTHSM2_CONF=/home/odin/.config/softhsm2/softhsm2.conf
+LABEL=aegis-ceremony SLOT=0 DRY_RUN=0
+SOFTHSM2_VERSION=2.6.1
+--- show-slots ---
+Available slots:
+Slot 2027565271
+    Slot info:
+        Description:      SoftHSM slot ID 0x78da30d7                                      
+        Manufacturer ID:  SoftHSM project                 
+        Hardware version: 2.6
+        Firmware version: 2.6
+        Token present:    yes
+    Token info:
+        Manufacturer ID:  SoftHSM project                 
+        Model:            SoftHSM v2      
+        Hardware version: 2.6
+        Firmware version: 2.6
+        Serial number:    d372e589f8da30d7
+        Initialized:      yes
+        User PIN init.:   yes
+        Label:            aegis-ceremony                  
+Slot 1
+    Slot info:
+        Description:      SoftHSM slot ID 0x1                                             
+        Manufacturer ID:  SoftHSM project                 
+        Hardware version: 2.6
+        Firmware version: 2.6
+        Token present:    yes
+    Token info:
+        Manufacturer ID:  SoftHSM project                 
+        Model:            SoftHSM v2      
+        Hardware version: 2.6
+        Firmware version: 2.6
+        Serial number:                    
+        Initialized:      no
+        User PIN init.:   no
+        Label:                                            
+--- pkcs11-tool --list-slots ---
+Available slots:
+Slot 0 (0x78da30d7): SoftHSM slot ID 0x78da30d7
+  token label        : aegis-ceremony
+  token manufacturer : SoftHSM project
+  token model        : SoftHSM v2
+  token flags        : login required, rng, token initialized, PIN initialized, other flags=0x20
+  hardware version   : 2.6
+  firmware version   : 2.6
+  serial num         : d372e589f8da30d7
+  pin min/max        : 4/255
+Slot 1 (0x1): SoftHSM slot ID 0x1
+  token state:   uninitialized

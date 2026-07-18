@@ -252,3 +252,179 @@ fn payload_length_boundaries() {
         CryptoError::Malformed("payload too long")
     ));
 }
+
+/// Peel-order KAT for minimum path (2 hops): hop-0 reveals hop-1 id only.
+#[test]
+fn two_hop_peel_order_kat() {
+    let mut rng = OsRng;
+    let (path, secrets) = make_path(2);
+    let packet = build(&path, b"two-hop-kat", &mut rng).expect("build");
+
+    let mut replay = ReplayCache::new();
+    let out = process(&packet, &secrets[0], &mut replay).expect("hop0");
+    match out {
+        Processed::Forward { next_hop, packet: next } => {
+            assert_eq!(next_hop, path[1].id);
+            assert_eq!(next.as_bytes().len(), SPHINX_PACKET_LEN);
+            let mut replay1 = ReplayCache::new();
+            let terminal = process(&next, &secrets[1], &mut replay1).expect("hop1");
+            assert!(matches!(terminal, Processed::Forward { .. }));
+        }
+        other => panic!("expected forward, got {other:?}"),
+    }
+}
+
+/// Peel-order KAT for 3 hops: each hop reveals exactly the next id in sequence.
+#[test]
+fn three_hop_peel_order_kat() {
+    let mut rng = OsRng;
+    let (path, secrets) = make_path(3);
+    let packet = build(&path, b"three-hop-kat", &mut rng).expect("build");
+
+    let mut current = packet;
+    for hop in 0..2 {
+        let mut replay = ReplayCache::new();
+        match process(&current, &secrets[hop], &mut replay).expect("peel") {
+            Processed::Forward { next_hop, packet: next } => {
+                assert_eq!(next_hop, path[hop + 1].id, "hop {hop} next-hop mismatch");
+                current = next;
+            }
+            other => panic!("expected forward at hop {hop}, got {other:?}"),
+        }
+    }
+}
+
+/// Wrong-hop secret at hop 0 must fail integrity (cannot skip peel order).
+#[test]
+fn wrong_hop_secret_rejected_at_entry() {
+    let mut rng = OsRng;
+    let (path, secrets) = make_path(4);
+    let packet = build(&path, b"wrong-hop", &mut rng).expect("build");
+    let mut replay = ReplayCache::new();
+    // Use hop-2 secret against hop-0 ciphertext — must not peel.
+    let err = process(&packet, &secrets[2], &mut replay).unwrap_err();
+    assert!(matches!(err, CryptoError::IntegrityFailure | CryptoError::Malformed(_)));
+}
+
+/// Intermediate hop cannot successfully peel with a later hop's secret.
+#[test]
+fn later_hop_secret_cannot_peel_intermediate_packet() {
+    let mut rng = OsRng;
+    let (path, secrets) = make_path(4);
+    let packet = build(&path, b"mid-hop", &mut rng).expect("build");
+
+    let mut replay0 = ReplayCache::new();
+    let mid = match process(&packet, &secrets[0], &mut replay0).expect("hop0") {
+        Processed::Forward { packet: next, .. } => next,
+        other => panic!("expected forward, got {other:?}"),
+    };
+
+    let mut replay_wrong = ReplayCache::new();
+    let err = process(&mid, &secrets[3], &mut replay_wrong).unwrap_err();
+    assert!(matches!(err, CryptoError::IntegrityFailure | CryptoError::Malformed(_)));
+
+    // Correct next hop still works.
+    let mut replay1 = ReplayCache::new();
+    let ok = process(&mid, &secrets[1], &mut replay1).expect("hop1");
+    assert!(matches!(ok, Processed::Forward { next_hop, .. } if next_hop == path[2].id));
+}
+
+/// Property: for every path length in 2..=MAX_HOPS, peel order reveals path[i+1].
+/// Not a formal Sphinx proof — regression gate on routing-slot layout.
+#[test]
+fn peel_order_property_all_path_lengths() {
+    let mut rng = OsRng;
+    for len in 2..=MAX_HOPS {
+        let (path, secrets) = make_path(len);
+        let packet = build(&path, &[len as u8; 16], &mut rng).expect("build");
+        let mut current = packet;
+        for hop in 0..len - 1 {
+            let mut replay = ReplayCache::new();
+            match process(&current, &secrets[hop], &mut replay).expect("peel") {
+                Processed::Forward { next_hop, packet: next } => {
+                    assert_eq!(
+                        next_hop, path[hop + 1].id,
+                        "path_len={len} hop={hop} peel-order mismatch"
+                    );
+                    assert_eq!(next.as_bytes().len(), SPHINX_PACKET_LEN);
+                    current = next;
+                }
+                other => panic!("path_len={len} hop={hop}: expected forward, got {other:?}"),
+            }
+        }
+    }
+}
+
+/// Seeded structural KAT: deterministic relay keys + fixed payload → constant size
+/// and peel-order stability across two builds with independent encapsulation RNG.
+/// (Encapsulation uses OsRng; this is not a cross-implementation official vector.)
+#[test]
+fn seeded_relay_keys_build_size_and_peel_kat() {
+    fn path_from_seeds(seeds: &[[u8; 32]]) -> (Vec<PathHop>, Vec<RelayKemSecret>) {
+        let mut hops = Vec::new();
+        let mut secrets = Vec::new();
+        for (i, seed) in seeds.iter().enumerate() {
+            let mut mlkem_d = [0u8; 32];
+            let mut mlkem_z = [0u8; 32];
+            mlkem_d[0] = 0xD0;
+            mlkem_z[0] = 0xE0;
+            mlkem_d[1] = i as u8;
+            mlkem_z[1] = i as u8;
+            let (sec, pk) = RelayKemSecret::generate_deterministic(*seed, mlkem_d, mlkem_z);
+            let mut id = [0u8; 32];
+            id[0] = (i as u8).wrapping_add(1);
+            hops.push(PathHop { id, pk });
+            secrets.push(sec);
+        }
+        (hops, secrets)
+    }
+
+    let seeds = [[0x11u8; 32], [0x22u8; 32], [0x33u8; 32]];
+    let (path, secrets) = path_from_seeds(&seeds);
+    let mut rng = OsRng;
+    let p1 = build(&path, b"seeded-kat", &mut rng).expect("build1");
+    let p2 = build(&path, b"seeded-kat", &mut rng).expect("build2");
+    assert_eq!(p1.as_bytes().len(), SPHINX_PACKET_LEN);
+    assert_eq!(p2.as_bytes().len(), SPHINX_PACKET_LEN);
+    // Fresh encapsulation ⇒ distinct wire bytes, same peel-order semantics.
+    assert_ne!(p1.as_bytes(), p2.as_bytes());
+
+    for packet in [p1, p2] {
+        let mut current = packet;
+        for hop in 0..2 {
+            let mut replay = ReplayCache::new();
+            match process(&current, &secrets[hop], &mut replay).expect("peel") {
+                Processed::Forward { next_hop, packet: next } => {
+                    assert_eq!(next_hop, path[hop + 1].id);
+                    current = next;
+                }
+                other => panic!("expected forward, got {other:?}"),
+            }
+        }
+    }
+}
+
+/// Alpha/gamma tamper at hop 0 fails closed (edge case beyond beta-byte tamper).
+#[test]
+fn tamper_alpha_or_gamma_rejected() {
+    let mut rng = OsRng;
+    let (path, secrets) = make_path(3);
+    let packet = build(&path, b"tamper-regions", &mut rng).expect("build");
+
+    let mut alpha_tampered = packet.clone();
+    alpha_tampered.0[0] ^= 0x01;
+    let mut replay_a = ReplayCache::new();
+    assert!(matches!(
+        process(&alpha_tampered, &secrets[0], &mut replay_a).unwrap_err(),
+        CryptoError::IntegrityFailure | CryptoError::Malformed(_)
+    ));
+
+    let mut gamma_tampered = packet.clone();
+    let gamma_off = aegis_crypto::sphinx::ALPHA_LEN + BETA_LEN;
+    gamma_tampered.0[gamma_off] ^= 0x01;
+    let mut replay_g = ReplayCache::new();
+    assert!(matches!(
+        process(&gamma_tampered, &secrets[0], &mut replay_g).unwrap_err(),
+        CryptoError::IntegrityFailure
+    ));
+}

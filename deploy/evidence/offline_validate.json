@@ -1,0 +1,103 @@
+{
+  "timestamp_utc": "2026-07-18T07:35:06.384656+00:00",
+  "docker_claimed_running": false,
+  "honest_note": "Offline pack validation only. Containers were not started by this script.",
+  "ok": true,
+  "errors": [],
+  "warnings": [],
+  "info": [
+    "compose YAML parsed OK (deploy\\compose\\docker-compose.yml)",
+    "compose structure: client, node0, node1, node2, node3 | networks=['aegis-pilot']",
+    "pilot TOML structural checks complete",
+    "template present: node.production.toml",
+    "template present: client.production.toml",
+    "using aegis-node: C:\\Users\\odinl\\OneDrive\\Desktop\\ANONYMOUS\\crates\\target\\debug\\aegis-node.exe",
+    "node0: aegis-node validate FAIL as expected (lab KEM only: ['kem inline seeds', 'kem.allow_plaintext_kem'])",
+    "node1: aegis-node validate FAIL as expected (lab KEM only: ['kem inline seeds', 'kem.allow_plaintext_kem'])",
+    "node2: aegis-node validate FAIL as expected (lab KEM only: ['kem inline seeds', 'kem.allow_plaintext_kem'])",
+    "node3: aegis-node validate FAIL as expected (lab KEM only: ['kem inline seeds', 'kem.allow_plaintext_kem'])"
+  ],
+  "aegis_node_validate": {
+    "binary": "C:\\Users\\odinl\\OneDrive\\Desktop\\ANONYMOUS\\crates\\target\\debug\\aegis-node.exe",
+    "nodes": {
+      "node0": {
+        "exit": 1,
+        "error_fields": [
+          "kem inline seeds",
+          "kem.allow_plaintext_kem"
+        ],
+        "stdout_tail": [
+          "aegis-node config validation",
+          "  relay_id: ff2e63c467253f6cca42364d6f018302c3bc001a97ec07a9fe6fdf07fb4f7093",
+          "  listen: 0.0.0.0:17419",
+          "  summary: 2 error(s), 0 warning(s) \u00e2\u20ac\u201d FAIL",
+          "  [ERROR] kem.allow_plaintext_kem \u00e2\u20ac\u201d lab flag true \u00e2\u20ac\u201d production must use external kem.seeds (false or omitted)",
+          "  [ERROR] kem inline seeds \u00e2\u20ac\u201d inline KEM seeds in main config are lab-only; use [kem] file = \"...\"",
+          "",
+          "live coarse_stats (at relay run): processed_ok, processed_fail, cover_emitted, queue_dropped",
+          "  failure_rate = processed_fail / (processed_ok + processed_fail)",
+          "  scrape: poll coarse_stats at most once per 30s (GPA residual if scraped faster under flood)"
+        ]
+      },
+      "node1": {
+        "exit": 1,
+        "error_fields": [
+          "kem inline seeds",
+          "kem.allow_plaintext_kem"
+        ],
+        "stdout_tail": [
+          "aegis-node config validation",
+          "  relay_id: 96b9b4a39fda2cc119e0a2a67c0c5948b49eab1ac569169ceef9f35d0509910a",
+          "  listen: 0.0.0.0:17420",
+          "  summary: 2 error(s), 0 warning(s) \u00e2\u20ac\u201d FAIL",
+          "  [ERROR] kem.allow_plaintext_kem \u00e2\u20ac\u201d lab flag true \u00e2\u20ac\u201d production must use external kem.seeds (false or omitted)",
+          "  [ERROR] kem inline seeds \u00e2\u20ac\u201d inline KEM seeds in main config are lab-only; use [kem] file = \"...\"",
+          "",
+          "live coarse_stats (at relay run): processed_ok, processed_fail, cover_emitted, queue_dropped",
+          "  failure_rate = processed_fail / (processed_ok + processed_fail)",
+          "  scrape: poll coarse_stats at most once per 30s (GPA residual if scraped faster under flood)"
+        ]
+      },
+      "node2": {
+        "exit": 1,
+        "error_fields": [
+          "kem inline seeds",
+          "kem.allow_plaintext_kem"
+        ],
+        "stdout_tail": [
+          "aegis-node config validation",
+          "  relay_id: 8816cc9e3e54955da3021b38fb7749c14c5177f7fe4e09f7b723d7c904cd7388",
+          "  listen: 0.0.0.0:17421",
+          "  summary: 2 error(s), 0 warning(s) \u00e2\u20ac\u201d FAIL",
+          "  [ERROR] kem.allow_plaintext_kem \u00e2\u20ac\u201d lab flag true \u00e2\u20ac\u201d production must use external kem.seeds (false or omitted)",
+          "  [ERROR] kem inline seeds \u00e2\u20ac\u201d inline KEM seeds in main config are lab-only; use [kem] file = \"...\"",
+          "",
+          "live coarse_stats (at relay run): processed_ok, processed_fail, cover_emitted, queue_dropped",
+          "  failure_rate = processed_fail / (processed_ok + processed_fail)",
+          "  scrape: poll coarse_stats at most once per 30s (GPA residual if scraped faster under flood)"
+        ]
+      },
+      "node3": {
+        "exit": 1,
+        "error_fields": [
+          "kem inline seeds",
+          "kem.allow_plaintext_kem"
+        ],
+        "stdout_tail": [
+          "aegis-node config validation",
+          "  relay_id: 7035fd1502c22b36d4fad0146dd4ab3c5363d596288efd64f28595b073251f46",
+          "  listen: 0.0.0.0:17422",
+          "  summary: 2 error(s), 0 warning(s) \u00e2\u20ac\u201d FAIL",
+          "  [ERROR] kem.allow_plaintext_kem \u00e2\u20ac\u201d lab flag true \u00e2\u20ac\u201d production must use external kem.seeds (false or omitted)",
+          "  [ERROR] kem inline seeds \u00e2\u20ac\u201d inline KEM seeds in main config are lab-only; use [kem] file = \"...\"",
+          "",
+          "live coarse_stats (at relay run): processed_ok, processed_fail, cover_emitted, queue_dropped",
+          "  failure_rate = processed_fail / (processed_ok + processed_fail)",
+          "  scrape: poll coarse_stats at most once per 30s (GPA residual if scraped faster under flood)"
+        ]
+      }
+    },
+    "skipped": false,
+    "via_wsl": false
+  }
+}
