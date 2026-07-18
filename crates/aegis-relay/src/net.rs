@@ -82,7 +82,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use thiserror::Error;
 
-use crate::cover_flow::is_relay_cover_fragment;
+use crate::cover_flow::is_discard_cover_fragment;
 use crate::health_gossip::{
     accept_advert, accept_advert_quorum, unix_timestamp_secs, PeerHealthAdvert,
     DEFAULT_MAX_ADVERT_AGE_SECS,
@@ -179,6 +179,10 @@ impl IngressRateLimitConfig {
 }
 
 /// Coarse counter for silently dropped ingress frames (link bridge only).
+///
+/// External scrapers should export via [`crate::metrics_export::MetricsExportGate`]
+/// (production suppresses drop detail unless high-res is opted in). Raw
+/// [`Self::dropped_frames`] is for in-process / privileged observers.
 #[derive(Debug, Default)]
 pub struct IngressRateLimitStats {
     dropped_frames: AtomicU64,
@@ -187,6 +191,16 @@ pub struct IngressRateLimitStats {
 impl IngressRateLimitStats {
     pub fn dropped_frames(&self) -> u64 {
         self.dropped_frames.load(Ordering::Relaxed)
+    }
+
+    /// Gate-aware export of the drop counter (may be suppressed / quantized).
+    pub fn export_dropped_frames(
+        &self,
+        gate: &crate::metrics_export::MetricsExportGate,
+        coarse: crate::node::RelayCoarseStats,
+    ) -> Result<crate::metrics_export::ExportedRelayStats, crate::metrics_export::MetricsExportError>
+    {
+        gate.export(coarse, self.dropped_frames())
     }
 
     fn record_drop(&self) {
@@ -833,6 +847,10 @@ pub struct PeerInfo {
     pub gossip_verifying_key: Option<[u8; 32]>,
     /// Expected peer Noise static public key (32 bytes). Required for `LinkHandshakeMode::Noise`.
     pub noise_static_public: Option<[u8; 32]>,
+    /// Optional operator / organization label for gossip diversity (`min_orgs`).
+    pub org_id: Option<String>,
+    /// Optional jurisdiction label for gossip diversity when `org_id` is unset.
+    pub jurisdiction: Option<String>,
 }
 
 impl PeerInfo {
@@ -843,6 +861,8 @@ impl PeerInfo {
             kem_public_commitment: None,
             gossip_verifying_key: None,
             noise_static_public: None,
+            org_id: None,
+            jurisdiction: None,
         }
     }
 
@@ -859,6 +879,16 @@ impl PeerInfo {
     /// Set the roster-expected Noise static public key for this peer.
     pub fn with_noise_static_public(mut self, noise_static_public: [u8; 32]) -> Self {
         self.noise_static_public = Some(noise_static_public);
+        self
+    }
+
+    pub fn with_org_id(mut self, org_id: impl Into<String>) -> Self {
+        self.org_id = Some(org_id.into());
+        self
+    }
+
+    pub fn with_jurisdiction(mut self, jurisdiction: impl Into<String>) -> Self {
+        self.jurisdiction = Some(jurisdiction.into());
         self
     }
 }
@@ -1632,7 +1662,7 @@ async fn run_inbound_connection(
                 }
                 continue;
             }
-            Some(Command::SphinxFragment) if is_relay_cover_fragment(&cell) => continue,
+            Some(Command::SphinxFragment) if is_discard_cover_fragment(&cell) => continue,
             Some(Command::SphinxFragment) => {}
             _ => continue,
         }
@@ -3165,6 +3195,7 @@ mod tests {
             CoverRequirement::new(1),
             crate::cover_flow::CoverFlowConfig {
                 cells_per_flow: cell_count,
+                ..Default::default()
             },
         );
         let flow = gen.generate(0, &mut OsRng).into_iter().next().unwrap();

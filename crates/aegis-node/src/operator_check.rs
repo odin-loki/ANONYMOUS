@@ -79,7 +79,13 @@ impl fmt::Display for ValidationReport {
         )?;
         writeln!(
             f,
-            "  scrape: poll coarse_stats at most once per 30s (GPA residual if scraped faster under flood)"
+            "  scrape: use MetricsExportGate / [metrics] (default min_scrape_interval_secs=30, \
+             quantize_bucket=16, suppress_ingress_drop_detail=true)"
+        )?;
+        writeln!(
+            f,
+            "  residual: privileged observers with raw coarse_stats / debug_stats or \
+             allow_high_resolution=true still see high-res deltas under flood"
         )?;
         Ok(())
     }
@@ -179,6 +185,19 @@ pub fn validate_production_config(config_path: &Path) -> Result<ValidationReport
         ));
     }
 
+    if file.exit.presence_pad {
+        report.checks.push(warn(
+            "exit.presence_pad",
+            "matched-Q egress pad burns bandwidth — enable only on designated exit hops; clearnet GPA residual remains",
+        ));
+        if file.exit.deliver_to.is_none() && !file.exit.log_payloads {
+            report.checks.push(warn(
+                "exit.presence_pad",
+                "presence_pad enabled without deliver_to/log_payloads — decoys are counted only (no egress sink)",
+            ));
+        }
+    }
+
     if !file.cover.enabled || !file.cover.require {
         report.checks.push(error(
             "cover",
@@ -263,6 +282,36 @@ pub fn validate_production_config(config_path: &Path) -> Result<ValidationReport
             "health_gossip.enabled",
             "false — production checklist recommends signed neighbor health gossip",
         ));
+    }
+
+    if file.metrics.allow_high_resolution {
+        report.checks.push(warn(
+            "metrics.allow_high_resolution",
+            "true — lab/privileged high-res scrape; GPA residual under flood \
+             (production should keep false and use MetricsExportGate cadence)",
+        ));
+    } else {
+        if file.metrics.min_scrape_interval_secs < 30 {
+            report.checks.push(warn(
+                "metrics.min_scrape_interval_secs",
+                format!(
+                    "{} — production checklist recommends >= 30s scrape cadence",
+                    file.metrics.min_scrape_interval_secs
+                ),
+            ));
+        }
+        if file.metrics.quantize_bucket <= 1 {
+            report.checks.push(warn(
+                "metrics.quantize_bucket",
+                "disabled — coarser buckets reduce scrape delta timing resolution",
+            ));
+        }
+        if !file.metrics.suppress_ingress_drop_detail {
+            report.checks.push(warn(
+                "metrics.suppress_ingress_drop_detail",
+                "false — IngressRateLimitStats.dropped_frames exported; confirms flood volume",
+            ));
+        }
     }
 
     if file.peers.is_empty() {
@@ -385,6 +434,70 @@ allow_unverified_roster = true
             .iter()
             .any(|c| c.field == "kem.allow_plaintext_kem"));
         assert!(report.checks.iter().any(|c| c.field == "trace.path"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_warns_on_metrics_high_resolution() {
+        let dir = test_dir("metrics-hires");
+        fs::create_dir_all(&dir).unwrap();
+        let mut rng = OsRng;
+        let authority = ConsortiumKey::generate(&mut rng);
+        let (roster_path, pk) = write_verified_roster(&dir, &authority);
+        let seed_path = dir.join(DEFAULT_KEM_SEED_FILENAME);
+        persist_kem_seeds_file(&seed_path, &fixed_seeds()).unwrap();
+
+        let config_path = dir.join("node.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[kem]
+file = "{DEFAULT_KEM_SEED_FILENAME}"
+
+[link]
+handshake = "auto"
+max_cells_per_sec = 2.86
+noise_static_secret = "aa00000000000000000000000000000000000000000000000000000000000000"
+
+[cover]
+enabled = true
+require = true
+
+[metrics]
+allow_high_resolution = true
+
+[roster]
+path = "{roster_path}"
+threshold = 1
+allow_unverified_roster = false
+authority_pubkeys = ["{pk}"]
+
+[health_gossip]
+enabled = true
+signing_seed = "bb00000000000000000000000000000000000000000000000000000000000000"
+
+[[peers]]
+id = "0200000000000000000000000000000000000000000000000000000000000000"
+addr = "127.0.0.1:9001"
+link_key = "cc00000000000000000000000000000000000000000000000000000000000000"
+gossip_verifying_key = "dd00000000000000000000000000000000000000000000000000000000000000"
+noise_static_public = "ee00000000000000000000000000000000000000000000000000000000000000"
+"#
+            ),
+        )
+        .unwrap();
+
+        let report = validate_production_config(&config_path).unwrap();
+        assert!(report.ok(), "high-res is warn-only: {report}");
+        assert!(report
+            .checks
+            .iter()
+            .any(|c| c.field == "metrics.allow_high_resolution"));
 
         let _ = fs::remove_dir_all(&dir);
     }

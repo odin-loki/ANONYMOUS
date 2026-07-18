@@ -1,16 +1,18 @@
 # Cross-relay health gossip (`PeerHealthAdvert`)
 
-**Status:** Partial (2026-07-17)  
+**Status:** Partial (2026-07-18) — **stacked** eclipse defense productized  
 **Scope:** Signed, neighbor-only failure-rate gossip over hop links with
-**BFT-lite quorum append log** + **lightweight majority / median merge**.
-**Not** multi-org BFT consensus.
+**BFT-lite quorum append log** + **stacked** merge (`raised_k` + `min_orgs` +
+eclipse-detect quarantine). **Not** multi-org BFT consensus.
 
 ## Goal
 
 Relays share local peer-health observations so pruning / ledger updates can incorporate
 second-hand signals from admitted neighbors, without a global reputation consensus.
 A single malicious neighbor must not unilaterally demote a subject: receivers wait for
-`K` distinct authority reporters and apply the **median** failure rate.
+`K` distinct authority reporters **and** `min_orgs` diversity keys, apply the **median**
+failure rate at half weight, and optionally **quarantine** medians that look eclipsed
+vs local/honest baseline.
 
 ## Wire format
 
@@ -40,13 +42,32 @@ Signed body (canonical): `reporter || subject || successes || failures || timest
    **epoch** (`timestamp_secs / interval_secs`). Conflicting payloads for the same
    `(epoch, reporter, subject)` are rejected (**equivocation**). When `majority_k`
    distinct **authority** reporters (peers with `gossip_verifying_key`) have appended
-   for the same `(epoch, subject)`, the **median** failure rate is applied at **half
-   weight** (`GOSSIP_WEIGHT = 1/2`).
-6. Set `majority_k = 1` to restore legacy immediate merge (lab / single-neighbor).
+   for the same `(epoch, subject)` **and** `min_orgs` distinct diversity keys are
+   present, the **median** failure rate is applied at **half weight**
+   (`GOSSIP_WEIGHT = 1/2`) unless eclipse-detect quarantines it.
+6. Set `majority_k = 1` and `min_orgs = 1` with `eclipse_detect = false` to restore
+   legacy immediate merge (lab / single-neighbor).
 
 This is **not** Byzantine agreement across organizations: colluding `K` admitted
-neighbors can still bias the median; there is no cross-relay global quorum or
-multi-org BFT.
+neighbors that also meet `min_orgs` (multi-org collusion) can still bias the median;
+there is no cross-relay global quorum or multi-org BFT. Full eclipse (`f=1`) still
+saturates — quarantine discards bad merges but cannot invent honest signal.
+
+## Stacked merge policy (sim S5 → product)
+
+| Knob | Default | Role |
+|------|---------|------|
+| `majority_k` | **4** | Raised K (sim `raised_k` / `CI_DEFENSE_K`) |
+| `min_orgs` | **2** | Distinct `org_id` (else `jurisdiction`) labels in the quorum |
+| `eclipse_detect` | **true** | Quarantine when median ≥ baseline + `eclipse_median_gap` |
+| `eclipse_median_gap` | 0.45 | Sim `ECLIPSE_MEDIAN_GAP` |
+| `eclipse_local_min_samples` | 8 | Prefer local subject fail-rate as baseline when enough samples |
+| `eclipse_honest_baseline` | 0.10 | Fallback baseline (sim `HONEST_FAIL_RATE`) |
+
+Diversity key resolution: `org:{org_id}` → else `jur:{jurisdiction}` → else
+`rid:{reporter_hex}` (unlabeled peers count as distinct — **availability fail-open**;
+set `org_id` / `jurisdiction` on peers for the diversity gate to bite against same-org
+collusion).
 
 ## Node TOML
 
@@ -56,7 +77,12 @@ enabled = true
 signing_seed = "<64 hex chars of Ed25519 seed>"
 # or: signing_key_file = "gossip.seed"
 interval_secs = 60
-majority_k = 2   # distinct authority reporters before median merge (default 2)
+majority_k = 4          # stacked default (was 2)
+min_orgs = 2            # require cross-org/jurisdiction quorum
+eclipse_detect = true   # quarantine high-gap medians
+# eclipse_median_gap = 0.45
+# eclipse_local_min_samples = 8
+# eclipse_honest_baseline = 0.10
 quorum_log_path = "data/health_quorum.log"   # optional; omit for in-memory only
 
 [[peers]]
@@ -64,12 +90,15 @@ id = "..."
 addr = "..."
 link_key = "..."
 gossip_verifying_key = "<64 hex chars of peer Ed25519 VK>"
+org_id = "acme"           # preferred diversity label
+jurisdiction = "US"       # used if org_id omitted
 ```
 
 When enabled with a signing seed, `aegis-node` periodically snapshots local health windows
 (with enough samples) and sends a signed advert about each subject to every peer-table
 neighbor via the link-bridge gossip channel. Inbound accept uses
-`accept_advert_quorum` → `HealthQuorumLog` when gossip is enabled.
+`accept_advert_quorum` → `HealthQuorumLog` when gossip is enabled; merge policy comes
+from `HealthGossipConfig::merge_policy()` → `PeerHealthTracker::with_policy`.
 
 ## Code map
 
@@ -77,7 +106,7 @@ neighbor via the link-bridge gossip channel. Inbound accept uses
 |-------|----------|
 | Advert encode/sign/verify | `crates/aegis-relay/src/health_gossip.rs` |
 | BFT-lite quorum append log | `crates/aegis-relay/src/health_quorum_log.rs` |
-| Majority buffer + median merge | `PeerHealthTracker::apply_gossip_outcomes` in `peer_health.rs` |
+| Stacked buffer + median + quarantine | `PeerHealthTracker` / `GossipMergePolicy` in `peer_health.rs` |
 | Inbound accept + outbound dispatcher | `crates/aegis-relay/src/net.rs` |
 | Config + emit loop | `crates/aegis-node/src/{config,main}.rs` |
 
@@ -92,7 +121,8 @@ neighbor via the link-bridge gossip channel. Inbound accept uses
 | `failures` (u64 LE) | 8 |
 | Ed25519 signature | 64 |
 
-Append-only; replay on startup rebuilds pending quorum state.
+Append-only; replay on startup rebuilds pending quorum state. Org labels are **not**
+persisted in the log record — replay uses per-reporter diversity keys.
 
 ### Optional epoch checkpoint
 
@@ -105,21 +135,23 @@ This is a **local audit artifact**, not multi-org BFT agreement.
 ## Residual
 
 - **External:** multi-org BFT reputation consensus — not in scope for this gossip path.
-- `K` colluding admitted neighbors can still shift the median within one org.
+- Colluding multi-org adversaries that meet `min_orgs` can still shift the median.
+- Full eclipse (`f=1`): no honest reporters → FP still saturates; quarantine helps only
+  when a local/honest baseline exists to compare against.
+- Eclipse heuristic false-positives possible under genuine correlated outages.
 - Unidentified ingress (shared ingress key) cannot source gossip.
 - Clock skew / replay of fresh-enough adverts is accepted within the age window.
 
-## Sim profiling (wave C1) — [O] QUANTIFIED Partial
+## Sim profiling (wave C1 / S5) — [O] QUANTIFIED Partial
 
 Pure-Python twin of the merge math (not a close claim):
 
 | Piece | Location |
 |-------|----------|
-| Model | `sim/aegis_sim/gossip_eclipse.py` |
-| CI artifact | `sim/data/gossip_eclipse.analysis.json` |
-| Offline grid | `sim/data/gossip_eclipse_offline.json` |
-| Gates | `sim/tests/test_gossip_eclipse.py` |
-| Regen | `cd sim && PYTHONPATH=. python scripts/run_gossip_eclipse.py [--offline]` |
+| Baseline model | `sim/aegis_sim/gossip_eclipse.py` |
+| Defenses (`stacked`) | `sim/aegis_sim/gossip_eclipse_defense.py` |
+| CI artifacts | `sim/data/gossip_eclipse*.json`, `gossip_eclipse_defense.analysis.json` |
+| Gates | `sim/tests/test_gossip_eclipse.py` (+ defense tests) |
 
 **What it measures** (victim with `N` neighbors, adversarial fraction `f`, `majority_k=K`):
 
@@ -127,14 +159,6 @@ Pure-Python twin of the merge math (not a close claim):
 - **False probation** — P(window fail-rate ≥ 0.40) for an honest subject
 - **Eclipse** — fraction of epochs where adversaries form a pure-adv `K`-quorum (coordinated report-first)
 
-**Headline slices (CI artifact, N=8, honest≈0.10 / attack≈1.0):**
-
-| f | K | Solo quorum? | mean bias | false probation | eclipse epochs |
-|---|---|--------------|-----------|-----------------|----------------|
-| 0.0 | 2 | no | ~0 | 0 | 0 |
-| 0.125 | 3 | no | ~0 | 0 | 0 (honest-majority median) |
-| 0.25 | 3 | no | ~0.45 | ~1 | 0 (2-of-3 mixed median still attack) |
-| 0.5 | 2 | yes | ~0.45 | ~1 | ~1 |
-| 1.0 | 2 | yes | ~0.90 | ~1 | ~1 |
-
-Raising `K` above `adv_count` blocks *solo* eclipse; it does **not** make the path BFT — adversaries who hold a majority inside a mixed `K`-set still own the median. Multi-org BFT remains **External**.
+Raising `K` above `adv_count` blocks *solo* eclipse; `min_orgs` + eclipse-detect cut
+FP under partial `f`. Neither makes the path BFT — multi-org BFT remains **External**.
+`f=1` still saturates.

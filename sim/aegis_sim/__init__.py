@@ -18,6 +18,8 @@ Modules:
                  - wave S4: exit-window pad / decoy defenses ranked vs tip-intersection + volume rank
     cover_multihop_defense
                  - wave S4: cover onions / matched discard ranked vs multi-hop semantic gap
+    metrics_scrape_defense
+                 - wave A5: cadence / quantize / suppress-drops ranked vs C5 scrape Pearson
     fused_adversary
                  - adaptive recompromise ∩ Mode-1 active/intersection coupling (C2)
     faction_sybil_skew
@@ -50,6 +52,7 @@ __all__ = [
     "exit_tier_intersection",
     "exit_tier_defense",
     "cover_multihop_defense",
+    "metrics_scrape_defense",
     "fused_adversary",
     "faction_sybil_skew",
     "ac_nullifier_unlinkability",

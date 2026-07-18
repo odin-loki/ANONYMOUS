@@ -39,11 +39,12 @@ That path validates compose YAML + pilot TOML shape only — it does **not** sta
 | Cover egress | Cover pacing **on** (default τ-paced emitter; do not disable for “performance”) | Sender-side unobservability depends on constant-rate cover |
 | Ingress limits | Token bucket enabled; tune **`max_cells_per_sec`** / peer budgets for your τ | Prevents adversarial flood ([`RESEARCH_OPS_STATUS.md`](RESEARCH_OPS_STATUS.md) #8) |
 | Ingress KEM binding | Optional **`kem_commitment`** + **`link.require_ingress_kem_commitment = true`** | Binds ingress handshake MAC to roster KEM; fails closed without commitment ([`AEGIS_implementation_threat_model.md`](../AEGIS_implementation_threat_model.md)) |
-| Coarse metrics scrape | Poll **`RelayHandle::coarse_stats`** at most **once per 30s** | High-frequency scrape of `processed_fail` / `queue_dropped` retains GPA residual under flood |
+| Coarse metrics scrape | Use **`MetricsExportGate`** / `[metrics]` defaults (min **30s**, quantize **16**, suppress ingress drops); do not poll raw `coarse_stats` for dashboards | High-res / privileged observers retain GPA residual under flood ([`metrics_scrape_defense.md`](metrics_scrape_defense.md)) |
 | Health gossip | **`[health_gossip] enabled = true`**, **`signing_seed`** or **`signing_key_file`**, peer **`gossip_verifying_key`** set | Signed neighbor health with BFT-lite quorum ([`health_gossip.md`](health_gossip.md)) |
 | Reputation | Issuer pubkey loaded; **`verify_and_spend`** / nullifier registry; presentations **signed** by issuer | Anonymous reputation path is Partial — do not skip verifier steps ([`anonymous_reputation.md`](anonymous_reputation.md)) |
 | Lab flags off | **`allow_unverified_roster = false`**; no `load_from_file_unverified` in production wiring | Explicit unverified roster is test/lab only |
 | Trace / debug | **`[trace].path` unset** on mix relays; exit sink only on designated exit hops | Relay forward trace is capture instrumentation, not production default ([`AEGIS_phase8_hardening_notes.md`](../AEGIS_phase8_hardening_notes.md) §5) |
+| Exit presence pad | **`[exit].presence_pad = false`** (default) on all relays; enable only on exit hops if accepting bandwidth cost | Matched-Q decoy/idle pad; clearnet GPA residual remains ([`exit_tier_defense.md`](exit_tier_defense.md)) |
 
 ## KEM / secrets (Unix)
 

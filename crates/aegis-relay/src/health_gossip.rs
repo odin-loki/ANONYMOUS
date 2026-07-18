@@ -6,10 +6,11 @@
 //! that never enter Sphinx reassembly. Receivers verify the Ed25519 signature
 //! and accept only from admitted peer-table neighbors.
 //!
-//! **Lightweight majority merge:** verified adverts are buffered per subject until
-//! [`DEFAULT_GOSSIP_MAJORITY_K`] distinct reporters observe the same subject; then
-//! the **median** reported failure rate is applied at half weight. This reduces
-//! single-malicious-neighbor bias; it is **not** BFT.
+//! **Stacked merge (sim S5):** verified adverts are buffered per subject until
+//! [`DEFAULT_GOSSIP_MAJORITY_K`] distinct reporters **and** `min_orgs` diversity
+//! keys observe the same subject; then the **median** failure rate is applied at
+//! half weight, unless eclipse-detect quarantines a high-gap median. This reduces
+//! single-malicious-neighbor / same-org bias; it is **not** BFT.
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,7 +19,7 @@ use aegis_crypto::cell::{Cell, Command, CELL_LEN};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use thiserror::Error;
 
-use crate::peer_health::{GossipMergeOutcome, PeerHealthTracker};
+use crate::peer_health::{gossip_diversity_key, GossipMergeOutcome, PeerHealthTracker};
 use crate::health_quorum_log::{advert_epoch, HealthQuorumLog, QuorumAppendOutcome, QuorumLogError};
 use crate::relay_id::RelayId;
 
@@ -36,8 +37,10 @@ pub const ADVERT_WIRE_LEN: usize = ADVERT_BODY_LEN + ADVERT_SIG_LEN;
 pub const DEFAULT_MAX_ADVERT_AGE_SECS: u64 = 3600;
 
 pub use crate::peer_health::{
-    GossipMergeOutcome as GossipAcceptOutcome, DEFAULT_GOSSIP_MAJORITY_K as GOSSIP_MAJORITY_K,
-    GOSSIP_WEIGHT_DEN, GOSSIP_WEIGHT_NUM,
+    GossipMergeOutcome as GossipAcceptOutcome, GossipMergePolicy,
+    DEFAULT_ECLIPSE_DETECT, DEFAULT_ECLIPSE_HONEST_BASELINE, DEFAULT_ECLIPSE_LOCAL_MIN_SAMPLES,
+    DEFAULT_ECLIPSE_MEDIAN_GAP, DEFAULT_GOSSIP_MAJORITY_K as GOSSIP_MAJORITY_K,
+    DEFAULT_GOSSIP_MIN_ORGS, GOSSIP_WEIGHT_DEN, GOSSIP_WEIGHT_NUM,
 };
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -169,8 +172,10 @@ pub fn unix_timestamp_secs() -> u64 {
 /// - `reporter` must appear in `peer_table` (admitted neighbor).
 /// - Signature must verify under that peer's configured gossip verifying key.
 /// - Timestamp must be within `max_age_secs` of `now_secs` (and not far future).
-/// - Buffered until `tracker.gossip_majority_k()` distinct reporters; then median
-///   failure rate applied at [`GOSSIP_WEIGHT_NUM`]/[`GOSSIP_WEIGHT_DEN`] weight.
+/// - Buffered until `tracker.gossip_majority_k()` distinct reporters **and**
+///   `min_orgs` diversity keys; then median failure rate applied at
+///   [`GOSSIP_WEIGHT_NUM`]/[`GOSSIP_WEIGHT_DEN`] weight unless eclipse-detect
+///   quarantines the merge.
 pub fn accept_advert(
     advert: &PeerHealthAdvert,
     link_peer: RelayId,
@@ -202,11 +207,17 @@ pub fn accept_advert(
         return Err(HealthGossipError::StaleTimestamp);
     }
 
+    let diver = gossip_diversity_key(
+        peer.org_id.as_deref(),
+        peer.jurisdiction.as_deref(),
+        &advert.reporter,
+    );
     Ok(tracker.ingest_gossip_observation(
         advert.reporter,
         advert.subject,
         advert.successes,
         advert.failures,
+        diver,
     ))
 }
 
@@ -245,6 +256,12 @@ pub fn accept_advert_quorum(
         return Err(HealthGossipError::StaleTimestamp);
     }
 
+    let diver = gossip_diversity_key(
+        peer.org_id.as_deref(),
+        peer.jurisdiction.as_deref(),
+        &advert.reporter,
+    );
+
     let Some(log) = quorum_log else {
         advert.verify(&vk)?;
         return Ok(tracker.ingest_gossip_observation(
@@ -252,12 +269,13 @@ pub fn accept_advert_quorum(
             advert.subject,
             advert.successes,
             advert.failures,
+            diver,
         ));
     };
 
     let epoch = advert_epoch(advert.timestamp_secs, epoch_secs);
     let outcome = log
-        .append_verified(epoch, advert, &vk, tracker)
+        .append_verified(epoch, advert, &vk, tracker, diver)
         .map_err(|e| match e {
             QuorumLogError::BadSignature => HealthGossipError::BadSignature,
             QuorumLogError::Equivocation => HealthGossipError::Equivocation,
@@ -266,7 +284,29 @@ pub fn accept_advert_quorum(
         })?;
     Ok(match outcome {
         QuorumAppendOutcome::Buffered { have, need } => GossipMergeOutcome::Buffered { have, need },
-        QuorumAppendOutcome::Applied { reporters } => GossipMergeOutcome::Applied { reporters },
+        QuorumAppendOutcome::WaitingDiversity {
+            have,
+            distinct_orgs,
+            need_orgs,
+        } => GossipMergeOutcome::WaitingDiversity {
+            have,
+            distinct_orgs,
+            need_orgs,
+        },
+        QuorumAppendOutcome::Applied {
+            reporters,
+            distinct_orgs,
+        } => GossipMergeOutcome::Applied {
+            reporters,
+            distinct_orgs,
+        },
+        QuorumAppendOutcome::Quarantined {
+            reporters,
+            distinct_orgs,
+        } => GossipMergeOutcome::Quarantined {
+            reporters,
+            distinct_orgs,
+        },
         QuorumAppendOutcome::Duplicate => GossipMergeOutcome::Buffered {
             have: log.majority_k(),
             need: log.majority_k(),
@@ -342,7 +382,10 @@ mod tests {
             &tracker,
         )
         .unwrap();
-        assert_eq!(out, GossipMergeOutcome::Applied { reporters: 1 });
+        assert!(matches!(
+            out,
+            GossipMergeOutcome::Applied { reporters: 1, .. }
+        ));
         // 8/2 at 1/2 weight → 4 ok, 1 fail → rate 0.2
         let rate = tracker.failure_rate(subject).unwrap();
         assert!((rate - 0.2).abs() < 1e-9);
@@ -424,7 +467,10 @@ mod tests {
             &tracker,
         )
         .unwrap();
-        assert_eq!(out, GossipMergeOutcome::Applied { reporters: 3 });
+        assert!(matches!(
+            out,
+            GossipMergeOutcome::Applied { reporters: 3, .. }
+        ));
 
         let rate = tracker.failure_rate(subject).unwrap();
         assert!(
@@ -474,9 +520,70 @@ mod tests {
     }
 
     #[test]
-    fn default_majority_k_is_two() {
-        assert_eq!(GOSSIP_MAJORITY_K, 2);
+    fn default_majority_k_is_stacked_four() {
+        assert_eq!(GOSSIP_MAJORITY_K, 4);
+        assert_eq!(DEFAULT_GOSSIP_MIN_ORGS, 2);
+        assert!(DEFAULT_ECLIPSE_DETECT);
         assert_eq!(GOSSIP_WEIGHT_NUM, 1);
         assert_eq!(GOSSIP_WEIGHT_DEN, 2);
+    }
+
+    #[test]
+    fn stacked_accept_waits_for_org_diversity() {
+        let k_a = sk(1);
+        let k_b = sk(2);
+        let subject = id(60);
+        let mut table = HashMap::new();
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        table.insert(
+            RelayId(id(1)),
+            PeerInfo::new(addr, [0u8; 32])
+                .with_gossip_verifying_key(k_a.verifying_key().to_bytes())
+                .with_org_id("evil"),
+        );
+        table.insert(
+            RelayId(id(2)),
+            PeerInfo::new("127.0.0.1:2".parse().unwrap(), [0u8; 32])
+                .with_gossip_verifying_key(k_b.verifying_key().to_bytes())
+                .with_org_id("evil"),
+        );
+        let tracker = PeerHealthTracker::with_policy(GossipMergePolicy {
+            majority_k: 2,
+            min_orgs: 2,
+            eclipse_detect: false,
+            ..GossipMergePolicy::stacked()
+        });
+        let a1 = PeerHealthAdvert::sign(&k_a, id(1), subject, 0, 100, 100);
+        let a2 = PeerHealthAdvert::sign(&k_b, id(2), subject, 0, 100, 100);
+        assert!(matches!(
+            accept_advert(
+                &a1,
+                RelayId(id(1)),
+                &table,
+                100,
+                DEFAULT_MAX_ADVERT_AGE_SECS,
+                &tracker
+            )
+            .unwrap(),
+            GossipMergeOutcome::Buffered { .. }
+        ));
+        let out = accept_advert(
+            &a2,
+            RelayId(id(2)),
+            &table,
+            100,
+            DEFAULT_MAX_ADVERT_AGE_SECS,
+            &tracker,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            GossipMergeOutcome::WaitingDiversity {
+                have: 2,
+                distinct_orgs: 1,
+                need_orgs: 2
+            }
+        );
+        assert!(tracker.failure_rate(subject).is_none());
     }
 }

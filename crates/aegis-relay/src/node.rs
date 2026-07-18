@@ -30,7 +30,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::config::{BulkCoverConfig, CoverPolicyError, RelayConfig};
-use crate::cover_flow::{BulkRoundCommand, BulkRoundTracker, CoverFlowConfig};
+use crate::cover_flow::{BulkRoundCommand, BulkRoundTracker};
 use crate::delay::sample_mixing_delay;
 use crate::relay_id::RelayId;
 
@@ -66,6 +66,10 @@ pub struct ForwardedPacket {
 }
 
 /// GPA-safe aggregate counters for external-facing surfaces (metrics, health checks).
+///
+/// Prefer [`crate::metrics_export::MetricsExportGate`] for scrapers so production
+/// cadence / quantization / drop-suppression apply. Calling [`RelayHandle::coarse_stats`]
+/// directly bypasses that policy (in-process / privileged residual).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelayCoarseStats {
     /// Successfully processed ingress packets (forwarded, loop-returned, or dropped cover).
@@ -191,9 +195,22 @@ pub struct RelayHandle {
 }
 
 impl RelayHandle {
-    /// Aggregate counters safe for external export (no per-error-type breakdown).
+    /// Aggregate counters (no per-error-type breakdown).
+    ///
+    /// For external scrapers, wrap through [`crate::metrics_export::MetricsExportGate`]
+    /// rather than polling this at high frequency under flood.
     pub fn coarse_stats(&self) -> RelayCoarseStats {
         self.stats.coarse()
+    }
+
+    /// Apply [`crate::metrics_export::MetricsExportGate`] to current coarse counters
+    /// (ingress drops omitted / passed as `0` — pair with link-bridge stats for that).
+    pub fn export_coarse_stats(
+        &self,
+        gate: &crate::metrics_export::MetricsExportGate,
+    ) -> Result<crate::metrics_export::ExportedRelayStats, crate::metrics_export::MetricsExportError>
+    {
+        gate.export(self.coarse_stats(), 0)
     }
 
     /// Fine-grained counters for tests and in-process diagnostics only.
@@ -279,7 +296,7 @@ impl RelayNode {
             round_tx,
         };
         let replay = Arc::new(Mutex::new(ReplayCache::new()));
-        let cover_config = CoverFlowConfig::default();
+        let cover_config = self.config.bulk_cover.cover_flow_config();
 
         let join = tokio::spawn(async move {
             let mut inbound = inbound;
@@ -741,6 +758,7 @@ mod tests {
             dial: SecurityDial::L2UniformBatched,
             target_flow_count: 3,
             round_secs: 0,
+            ..BulkCoverConfig::default()
         };
         let node = RelayNode::new(
             guard_id,

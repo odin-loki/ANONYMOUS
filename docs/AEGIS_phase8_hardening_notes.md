@@ -136,20 +136,28 @@ TOML (`crates/aegis-node/src/config.rs`):
 [exit]
 log_payloads = true              # stderr hex preview of peeled payload
 deliver_to = "stdout"            # or "file:/path/to/exit.log"
+# Wave A2 — matched-Q presence pad (sim presence_pad); default off; exit hops only
+# presence_pad = true
+# pad_q = 10
+# epoch_ms = 1000
+# presence_rate_pct = 55
 ```
 
 Wiring: `aegis-node` spawns [`spawn_exit_sink`](../../crates/aegis-node/src/exit_sink.rs)
 and passes the channel to [`spawn_link_bridge`](../../crates/aegis-relay/src/net.rs)
 as `exit_tx`. Payload bytes are trimmed from the Sphinx delta region (trailing
-zero padding stripped) and written as hex lines.
+zero padding stripped) and written as hex lines. When `presence_pad = true`, the
+sink pads active epochs up to `pad_q` and may inject idle decoys (see
+[`exit_tier_defense.md`](ops/exit_tier_defense.md)).
 
 Tests: `tcp_testnet_exit_sink_file_receives_payload` in
-`crates/aegis-node/tests/tcp_testnet.rs`.
+`crates/aegis-node/tests/tcp_testnet.rs`; unit/async pad tests in `exit_sink.rs`.
 
 **Residual:** `aegis-node` passes `exit_tx: None` when `[exit]` is unset (correct for
 mix relays). Multi-process capture enables a file sink on the last hop only
 (`sim/data/testnet_configs/exit_peels.log` via `[exit].deliver_to` in
-`capture_multiprocess_trace.py` / `multiprocess_trace_capture.rs`).
+`capture_multiprocess_trace.py` / `multiprocess_trace_capture.rs`). Presence pad
+does **not** close clearnet GPA; `pool_hard_cap` remains sim-only.
 
 ### Post-forward timestamp trace (relay vantage, off by default)
 Optional instrumentation records **post-shaping** wire events: immediately after a

@@ -26,9 +26,13 @@ use std::path::{Path, PathBuf};
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_negotiator::SecurityDial;
 use aegis_relay::{
-    BulkCoverConfig, IngressRateLimitConfig, LinkBridgeConfig, LinkHandshakeMode, PeerInfo,
-    RelayConfig, RelayId, DEFAULT_COVER_ROUND_SECS, DEFAULT_COVER_TARGET_FLOW_COUNT,
-    DEFAULT_GLOBAL_MAX_CELLS_PER_SEC, DEFAULT_INGRESS_BURST, DEFAULT_INGRESS_MAX_CELLS_PER_SEC,
+    BulkCoverConfig, CoverMultihopDefense, GossipMergePolicy, IngressRateLimitConfig,
+    LinkBridgeConfig, LinkHandshakeMode, MetricsExportConfig, PeerInfo, RelayConfig, RelayId,
+    DEFAULT_COVER_ONION_FLOWS, DEFAULT_COVER_ROUND_SECS, DEFAULT_COVER_TARGET_FLOW_COUNT,
+    DEFAULT_ECLIPSE_DETECT, DEFAULT_ECLIPSE_HONEST_BASELINE, DEFAULT_ECLIPSE_LOCAL_MIN_SAMPLES,
+    DEFAULT_ECLIPSE_MEDIAN_GAP, DEFAULT_GLOBAL_MAX_CELLS_PER_SEC, DEFAULT_GOSSIP_MIN_ORGS,
+    DEFAULT_INGRESS_BURST, DEFAULT_INGRESS_MAX_CELLS_PER_SEC, DEFAULT_MATCHED_COVER_FLOWS,
+    DEFAULT_MIN_SCRAPE_INTERVAL_SECS, DEFAULT_QUANTIZE_BUCKET,
 };
 use aegis_topology::{
     GuardMitigationFileConfig, GuardMitigationPolicy, RelayRoster, RosterError, ThresholdConsortium,
@@ -110,6 +114,68 @@ pub struct NodeConfigFile {
     /// client paths — **clients enforce** via [`GuardMitigationPolicy`] at path build.
     #[serde(default)]
     pub guard_mitigation: GuardMitigationFileConfig,
+    /// External coarse-metrics export policy (GPA scrape harden; wave A4).
+    #[serde(default)]
+    pub metrics: MetricsFileConfig,
+}
+
+/// TOML `[metrics]` — external scrape harden for `RelayCoarseStats` /
+/// `IngressRateLimitStats` (see `aegis_relay::metrics_export`).
+///
+/// Production defaults: min cadence 30s, quantize bucket 16, suppress ingress
+/// drop detail. Set `allow_high_resolution = true` only for lab/privileged
+/// observers (GPA residual under flood).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MetricsFileConfig {
+    /// Minimum seconds between successful external scrapes (`0` disables cadence).
+    #[serde(default = "default_metrics_min_scrape_interval_secs")]
+    pub min_scrape_interval_secs: u64,
+    /// Floor exported counters to multiples of this bucket (`0`/`1` = off).
+    #[serde(default = "default_metrics_quantize_bucket")]
+    pub quantize_bucket: u64,
+    /// Lab opt-in: skip cadence / quantize / drop suppression.
+    #[serde(default)]
+    pub allow_high_resolution: bool,
+    /// When true (and not high-res), omit `IngressRateLimitStats.dropped_frames`.
+    #[serde(default = "default_true")]
+    pub suppress_ingress_drop_detail: bool,
+}
+
+fn default_metrics_min_scrape_interval_secs() -> u64 {
+    DEFAULT_MIN_SCRAPE_INTERVAL_SECS
+}
+
+fn default_metrics_quantize_bucket() -> u64 {
+    DEFAULT_QUANTIZE_BUCKET
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for MetricsFileConfig {
+    fn default() -> Self {
+        Self {
+            min_scrape_interval_secs: default_metrics_min_scrape_interval_secs(),
+            quantize_bucket: default_metrics_quantize_bucket(),
+            allow_high_resolution: false,
+            suppress_ingress_drop_detail: default_true(),
+        }
+    }
+}
+
+impl MetricsFileConfig {
+    pub fn into_export_config(&self) -> MetricsExportConfig {
+        if self.allow_high_resolution {
+            return MetricsExportConfig::lab_high_resolution();
+        }
+        MetricsExportConfig {
+            min_scrape_interval: std::time::Duration::from_secs(self.min_scrape_interval_secs),
+            quantize_bucket: self.quantize_bucket,
+            allow_high_resolution: false,
+            suppress_ingress_drop_detail: self.suppress_ingress_drop_detail,
+        }
+    }
 }
 
 /// TOML `[reputation]` — EWMA ledger persistence for this relay process.
@@ -280,6 +346,20 @@ impl ReputationConfig {
 }
 
 /// TOML `[cover]` — bulk cover round auto-start / fail-closed policy.
+///
+/// ## Multi-hop defense (opt-in, wave A3)
+///
+/// ```toml
+/// [cover]
+/// enabled = true
+/// require = true
+/// # Prefer matched_local_discard to align discard volume across peer hops.
+/// multihop_defense = "matched_local_discard"
+/// matched_cover_flows = 2
+/// # Or scaffold only (still local-discard; no Sphinx continuity claim):
+/// # multihop_defense = "cover_onions_scaffold"
+/// # cover_onion_flows = 1
+/// ```
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CoverFileConfig {
     /// Open L2 bulk rounds and emit cover on the cover channel (default true).
@@ -294,6 +374,18 @@ pub struct CoverFileConfig {
     /// Seconds between end/begin rotation so cover can emit (default 30; 0 = begin once).
     #[serde(default = "default_cover_round_secs")]
     pub round_secs: u64,
+    /// Multi-hop cover defense (`baseline_local_discard` default).
+    ///
+    /// Accepted: `baseline` / `baseline_local_discard`, `matched` /
+    /// `matched_local_discard`, `cover_onions` / `cover_onions_scaffold`.
+    #[serde(default = "default_cover_multihop_defense")]
+    pub multihop_defense: String,
+    /// Fixed cover flows per round under matched local discard.
+    #[serde(default = "default_matched_cover_flows")]
+    pub matched_cover_flows: u32,
+    /// Scaffold cover-onion flows (still discarded before peel).
+    #[serde(default = "default_cover_onion_flows")]
+    pub cover_onion_flows: u32,
 }
 
 impl Default for CoverFileConfig {
@@ -303,19 +395,30 @@ impl Default for CoverFileConfig {
             require: default_cover_require(),
             target_flow_count: default_cover_target(),
             round_secs: default_cover_round_secs(),
+            multihop_defense: default_cover_multihop_defense(),
+            matched_cover_flows: default_matched_cover_flows(),
+            cover_onion_flows: default_cover_onion_flows(),
         }
     }
 }
 
 impl CoverFileConfig {
-    pub fn into_bulk_cover(self) -> BulkCoverConfig {
-        BulkCoverConfig {
+    pub fn into_bulk_cover(self) -> Result<BulkCoverConfig, ConfigError> {
+        let multihop_defense = CoverMultihopDefense::parse(&self.multihop_defense).ok_or(
+            ConfigError::Hex(
+                "cover.multihop_defense must be baseline_local_discard | matched_local_discard | cover_onions_scaffold",
+            ),
+        )?;
+        Ok(BulkCoverConfig {
             enabled: self.enabled,
             require: self.require,
             dial: SecurityDial::L2UniformBatched,
             target_flow_count: self.target_flow_count,
             round_secs: self.round_secs,
-        }
+            multihop_defense,
+            matched_cover_flows: self.matched_cover_flows,
+            cover_onion_flows: self.cover_onion_flows,
+        })
     }
 }
 
@@ -333,6 +436,18 @@ fn default_cover_target() -> u32 {
 
 fn default_cover_round_secs() -> u64 {
     DEFAULT_COVER_ROUND_SECS
+}
+
+fn default_cover_multihop_defense() -> String {
+    CoverMultihopDefense::BaselineLocalDiscard.as_str().to_string()
+}
+
+fn default_matched_cover_flows() -> u32 {
+    DEFAULT_MATCHED_COVER_FLOWS
+}
+
+fn default_cover_onion_flows() -> u32 {
+    DEFAULT_COVER_ONION_FLOWS
 }
 
 /// Disk roster + consortium authority keys for signature re-verify on load.
@@ -645,6 +760,12 @@ pub struct PeerConfig {
     /// Optional peer Noise static public key (64 hex) for `handshake = "noise"`.
     #[serde(default)]
     pub noise_static_public: Option<String>,
+    /// Optional operator/org label for gossip `min_orgs` diversity.
+    #[serde(default)]
+    pub org_id: Option<String>,
+    /// Optional jurisdiction label used when `org_id` is unset.
+    #[serde(default)]
+    pub jurisdiction: Option<String>,
 }
 
 /// TOML `[health_gossip]` — signed `PeerHealthAdvert` exchange over hop links.
@@ -652,8 +773,10 @@ pub struct PeerConfig {
 /// When `enabled` and a signing seed is configured, the node periodically signs
 /// local peer-health windows and sends them as link-control cells. Receivers
 /// verify under each peer's `gossip_verifying_key`, buffer until `majority_k`
-/// distinct reporters, then merge the median failure rate at half weight.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// distinct reporters **and** `min_orgs` diversity keys, then merge the median
+/// failure rate at half weight (unless eclipse-detect quarantines it).
+/// Defaults match sim S5 `stacked` (fail-safe). Lightweight majority — not BFT.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct HealthGossipConfig {
     /// Emit and accept health-gossip cells (default false).
     #[serde(default)]
@@ -667,10 +790,25 @@ pub struct HealthGossipConfig {
     /// Seconds between gossip emission rounds (default 60).
     #[serde(default = "default_gossip_interval_secs")]
     pub interval_secs: u64,
-    /// Distinct neighbor adverts required before merging (default 2). Set `1`
-    /// for legacy immediate apply. Lightweight majority — not BFT.
+    /// Distinct neighbor adverts required before merging (default 4 / stacked).
+    /// Set `1` for lab immediate apply. Lightweight majority — not BFT.
     #[serde(default = "default_gossip_majority_k")]
     pub majority_k: usize,
+    /// Distinct org/jurisdiction labels required inside a K-quorum (default 2).
+    #[serde(default = "default_gossip_min_orgs")]
+    pub min_orgs: usize,
+    /// Quarantine merges whose median fail-rate exceeds local/honest baseline + gap.
+    #[serde(default = "default_eclipse_detect")]
+    pub eclipse_detect: bool,
+    /// Gap above baseline that triggers eclipse quarantine (default 0.45).
+    #[serde(default = "default_eclipse_median_gap")]
+    pub eclipse_median_gap: f64,
+    /// Local samples required before using the subject's local fail-rate as baseline.
+    #[serde(default = "default_eclipse_local_min_samples")]
+    pub eclipse_local_min_samples: u64,
+    /// Honest fail-rate baseline when local samples are thin (default 0.10).
+    #[serde(default = "default_eclipse_honest_baseline")]
+    pub eclipse_honest_baseline: f64,
     /// Optional path for the BFT-lite quorum append log (see `docs/ops/health_gossip.md`).
     #[serde(default)]
     pub quorum_log_path: Option<String>,
@@ -684,6 +822,26 @@ fn default_gossip_majority_k() -> usize {
     aegis_relay::DEFAULT_GOSSIP_MAJORITY_K
 }
 
+fn default_gossip_min_orgs() -> usize {
+    DEFAULT_GOSSIP_MIN_ORGS
+}
+
+fn default_eclipse_detect() -> bool {
+    DEFAULT_ECLIPSE_DETECT
+}
+
+fn default_eclipse_median_gap() -> f64 {
+    DEFAULT_ECLIPSE_MEDIAN_GAP
+}
+
+fn default_eclipse_local_min_samples() -> u64 {
+    DEFAULT_ECLIPSE_LOCAL_MIN_SAMPLES
+}
+
+fn default_eclipse_honest_baseline() -> f64 {
+    DEFAULT_ECLIPSE_HONEST_BASELINE
+}
+
 impl Default for HealthGossipConfig {
     fn default() -> Self {
         Self {
@@ -692,6 +850,11 @@ impl Default for HealthGossipConfig {
             signing_key_file: None,
             interval_secs: default_gossip_interval_secs(),
             majority_k: default_gossip_majority_k(),
+            min_orgs: default_gossip_min_orgs(),
+            eclipse_detect: default_eclipse_detect(),
+            eclipse_median_gap: default_eclipse_median_gap(),
+            eclipse_local_min_samples: default_eclipse_local_min_samples(),
+            eclipse_honest_baseline: default_eclipse_honest_baseline(),
             quorum_log_path: None,
         }
     }
@@ -709,10 +872,26 @@ impl HealthGossipConfig {
             Ok(None)
         }
     }
+
+    /// Build the relay merge policy from TOML (sanitized stacked defaults).
+    pub fn merge_policy(&self) -> GossipMergePolicy {
+        GossipMergePolicy {
+            majority_k: self.majority_k,
+            min_orgs: self.min_orgs,
+            eclipse_detect: self.eclipse_detect,
+            eclipse_median_gap: self.eclipse_median_gap,
+            eclipse_local_min_samples: self.eclipse_local_min_samples,
+            eclipse_honest_baseline: self.eclipse_honest_baseline,
+        }
+        .sanitize()
+    }
 }
 
 /// Exit delivery for terminal Sphinx peels (`deliver_to` and/or `log_payloads`).
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// Optional `[exit].presence_pad` (wave A2) emits matched-Q decoy/idle pad toward
+/// an egress rate target. **Default off** — enable on designated exit hops only.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExitConfig {
     /// Log peeled payload size + hex preview to stderr when true.
     #[serde(default)]
@@ -720,16 +899,84 @@ pub struct ExitConfig {
     /// `"stdout"` or `"file:path"` — off when omitted.
     #[serde(default)]
     pub deliver_to: Option<String>,
+    /// Opt-in matched-Q presence pad (sim `presence_pad`). Default false.
+    #[serde(default)]
+    pub presence_pad: bool,
+    /// Target cells per epoch when `presence_pad` is on (sim `pad_q`, default 10).
+    #[serde(default = "default_exit_pad_q")]
+    pub pad_q: u32,
+    /// Presence-pad epoch length in milliseconds (default 1000).
+    #[serde(default = "default_exit_epoch_ms")]
+    pub epoch_ms: u64,
+    /// Idle-epoch decoy injection probability percent 0–100 (sim 0.55 → 55).
+    #[serde(default = "default_exit_presence_rate_pct")]
+    pub presence_rate_pct: u8,
+}
+
+impl Default for ExitConfig {
+    fn default() -> Self {
+        Self {
+            log_payloads: false,
+            deliver_to: None,
+            presence_pad: false,
+            pad_q: default_exit_pad_q(),
+            epoch_ms: default_exit_epoch_ms(),
+            presence_rate_pct: default_exit_presence_rate_pct(),
+        }
+    }
+}
+
+fn default_exit_pad_q() -> u32 {
+    crate::exit_sink::DEFAULT_PRESENCE_PAD_Q
+}
+
+fn default_exit_epoch_ms() -> u64 {
+    crate::exit_sink::DEFAULT_PRESENCE_EPOCH_MS
+}
+
+fn default_exit_presence_rate_pct() -> u8 {
+    crate::exit_sink::DEFAULT_PRESENCE_RATE_PCT
 }
 
 impl ExitConfig {
     pub fn into_settings(self) -> Result<crate::exit_sink::ExitSinkSettings, ConfigError> {
+        if self.presence_pad {
+            if self.pad_q == 0 {
+                return Err(ConfigError::Hex(
+                    "exit.pad_q must be >= 1 when presence_pad is enabled",
+                ));
+            }
+            if self.epoch_ms == 0 {
+                return Err(ConfigError::Hex(
+                    "exit.epoch_ms must be >= 1 when presence_pad is enabled",
+                ));
+            }
+            if self.presence_rate_pct > 100 {
+                return Err(ConfigError::Hex(
+                    "exit.presence_rate_pct must be <= 100",
+                ));
+            }
+        }
         Ok(crate::exit_sink::ExitSinkSettings {
             log_payloads: self.log_payloads,
             deliver_to: self
                 .deliver_to
                 .map(|s| parse_exit_deliver_to(&s))
                 .transpose()?,
+            presence_pad: crate::exit_sink::PresencePadSettings {
+                enabled: self.presence_pad,
+                pad_q: if self.pad_q == 0 {
+                    default_exit_pad_q()
+                } else {
+                    self.pad_q
+                },
+                epoch_ms: if self.epoch_ms == 0 {
+                    default_exit_epoch_ms()
+                } else {
+                    self.epoch_ms
+                },
+                presence_rate_pct: self.presence_rate_pct.min(100),
+            },
         })
     }
 }
@@ -778,6 +1025,8 @@ pub struct NodeRuntimeConfig {
     pub health_gossip: HealthGossipConfig,
     /// Loaded mitigation preset; relay datapath does not select guards (client-side).
     pub guard_mitigation: GuardMitigationPolicy,
+    /// External coarse-metrics export policy (defaults hardened).
+    pub metrics_export: MetricsExportConfig,
 }
 
 impl NodeConfigFile {
@@ -900,6 +1149,18 @@ impl NodeConfigFile {
             if let Some(ref hex) = peer.noise_static_public {
                 info = info.with_noise_static_public(parse_hex32(hex)?);
             }
+            if let Some(ref org) = peer.org_id {
+                let org = org.trim();
+                if !org.is_empty() {
+                    info = info.with_org_id(org.to_string());
+                }
+            }
+            if let Some(ref jur) = peer.jurisdiction {
+                let jur = jur.trim();
+                if !jur.is_empty() {
+                    info = info.with_jurisdiction(jur.to_string());
+                }
+            }
             peer_table.insert(id, info);
         }
         let roster = self
@@ -929,7 +1190,7 @@ impl NodeConfigFile {
         Ok(NodeRuntimeConfig {
             relay_id,
             listen,
-            relay_config: RelayConfig::new(self.mu).with_bulk_cover(self.cover.into_bulk_cover()),
+            relay_config: RelayConfig::new(self.mu).with_bulk_cover(self.cover.into_bulk_cover()?),
             kem_secret,
             local_kem_commitment,
             ingress_link_key,
@@ -951,6 +1212,7 @@ impl NodeConfigFile {
             reputation: self.reputation,
             health_gossip: self.health_gossip,
             guard_mitigation: self.guard_mitigation.resolve_policy(),
+            metrics_export: self.metrics.into_export_config(),
         })
     }
 }
@@ -1036,9 +1298,110 @@ mod tests {
         assert!(cfg.enabled);
         assert!(cfg.require);
         assert_eq!(cfg.target_flow_count, DEFAULT_COVER_TARGET_FLOW_COUNT);
-        let bulk = cfg.into_bulk_cover();
+        assert_eq!(
+            cfg.multihop_defense,
+            CoverMultihopDefense::BaselineLocalDiscard.as_str()
+        );
+        let bulk = cfg.into_bulk_cover().unwrap();
+        assert_eq!(
+            bulk.multihop_defense,
+            CoverMultihopDefense::BaselineLocalDiscard
+        );
         assert!(bulk.validate_spawn(true).is_ok());
         assert!(bulk.validate_spawn(false).is_err());
+    }
+
+    #[test]
+    fn cover_matched_local_discard_toml_opt_in() {
+        let file: NodeConfigFile = toml::from_str(
+            r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[cover]
+enabled = true
+require = true
+multihop_defense = "matched_local_discard"
+matched_cover_flows = 3
+"#,
+        )
+        .unwrap();
+        let bulk = file.cover.into_bulk_cover().unwrap();
+        assert_eq!(
+            bulk.multihop_defense,
+            CoverMultihopDefense::MatchedLocalDiscard
+        );
+        assert_eq!(bulk.matched_cover_flows, 3);
+        let cfg = bulk.cover_flow_config();
+        assert_eq!(
+            cfg.matched_discard_cell_count(),
+            3 * cfg.cells_per_flow as u64
+        );
+    }
+
+    #[test]
+    fn cover_onions_scaffold_toml_opt_in() {
+        let file: NodeConfigFile = toml::from_str(
+            r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[cover]
+multihop_defense = "cover_onions_scaffold"
+cover_onion_flows = 2
+"#,
+        )
+        .unwrap();
+        let bulk = file.cover.into_bulk_cover().unwrap();
+        assert_eq!(
+            bulk.multihop_defense,
+            CoverMultihopDefense::CoverOnionsScaffold
+        );
+        assert_eq!(bulk.cover_onion_flows, 2);
+    }
+
+    #[test]
+    fn cover_multihop_defense_rejects_unknown() {
+        let cfg = CoverFileConfig {
+            multihop_defense: "magic_onions".into(),
+            ..CoverFileConfig::default()
+        };
+        assert!(cfg.into_bulk_cover().is_err());
+    }
+
+    #[test]
+    fn exit_presence_pad_toml_opt_in_defaults_off() {
+        let off: NodeConfigFile = toml::from_str(
+            r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+"#,
+        )
+        .unwrap();
+        assert!(!off.exit.presence_pad);
+        assert_eq!(off.exit.pad_q, 10);
+        assert_eq!(off.exit.presence_rate_pct, 55);
+
+        let on: NodeConfigFile = toml::from_str(
+            r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[exit]
+presence_pad = true
+pad_q = 12
+epoch_ms = 250
+presence_rate_pct = 70
+deliver_to = "stdout"
+"#,
+        )
+        .unwrap();
+        assert!(on.exit.presence_pad);
+        let settings = on.exit.into_settings().unwrap();
+        assert!(settings.presence_pad.enabled);
+        assert_eq!(settings.presence_pad.pad_q, 12);
+        assert_eq!(settings.presence_pad.epoch_ms, 250);
+        assert_eq!(settings.presence_pad.presence_rate_pct, 70);
     }
 
     #[test]
@@ -1173,23 +1536,48 @@ enabled = true
 signing_seed = "{seed}"
 interval_secs = 45
 majority_k = 3
+min_orgs = 2
+eclipse_detect = true
 
 [[peers]]
 id = "0200000000000000000000000000000000000000000000000000000000000000"
 addr = "127.0.0.1:9001"
 link_key = "ee00000000000000000000000000000000000000000000000000000000000000"
 gossip_verifying_key = "{vk}"
+org_id = "acme"
+jurisdiction = "US"
 "#
         );
         let file: NodeConfigFile = toml::from_str(&toml).unwrap();
         assert!(file.health_gossip.enabled);
         assert_eq!(file.health_gossip.interval_secs, 45);
         assert_eq!(file.health_gossip.majority_k, 3);
+        assert_eq!(file.health_gossip.min_orgs, 2);
+        assert!(file.health_gossip.eclipse_detect);
         assert!(file.health_gossip.resolve_signing_key().unwrap().is_some());
         assert_eq!(
             file.peers[0].gossip_verifying_key.as_deref(),
             Some(vk.as_str())
         );
+        assert_eq!(file.peers[0].org_id.as_deref(), Some("acme"));
+        assert_eq!(file.peers[0].jurisdiction.as_deref(), Some("US"));
+        let policy = file.health_gossip.merge_policy();
+        assert_eq!(policy.majority_k, 3);
+        assert_eq!(policy.min_orgs, 2);
+        assert!(policy.eclipse_detect);
+    }
+
+    #[test]
+    fn health_gossip_defaults_are_stacked() {
+        let toml = r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+"#;
+        let file: NodeConfigFile = toml::from_str(toml).unwrap();
+        assert_eq!(file.health_gossip.majority_k, 4);
+        assert_eq!(file.health_gossip.min_orgs, 2);
+        assert!(file.health_gossip.eclipse_detect);
+        assert!((file.health_gossip.eclipse_median_gap - 0.45).abs() < 1e-9);
     }
 
     #[test]
@@ -1820,6 +2208,71 @@ adaptive_first = true
             runtime.guard_mitigation,
             GuardMitigationPolicy::adaptive_first()
         );
+
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn metrics_export_defaults_and_high_res_wire_into_runtime() {
+        use aegis_relay::{DEFAULT_MIN_SCRAPE_INTERVAL_SECS, DEFAULT_QUANTIZE_BUCKET};
+        use std::time::Duration;
+
+        let dir = test_config_dir("metrics-export-runtime");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("node.toml");
+        let seeds = fixed_seeds();
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[kem]
+allow_plaintext_kem = true
+x25519_seed = "{}"
+mlkem_d = "{}"
+mlkem_z = "{}"
+"#,
+                seeds.x25519_seed, seeds.mlkem_d, seeds.mlkem_z
+            ),
+        )
+        .unwrap();
+        let file = NodeConfigFile::load(&config_path).unwrap();
+        let runtime = file.into_runtime(&config_path).unwrap();
+        assert_eq!(
+            runtime.metrics_export.min_scrape_interval,
+            Duration::from_secs(DEFAULT_MIN_SCRAPE_INTERVAL_SECS)
+        );
+        assert_eq!(runtime.metrics_export.quantize_bucket, DEFAULT_QUANTIZE_BUCKET);
+        assert!(!runtime.metrics_export.allow_high_resolution);
+        assert!(runtime.metrics_export.suppress_ingress_drop_detail);
+
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[kem]
+allow_plaintext_kem = true
+x25519_seed = "{}"
+mlkem_d = "{}"
+mlkem_z = "{}"
+
+[metrics]
+allow_high_resolution = true
+"#,
+                seeds.x25519_seed, seeds.mlkem_d, seeds.mlkem_z
+            ),
+        )
+        .unwrap();
+        let file = NodeConfigFile::load(&config_path).unwrap();
+        let runtime = file.into_runtime(&config_path).unwrap();
+        assert!(runtime.metrics_export.allow_high_resolution);
+        assert!(!runtime.metrics_export.suppress_ingress_drop_detail);
 
         let _ = std::fs::remove_file(&config_path);
         let _ = std::fs::remove_dir(&dir);

@@ -319,7 +319,9 @@ require = true
 enabled = true
 signing_seed = "{gossip_seed}"
 interval_secs = 60
-majority_k = 2
+majority_k = 4
+min_orgs = 2
+eclipse_detect = true
 quorum_log_path = "data/health_quorum.log"
 
 [link]

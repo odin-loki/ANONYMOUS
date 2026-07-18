@@ -4,6 +4,10 @@
 use aegis_negotiator::cover::{l2_cover_requirement, CoverRequirement};
 use aegis_negotiator::dial::{dial_requires_relay_cover, SecurityDial, L2_BASELINE_CONCURRENCY};
 
+use crate::cover_flow::{
+    CoverFlowConfig, CoverMultihopDefense, DEFAULT_COVER_ONION_FLOWS, DEFAULT_MATCHED_COVER_FLOWS,
+};
+
 /// Default rate parameter for per-hop Exp(μ) mixing delay.
 ///
 /// # Parameter budget (spec §7, L = 4)
@@ -42,6 +46,14 @@ pub enum CoverPolicyError {
 /// When [`Self::enabled`], production nodes must wire a cover outbound channel and
 /// call [`crate::RelayHandle::begin_bulk_round`] (auto-started by [`crate::start_bulk_cover`]
 /// / `aegis-node`). When [`Self::require`] is set, startup fails closed if cover cannot run.
+///
+/// ## Multi-hop defense (opt-in)
+///
+/// [`Self::multihop_defense`] selects wave A3 productization of sim S4 rankings.
+/// Default remains baseline local discard. Prefer
+/// [`CoverMultihopDefense::MatchedLocalDiscard`] to align cover discard volume across
+/// peer hops; [`CoverMultihopDefense::CoverOnionsScaffold`] is a tagged scaffold only
+/// (still discarded — no Sphinx continuity claim).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BulkCoverConfig {
     /// When true, open L2 bulk rounds and emit cover padding at round close.
@@ -54,6 +66,12 @@ pub struct BulkCoverConfig {
     pub target_flow_count: u32,
     /// How often to close/re-open the bulk round so cover can emit (seconds).
     pub round_secs: u64,
+    /// Multi-hop cover defense mode (default baseline local discard).
+    pub multihop_defense: CoverMultihopDefense,
+    /// Fixed cover flows per round under matched local discard (peer-aligned).
+    pub matched_cover_flows: u32,
+    /// Scaffold cover-onion flows under cover_onions_scaffold (still discarded).
+    pub cover_onion_flows: u32,
 }
 
 impl Default for BulkCoverConfig {
@@ -65,6 +83,9 @@ impl Default for BulkCoverConfig {
             dial: SecurityDial::L2UniformBatched,
             target_flow_count: DEFAULT_COVER_TARGET_FLOW_COUNT,
             round_secs: DEFAULT_COVER_ROUND_SECS,
+            multihop_defense: CoverMultihopDefense::BaselineLocalDiscard,
+            matched_cover_flows: DEFAULT_MATCHED_COVER_FLOWS,
+            cover_onion_flows: DEFAULT_COVER_ONION_FLOWS,
         }
     }
 }
@@ -83,6 +104,17 @@ impl BulkCoverConfig {
     #[must_use]
     pub fn requirement(&self) -> CoverRequirement {
         l2_cover_requirement(self.target_flow_count)
+    }
+
+    /// Cover generator config derived from this policy.
+    #[must_use]
+    pub fn cover_flow_config(&self) -> CoverFlowConfig {
+        CoverFlowConfig {
+            cells_per_flow: aegis_crypto::fragment::SPHINX_FRAGMENT_COUNT,
+            multihop_defense: self.multihop_defense,
+            matched_cover_flows: self.matched_cover_flows,
+            cover_onion_flows: self.cover_onion_flows,
+        }
     }
 
     /// Fail closed when cover is required but cannot be satisfied at spawn time.
@@ -179,5 +211,21 @@ mod tests {
                 SecurityDial::L0Raw
             ))
         );
+    }
+
+    #[test]
+    fn cover_flow_config_carries_matched_defense() {
+        let policy = BulkCoverConfig {
+            multihop_defense: CoverMultihopDefense::MatchedLocalDiscard,
+            matched_cover_flows: 4,
+            ..BulkCoverConfig::default()
+        };
+        let cfg = policy.cover_flow_config();
+        assert_eq!(
+            cfg.multihop_defense,
+            CoverMultihopDefense::MatchedLocalDiscard
+        );
+        assert_eq!(cfg.matched_cover_flows, 4);
+        assert_eq!(cfg.matched_discard_cell_count(), 4 * cfg.cells_per_flow as u64);
     }
 }

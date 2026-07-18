@@ -2,8 +2,9 @@
 //!
 //! **Not** multi-org BFT consensus: a local, persisted log that buffers verified
 //! adverts per `(epoch, subject)` until `majority_k` distinct **authority** reporters
-//! agree, then applies the median merge into [`PeerHealthTracker`]. Rejects
-//! equivocation (conflicting payloads for the same `epoch + reporter + subject`).
+//! (and `min_orgs` diversity keys via [`PeerHealthTracker`]) agree, then applies the
+//! median merge — or quarantines eclipsed medians. Rejects equivocation (conflicting
+//! payloads for the same `epoch + reporter + subject`).
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -14,7 +15,7 @@ use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use thiserror::Error;
 
 use crate::health_gossip::PeerHealthAdvert;
-use crate::peer_health::{PeerHealthTracker, GOSSIP_WEIGHT_DEN, GOSSIP_WEIGHT_NUM};
+use crate::peer_health::{gossip_diversity_key, GossipMergeOutcome, PeerHealthTracker};
 
 /// On-disk record size: epoch + reporter + subject + successes + failures + signature.
 pub const QUORUM_LOG_RECORD_LEN: usize = 8 + 32 + 32 + 8 + 8 + 64;
@@ -130,8 +131,22 @@ impl HealthEpochCheckpoint {
 pub enum QuorumAppendOutcome {
     /// Appended; waiting for more distinct authority reporters.
     Buffered { have: usize, need: usize },
+    /// K reporters present but fewer than `min_orgs` diversity keys.
+    WaitingDiversity {
+        have: usize,
+        distinct_orgs: usize,
+        need_orgs: usize,
+    },
     /// Quorum reached; median merge applied to the tracker.
-    Applied { reporters: usize },
+    Applied {
+        reporters: usize,
+        distinct_orgs: usize,
+    },
+    /// Quorum reached but merge discarded by eclipse-detect.
+    Quarantined {
+        reporters: usize,
+        distinct_orgs: usize,
+    },
     /// Duplicate identical re-append (idempotent).
     Duplicate,
 }
@@ -144,8 +159,8 @@ pub struct HealthQuorumLog {
     authority_set: HashSet<[u8; 32]>,
     /// `(epoch, reporter, subject)` → canonical payload fingerprint.
     seen: HashMap<(u64, [u8; 32], [u8; 32]), (u64, u64)>,
-    /// `(epoch, subject)` → reporter → (successes, failures).
-    pending: HashMap<(u64, [u8; 32]), HashMap<[u8; 32], (u64, u64)>>,
+    /// `(epoch, subject)` → reporter → (successes, failures, diversity_key).
+    pending: HashMap<(u64, [u8; 32]), HashMap<[u8; 32], (u64, u64, String)>>,
     applied: HashSet<(u64, [u8; 32])>,
     /// Quorum-accepted median `(successes, failures)` per `(epoch, subject)`.
     applied_medians: HashMap<(u64, [u8; 32]), (u64, u64)>,
@@ -244,6 +259,8 @@ impl HealthQuorumLog {
     }
 
     fn finalize_replayed_quorums(&mut self) {
+        // Replay has no persisted org labels — use per-reporter keys (availability
+        // fail-open). Diversity is enforced live via `diversity_key` on append.
         let ready: Vec<(u64, [u8; 32])> = self
             .pending
             .iter()
@@ -252,7 +269,10 @@ impl HealthQuorumLog {
             .collect();
         for (epoch, subject) in ready {
             if let Some(by_reporter) = self.pending.get(&(epoch, subject)) {
-                let observations: Vec<(u64, u64)> = by_reporter.values().copied().collect();
+                let observations: Vec<(u64, u64)> = by_reporter
+                    .values()
+                    .map(|&(ok, fail, _)| (ok, fail))
+                    .collect();
                 if let Some((ok, fail)) = crate::peer_health::median_outcome_counts(&observations)
                 {
                     self.applied_medians.insert((epoch, subject), (ok, fail));
@@ -285,10 +305,14 @@ impl HealthQuorumLog {
             return Ok(());
         }
         let pending_key = (entry.epoch, entry.advert.subject);
+        let diver = gossip_diversity_key(None, None, &entry.advert.reporter);
         self.pending
             .entry(pending_key)
             .or_default()
-            .insert(entry.advert.reporter, payload);
+            .insert(
+                entry.advert.reporter,
+                (payload.0, payload.1, diver),
+            );
         Ok(())
     }
 
@@ -313,12 +337,16 @@ impl HealthQuorumLog {
     }
 
     /// Verify signature, enforce authority set, append, detect equivocation, try quorum merge.
+    ///
+    /// `diversity_key` is the reporter's org/jurisdiction label (see
+    /// [`gossip_diversity_key`]). Pass unlabeled per-reporter keys for lab paths.
     pub fn append_verified(
         &mut self,
         epoch: u64,
         advert: &PeerHealthAdvert,
         verifying_key: &VerifyingKey,
         tracker: &PeerHealthTracker,
+        diversity_key: impl Into<String>,
     ) -> Result<QuorumAppendOutcome, QuorumLogError> {
         advert
             .verify(verifying_key)
@@ -349,31 +377,76 @@ impl HealthQuorumLog {
             return Ok(QuorumAppendOutcome::Duplicate);
         }
 
+        let diver = {
+            let raw = diversity_key.into();
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                gossip_diversity_key(None, None, &advert.reporter)
+            } else {
+                trimmed.to_string()
+            }
+        };
+
         let pending_key = (epoch, advert.subject);
         let by_reporter = self.pending.entry(pending_key).or_default();
-        by_reporter.insert(advert.reporter, payload);
+        by_reporter.insert(advert.reporter, (payload.0, payload.1, diver));
         let have = by_reporter.len();
         let k = self.majority_k;
         if have < k {
             return Ok(QuorumAppendOutcome::Buffered { have, need: k });
         }
 
-        let observations: Vec<(u64, u64)> = by_reporter.values().copied().collect();
-        by_reporter.clear();
-        self.applied.insert((epoch, advert.subject));
+        let observations: Vec<(u64, u64)> = by_reporter
+            .values()
+            .map(|&(ok, fail, _)| (ok, fail))
+            .collect();
+        let diversity_keys: Vec<String> = by_reporter
+            .values()
+            .map(|(_, _, d)| d.clone())
+            .collect();
 
-        if let Some((ok, fail)) = crate::peer_health::median_outcome_counts(&observations) {
-            self.applied_medians
-                .insert((epoch, advert.subject), (ok, fail));
-            tracker.apply_gossip_outcomes(
-                advert.subject,
-                ok,
-                fail,
-                GOSSIP_WEIGHT_NUM,
-                GOSSIP_WEIGHT_DEN,
-            );
+        match tracker.apply_quorum_median(advert.subject, &observations, &diversity_keys) {
+            GossipMergeOutcome::WaitingDiversity {
+                have,
+                distinct_orgs,
+                need_orgs,
+            } => Ok(QuorumAppendOutcome::WaitingDiversity {
+                have,
+                distinct_orgs,
+                need_orgs,
+            }),
+            GossipMergeOutcome::Quarantined {
+                reporters,
+                distinct_orgs,
+            } => {
+                self.pending.remove(&pending_key);
+                self.applied.insert((epoch, advert.subject));
+                Ok(QuorumAppendOutcome::Quarantined {
+                    reporters,
+                    distinct_orgs,
+                })
+            }
+            GossipMergeOutcome::Applied {
+                reporters,
+                distinct_orgs,
+            } => {
+                if let Some((ok, fail)) =
+                    crate::peer_health::median_outcome_counts(&observations)
+                {
+                    self.applied_medians
+                        .insert((epoch, advert.subject), (ok, fail));
+                }
+                self.pending.remove(&pending_key);
+                self.applied.insert((epoch, advert.subject));
+                Ok(QuorumAppendOutcome::Applied {
+                    reporters,
+                    distinct_orgs,
+                })
+            }
+            GossipMergeOutcome::Buffered { have, need } => {
+                Ok(QuorumAppendOutcome::Buffered { have, need })
+            }
         }
-        Ok(QuorumAppendOutcome::Applied { reporters: have })
     }
 }
 
@@ -427,21 +500,27 @@ mod tests {
         let a3 = PeerHealthAdvert::sign(&sk(3), id(3), subject, 92, 8, 1_000);
 
         let out1 = log
-            .append_verified(epoch, &a1, &sk(1).verifying_key(), &tracker)
+            .append_verified(epoch, &a1, &sk(1).verifying_key(), &tracker, "org:a")
             .unwrap();
         assert_eq!(out1, QuorumAppendOutcome::Buffered { have: 1, need: 2 });
 
         let out2 = log
-            .append_verified(epoch, &a2, &sk(2).verifying_key(), &tracker)
+            .append_verified(epoch, &a2, &sk(2).verifying_key(), &tracker, "org:b")
             .unwrap();
-        assert_eq!(out2, QuorumAppendOutcome::Applied { reporters: 2 });
+        assert_eq!(
+            out2,
+            QuorumAppendOutcome::Applied {
+                reporters: 2,
+                distinct_orgs: 2
+            }
+        );
 
         let rate = tracker.failure_rate(subject).unwrap();
         assert!(rate > 0.05 && rate < 0.15, "median ~10% expected, got {rate}");
 
         // Third reporter after quorum is duplicate epoch apply path
         let out3 = log
-            .append_verified(epoch, &a3, &sk(3).verifying_key(), &tracker)
+            .append_verified(epoch, &a3, &sk(3).verifying_key(), &tracker, "org:c")
             .unwrap();
         assert_eq!(out3, QuorumAppendOutcome::Duplicate);
     }
@@ -455,7 +534,7 @@ mod tests {
 
         let evil = PeerHealthAdvert::sign(&sk(9), id(9), subject, 0, 100, 500);
         let out = log
-            .append_verified(epoch, &evil, &sk(9).verifying_key(), &tracker)
+            .append_verified(epoch, &evil, &sk(9).verifying_key(), &tracker, "org:evil")
             .unwrap();
         assert_eq!(out, QuorumAppendOutcome::Buffered { have: 1, need: 2 });
         assert!(tracker.failure_rate(subject).is_none());
@@ -465,16 +544,16 @@ mod tests {
     fn equivocation_rejected() {
         let subject = id(3);
         let epoch = 1;
-        let tracker = PeerHealthTracker::new();
+        let tracker = PeerHealthTracker::with_gossip_majority_k(1);
         let mut log = HealthQuorumLog::new(1, authorities(&[4]));
 
         let a1 = PeerHealthAdvert::sign(&sk(4), id(4), subject, 10, 0, 100);
-        log.append_verified(epoch, &a1, &sk(4).verifying_key(), &tracker)
+        log.append_verified(epoch, &a1, &sk(4).verifying_key(), &tracker, "org:a")
             .unwrap();
 
         let a2 = PeerHealthAdvert::sign(&sk(4), id(4), subject, 0, 10, 100);
         let err = log
-            .append_verified(epoch, &a2, &sk(4).verifying_key(), &tracker)
+            .append_verified(epoch, &a2, &sk(4).verifying_key(), &tracker, "org:a")
             .unwrap_err();
         assert_eq!(err, QuorumLogError::Equivocation);
     }
@@ -489,14 +568,14 @@ mod tests {
         let subject = id(8);
         let epoch = 42;
         {
-            let tracker = PeerHealthTracker::new();
+            let tracker = PeerHealthTracker::with_gossip_majority_k(2);
             let mut log =
                 HealthQuorumLog::load_or_create(&path, 2, authorities(&[1, 2])).unwrap();
             let a1 = PeerHealthAdvert::sign(&sk(1), id(1), subject, 9, 1, 200);
             let a2 = PeerHealthAdvert::sign(&sk(2), id(2), subject, 8, 2, 200);
-            log.append_verified(epoch, &a1, &sk(1).verifying_key(), &tracker)
+            log.append_verified(epoch, &a1, &sk(1).verifying_key(), &tracker, "org:a")
                 .unwrap();
-            log.append_verified(epoch, &a2, &sk(2).verifying_key(), &tracker)
+            log.append_verified(epoch, &a2, &sk(2).verifying_key(), &tracker, "org:b")
                 .unwrap();
             assert_eq!(log.entry_count(), 2);
         }
@@ -517,7 +596,7 @@ mod tests {
 
         let advert = PeerHealthAdvert::sign(&sk(99), id(99), subject, 5, 5, 100);
         let err = log
-            .append_verified(epoch, &advert, &sk(99).verifying_key(), &tracker)
+            .append_verified(epoch, &advert, &sk(99).verifying_key(), &tracker, "org:x")
             .unwrap_err();
         assert_eq!(err, QuorumLogError::NotAuthority);
     }
@@ -526,15 +605,15 @@ mod tests {
     fn epoch_checkpoint_signs_accepted_medians() {
         let subject = id(20);
         let epoch = 9;
-        let tracker = PeerHealthTracker::new();
+        let tracker = PeerHealthTracker::with_gossip_majority_k(2);
         let mut log = HealthQuorumLog::new(2, authorities(&[1, 2]));
         let ck_key = sk(77);
 
         let a1 = PeerHealthAdvert::sign(&sk(1), id(1), subject, 90, 10, 500);
         let a2 = PeerHealthAdvert::sign(&sk(2), id(2), subject, 88, 12, 500);
-        log.append_verified(epoch, &a1, &sk(1).verifying_key(), &tracker)
+        log.append_verified(epoch, &a1, &sk(1).verifying_key(), &tracker, "org:a")
             .unwrap();
-        log.append_verified(epoch, &a2, &sk(2).verifying_key(), &tracker)
+        log.append_verified(epoch, &a2, &sk(2).verifying_key(), &tracker, "org:b")
             .unwrap();
 
         let checkpoint = log.sign_epoch_checkpoint(epoch, &ck_key);

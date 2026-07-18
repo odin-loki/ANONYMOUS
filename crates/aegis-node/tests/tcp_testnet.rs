@@ -282,6 +282,7 @@ async fn tcp_testnet_exit_sink_file_receives_payload() {
     let exit_tx = spawn_exit_sink(ExitSinkSettings {
         log_payloads: false,
         deliver_to: Some(ExitDeliverTarget::File(exit_path.clone())),
+        presence_pad: Default::default(),
     })
     .expect("file exit sink enabled");
 
@@ -368,8 +369,42 @@ fn exit_config_defaults_off() {
     let cfg = ExitConfig::default();
     assert!(!cfg.log_payloads);
     assert!(cfg.deliver_to.is_none());
+    assert!(!cfg.presence_pad);
+    assert_eq!(cfg.pad_q, 10);
+    assert_eq!(cfg.presence_rate_pct, 55);
     let settings = cfg.into_settings().expect("parse");
     assert!(!settings.enabled());
+    assert!(!settings.presence_pad.enabled);
+}
+
+#[test]
+fn exit_config_presence_pad_opt_in() {
+    use aegis_node::ExitConfig;
+    let cfg = ExitConfig {
+        presence_pad: true,
+        pad_q: 8,
+        epoch_ms: 500,
+        presence_rate_pct: 40,
+        ..ExitConfig::default()
+    };
+    assert!(cfg.presence_pad);
+    let settings = cfg.into_settings().expect("settings");
+    assert!(settings.enabled());
+    assert!(settings.presence_pad.enabled);
+    assert_eq!(settings.presence_pad.pad_q, 8);
+    assert_eq!(settings.presence_pad.epoch_ms, 500);
+    assert_eq!(settings.presence_pad.presence_rate_pct, 40);
+}
+
+#[test]
+fn exit_config_presence_pad_rejects_zero_q() {
+    use aegis_node::ExitConfig;
+    let cfg = ExitConfig {
+        presence_pad: true,
+        pad_q: 0,
+        ..ExitConfig::default()
+    };
+    assert!(cfg.into_settings().is_err());
 }
 
 #[test]

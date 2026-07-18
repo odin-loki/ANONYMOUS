@@ -47,6 +47,7 @@ pub mod cover_flow;
 pub mod delay;
 pub mod health_gossip;
 pub mod health_quorum_log;
+pub mod metrics_export;
 pub mod net;
 pub mod node;
 pub mod peer_health;
@@ -58,8 +59,11 @@ pub use config::{
     DEFAULT_COVER_TARGET_FLOW_COUNT, DEFAULT_MU,
 };
 pub use cover_flow::{
-    is_relay_cover_fragment, BulkRoundCommand, BulkRoundTracker, CoverEmitResult, CoverFlow,
-    CoverFlowConfig, CoverFlowGenerator, COVER_FRAGMENT_RESERVED,
+    is_cover_onion_scaffold_fragment, is_discard_cover_fragment, is_relay_cover_fragment,
+    plan_cover_emit, BulkRoundCommand, BulkRoundTracker, CoverEmitPlan, CoverEmitResult,
+    CoverFlow, CoverFlowConfig, CoverFlowGenerator, CoverMultihopDefense,
+    COVER_FRAGMENT_RESERVED, COVER_ONION_SCAFFOLD_RESERVED, DEFAULT_COVER_ONION_FLOWS,
+    DEFAULT_MATCHED_COVER_FLOWS,
 };
 pub use delay::sample_mixing_delay;
 pub use health_gossip::{
@@ -70,6 +74,10 @@ pub use health_gossip::{
 pub use health_quorum_log::{
     advert_epoch, HealthEpochCheckpoint, HealthEpochMedianSummary, HealthQuorumLog,
     HealthQuorumLogEntry, QuorumAppendOutcome, QuorumLogError, QUORUM_LOG_RECORD_LEN,
+};
+pub use metrics_export::{
+    quantize_coarse, quantize_u64, ExportedRelayStats, MetricsExportConfig, MetricsExportError,
+    MetricsExportGate, DEFAULT_MIN_SCRAPE_INTERVAL_SECS, DEFAULT_QUANTIZE_BUCKET,
 };
 pub use net::{
     send_link_cell, send_sphinx_packet, write_packet, GossipOutbound, IngressRateLimitConfig,
@@ -86,8 +94,10 @@ pub use node::{
     RelayDebugStats, RelayHandle, RelayNode, RelayStoppedError, RELAY_CHANNEL_CAPACITY,
 };
 pub use peer_health::{
-    GossipMergeOutcome, PeerHealthTracker, DEFAULT_GOSSIP_MAJORITY_K, GOSSIP_WEIGHT_DEN,
-    GOSSIP_WEIGHT_NUM,
+    gossip_diversity_key, GossipMergeOutcome, GossipMergePolicy, PeerHealthTracker,
+    DEFAULT_ECLIPSE_DETECT, DEFAULT_ECLIPSE_HONEST_BASELINE, DEFAULT_ECLIPSE_LOCAL_MIN_SAMPLES,
+    DEFAULT_ECLIPSE_MEDIAN_GAP, DEFAULT_GOSSIP_MAJORITY_K, DEFAULT_GOSSIP_MIN_ORGS,
+    GOSSIP_WEIGHT_DEN, GOSSIP_WEIGHT_NUM,
 };
 pub use relay_id::RelayId;
 pub use trace::{load_trace_timestamps, parse_trace_timestamps, RelayForwardTrace};

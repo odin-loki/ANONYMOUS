@@ -608,8 +608,9 @@ def gossip_eclipse_defense_report(
             "min_orgs_default": CI_MIN_ORGS,
             "eclipse_median_gap": ECLIPSE_MEDIAN_GAP,
             "rust_fidelity_note": (
-                "raised_k maps to majority_k; diverse_org / eclipse_detect are "
-                "sim-proposed hooks (not yet product policy)."
+                "stacked maps to GossipMergePolicy / PeerHealthTracker: "
+                "majority_k (default 4), min_orgs, eclipse_detect quarantine; "
+                "peer org_id/jurisdiction diversity keys. Multi-org BFT still External."
             ),
         },
         "grids": {
@@ -647,7 +648,7 @@ def gossip_eclipse_defense_report(
         "residuals": [
             "Colluding multi-org adversaries can still meet min_orgs.",
             "Eclipse heuristic false-positives possible under genuine outages.",
-            "No product wire for org-id diversity or quarantine yet.",
+            "Product wire landed (wave A1); f=1 still saturates; multi-org BFT External.",
         ],
         "best_defense": "stacked",
     }

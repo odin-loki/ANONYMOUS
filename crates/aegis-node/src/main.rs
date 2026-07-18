@@ -8,8 +8,8 @@ use std::time::Duration;
 use aegis_node::{exit_sink, validate_production_config, NodeConfigFile, ReputationConfig};
 use aegis_relay::{
     spawn_link_bridge, start_bulk_cover, unix_timestamp_secs, GossipOutbound, HealthQuorumLog,
-    PeerHealthAdvert, PeerHealthTracker, RelayForwardTrace, RelayId, RelayNode,
-    RELAY_CHANNEL_CAPACITY,
+    MetricsExportGate, PeerHealthAdvert, PeerHealthTracker, RelayForwardTrace, RelayId,
+    RelayNode, RELAY_CHANNEL_CAPACITY,
 };
 use clap::{Parser, Subcommand};
 use rand_core::OsRng;
@@ -116,8 +116,8 @@ async fn run_relay(
         runtime.listen
     );
 
-    let peer_health = Arc::new(PeerHealthTracker::with_gossip_majority_k(
-        runtime.health_gossip.majority_k.max(1),
+    let peer_health = Arc::new(PeerHealthTracker::with_policy(
+        runtime.health_gossip.merge_policy(),
     ));
     let reputation_cfg: ReputationConfig = runtime.reputation.clone();
     let pruning_policy = Arc::new(Mutex::new(reputation_cfg.load_pruning_policy()?));
@@ -207,8 +207,10 @@ async fn run_relay(
     let cover_task = start_bulk_cover(&handle, &bulk_cover).await?;
     if bulk_cover.enabled {
         eprintln!(
-            "bulk cover started (target_flow_count={}, round_secs={})",
-            bulk_cover.target_flow_count, bulk_cover.round_secs
+            "bulk cover started (target_flow_count={}, round_secs={}, multihop_defense={})",
+            bulk_cover.target_flow_count,
+            bulk_cover.round_secs,
+            bulk_cover.multihop_defense.as_str()
         );
     }
 
@@ -257,10 +259,20 @@ async fn run_relay(
         Some(peer_health),
     );
 
-    eprintln!(
-        "relay listening; coarse_stats={:?}",
-        handle.coarse_stats()
-    );
+    let metrics_gate = MetricsExportGate::new(runtime.metrics_export.clone());
+    match handle.export_coarse_stats(&metrics_gate) {
+        Ok(exported) => eprintln!(
+            "relay listening; exported_coarse_stats={:?} ingress_dropped_frames={:?} \
+             (raw coarse_stats available in-process only; high-res={})",
+            exported.coarse,
+            exported.ingress_dropped_frames,
+            metrics_gate.config().allow_high_resolution
+        ),
+        Err(e) => eprintln!(
+            "relay listening; metrics export gated ({e}); raw coarse_stats={:?}",
+            handle.coarse_stats()
+        ),
+    }
 
     tokio::signal::ctrl_c().await?;
     eprintln!("shutting down");

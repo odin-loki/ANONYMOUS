@@ -1,0 +1,326 @@
+{
+  "tag": "wave_A5_metrics_scrape_defense",
+  "extends": "coverage_C5_metrics_sidechannel",
+  "productizes": "wave_A4_metrics_export_gate",
+  "disclaimer": "Partial metrics-scrape *defense* ranking \u2014 not an info-theoretic leakage bound. Privileged observers with raw coarse_stats / debug_stats or allow_high_resolution bypass export harden. Volume residual can remain via quantized fail/queue buckets even when drops are suppressed.",
+  "claims_info_theoretic_leakage_bound": false,
+  "characterizes_not_closes": true,
+  "status": "[O] QUANTIFIED",
+  "quantize_bucket": 16,
+  "schemes_evaluated": [
+    "baseline_c5_1s",
+    "min_cadence",
+    "quantize",
+    "suppress_drops",
+    "stacked"
+  ],
+  "by_scheme": {
+    "baseline_c5_1s": {
+      "scheme": "baseline_c5_1s",
+      "duration_secs": 30.0,
+      "scrape_interval_secs": 1.0,
+      "final_coarse": {
+        "processed_ok": 10,
+        "processed_fail": 1,
+        "cover_emitted": 0,
+        "queue_dropped": 0
+      },
+      "final_ingress": {
+        "dropped_frames": 582
+      },
+      "totals": {
+        "offered_attack_cells": 600.0,
+        "offered_paced_cells": 171.42857142857144,
+        "offered_cover_flows": 0.0,
+        "accepted_cells": 194.0,
+        "dropped_cells": 582.0
+      },
+      "leakage": {
+        "pearson_dropped_vs_attack": 0.9676922304982072,
+        "pearson_load_proxy_vs_attack": 0.9677640288554749,
+        "pearson_fail_vs_attack": 0.8681936356947707,
+        "pearson_queue_vs_attack": null,
+        "pearson_cover_vs_cover_gt": null,
+        "attack_volume_recoverable_via_drops": 0.97,
+        "mean_scrape_delta_dropped": 19.4,
+        "mean_scrape_delta_load_proxy": 19.418888888888887,
+        "max_scrape_delta_dropped": 52.0,
+        "timing_leak_note": "Pearson on scrape-window deltas vs ground-truth attack windows; high |r| \u21d2 coarse timing of floods leaks via counters.",
+        "fine_held_pearson_load_vs_attack": 0.9677640288554763,
+        "primary_pearson": 0.9676922304982072,
+        "drops_detail_exported": true,
+        "scrape_interval_secs": 1.0,
+        "n_scrapes": 30
+      }
+    },
+    "min_cadence": {
+      "scheme": "min_cadence",
+      "duration_secs": 300.0,
+      "scrape_interval_secs": 30.0,
+      "final_coarse": {
+        "processed_ok": 101,
+        "processed_fail": 6,
+        "cover_emitted": 0,
+        "queue_dropped": 0
+      },
+      "final_ingress": {
+        "dropped_frames": 5679
+      },
+      "totals": {
+        "offered_attack_cells": 6000.0,
+        "offered_paced_cells": 1714.2857142857142,
+        "offered_cover_flows": 0.0,
+        "accepted_cells": 1919.0,
+        "dropped_cells": 5679.0
+      },
+      "leakage": {
+        "pearson_dropped_vs_attack": 0.9997342245218883,
+        "pearson_load_proxy_vs_attack": 0.999734230902896,
+        "pearson_fail_vs_attack": 0.998564464213223,
+        "pearson_queue_vs_attack": null,
+        "pearson_cover_vs_cover_gt": null,
+        "attack_volume_recoverable_via_drops": 0.9465,
+        "mean_scrape_delta_dropped": 567.9,
+        "mean_scrape_delta_load_proxy": 568.4639444444445,
+        "max_scrape_delta_dropped": 1133.0,
+        "timing_leak_note": "Pearson on scrape-window deltas vs ground-truth attack windows; high |r| \u21d2 coarse timing of floods leaks via counters.",
+        "fine_held_pearson_load_vs_attack": 0.9997342309028971,
+        "primary_pearson": 0.9997342245218883,
+        "drops_detail_exported": true,
+        "scrape_interval_secs": 30.0,
+        "n_scrapes": 10
+      }
+    },
+    "quantize": {
+      "scheme": "quantize",
+      "duration_secs": 30.0,
+      "scrape_interval_secs": 1.0,
+      "final_coarse": {
+        "processed_ok": 10,
+        "processed_fail": 1,
+        "cover_emitted": 0,
+        "queue_dropped": 0
+      },
+      "final_ingress": {
+        "dropped_frames": 582
+      },
+      "totals": {
+        "offered_attack_cells": 600.0,
+        "offered_paced_cells": 171.42857142857144,
+        "offered_cover_flows": 0.0,
+        "accepted_cells": 194.0,
+        "dropped_cells": 582.0
+      },
+      "leakage": {
+        "pearson_dropped_vs_attack": 0.9092698463840678,
+        "pearson_load_proxy_vs_attack": 0.9092698463840678,
+        "pearson_fail_vs_attack": null,
+        "pearson_queue_vs_attack": null,
+        "pearson_cover_vs_cover_gt": null,
+        "attack_volume_recoverable_via_drops": 0.97,
+        "mean_scrape_delta_dropped": 14.933333333333334,
+        "mean_scrape_delta_load_proxy": 14.933333333333334,
+        "max_scrape_delta_dropped": 48.0,
+        "timing_leak_note": "Pearson on scrape-window deltas vs ground-truth attack windows; high |r| \u21d2 coarse timing of floods leaks via counters.",
+        "fine_held_pearson_load_vs_attack": 0.9092698463840665,
+        "primary_pearson": 0.9092698463840678,
+        "drops_detail_exported": true,
+        "scrape_interval_secs": 1.0,
+        "n_scrapes": 30
+      }
+    },
+    "suppress_drops": {
+      "scheme": "suppress_drops",
+      "duration_secs": 30.0,
+      "scrape_interval_secs": 1.0,
+      "final_coarse": {
+        "processed_ok": 10,
+        "processed_fail": 1,
+        "cover_emitted": 0,
+        "queue_dropped": 0
+      },
+      "final_ingress": {
+        "dropped_frames": 0
+      },
+      "totals": {
+        "offered_attack_cells": 600.0,
+        "offered_paced_cells": 171.42857142857144,
+        "offered_cover_flows": 0.0,
+        "accepted_cells": 194.0,
+        "dropped_cells": 0.0
+      },
+      "leakage": {
+        "pearson_dropped_vs_attack": null,
+        "pearson_load_proxy_vs_attack": 0.8681936356947707,
+        "pearson_fail_vs_attack": 0.8681936356947707,
+        "pearson_queue_vs_attack": null,
+        "pearson_cover_vs_cover_gt": null,
+        "attack_volume_recoverable_via_drops": 0.0,
+        "mean_scrape_delta_dropped": 0.0,
+        "mean_scrape_delta_load_proxy": 0.018888888888888834,
+        "max_scrape_delta_dropped": 0.0,
+        "timing_leak_note": "Pearson on scrape-window deltas vs ground-truth attack windows; high |r| \u21d2 coarse timing of floods leaks via counters.",
+        "fine_held_pearson_load_vs_attack": 0.8681936356947698,
+        "primary_pearson": 0.8681936356947707,
+        "drops_detail_exported": false,
+        "scrape_interval_secs": 1.0,
+        "n_scrapes": 30
+      }
+    },
+    "stacked": {
+      "scheme": "stacked",
+      "duration_secs": 300.0,
+      "scrape_interval_secs": 30.0,
+      "final_coarse": {
+        "processed_ok": 101,
+        "processed_fail": 6,
+        "cover_emitted": 0,
+        "queue_dropped": 0
+      },
+      "final_ingress": {
+        "dropped_frames": 0
+      },
+      "totals": {
+        "offered_attack_cells": 6000.0,
+        "offered_paced_cells": 1714.2857142857142,
+        "offered_cover_flows": 0.0,
+        "accepted_cells": 1919.0,
+        "dropped_cells": 0.0
+      },
+      "leakage": {
+        "pearson_dropped_vs_attack": null,
+        "pearson_load_proxy_vs_attack": null,
+        "pearson_fail_vs_attack": null,
+        "pearson_queue_vs_attack": null,
+        "pearson_cover_vs_cover_gt": null,
+        "attack_volume_recoverable_via_drops": 0.0,
+        "mean_scrape_delta_dropped": 0.0,
+        "mean_scrape_delta_load_proxy": 0.0,
+        "max_scrape_delta_dropped": 0.0,
+        "timing_leak_note": "Pearson on scrape-window deltas vs ground-truth attack windows; high |r| \u21d2 coarse timing of floods leaks via counters.",
+        "fine_held_pearson_load_vs_attack": null,
+        "primary_pearson": null,
+        "drops_detail_exported": false,
+        "scrape_interval_secs": 30.0,
+        "n_scrapes": 10
+      }
+    }
+  },
+  "defense_ranking": [
+    {
+      "scheme": "baseline_c5_1s",
+      "scrape_interval_secs": 1.0,
+      "primary_pearson": 0.9676922304982072,
+      "fine_held_pearson_load_vs_attack": 0.9677640288554763,
+      "attack_volume_recoverable_via_drops": 0.97,
+      "pearson_dropped_vs_attack": 0.9676922304982072,
+      "pearson_load_proxy_vs_attack": 0.9677640288554749,
+      "drops_detail_exported": true,
+      "fine_held_reduction_vs_baseline": 0.0,
+      "volume_reduction_vs_baseline": 0.0,
+      "is_baseline": true,
+      "rank": 0
+    },
+    {
+      "scheme": "stacked",
+      "scrape_interval_secs": 30.0,
+      "primary_pearson": null,
+      "fine_held_pearson_load_vs_attack": null,
+      "attack_volume_recoverable_via_drops": 0.0,
+      "pearson_dropped_vs_attack": null,
+      "pearson_load_proxy_vs_attack": null,
+      "drops_detail_exported": false,
+      "fine_held_reduction_vs_baseline": 0.967764,
+      "volume_reduction_vs_baseline": 0.97,
+      "is_baseline": false,
+      "rank": 1
+    },
+    {
+      "scheme": "suppress_drops",
+      "scrape_interval_secs": 1.0,
+      "primary_pearson": 0.8681936356947707,
+      "fine_held_pearson_load_vs_attack": 0.8681936356947698,
+      "attack_volume_recoverable_via_drops": 0.0,
+      "pearson_dropped_vs_attack": null,
+      "pearson_load_proxy_vs_attack": 0.8681936356947707,
+      "drops_detail_exported": false,
+      "fine_held_reduction_vs_baseline": 0.09957,
+      "volume_reduction_vs_baseline": 0.97,
+      "is_baseline": false,
+      "rank": 2
+    },
+    {
+      "scheme": "quantize",
+      "scrape_interval_secs": 1.0,
+      "primary_pearson": 0.9092698463840678,
+      "fine_held_pearson_load_vs_attack": 0.9092698463840665,
+      "attack_volume_recoverable_via_drops": 0.97,
+      "pearson_dropped_vs_attack": 0.9092698463840678,
+      "pearson_load_proxy_vs_attack": 0.9092698463840678,
+      "drops_detail_exported": true,
+      "fine_held_reduction_vs_baseline": 0.058494,
+      "volume_reduction_vs_baseline": 0.0,
+      "is_baseline": false,
+      "rank": 3
+    },
+    {
+      "scheme": "min_cadence",
+      "scrape_interval_secs": 30.0,
+      "primary_pearson": 0.9997342245218883,
+      "fine_held_pearson_load_vs_attack": 0.9997342309028971,
+      "attack_volume_recoverable_via_drops": 0.9465,
+      "pearson_dropped_vs_attack": 0.9997342245218883,
+      "pearson_load_proxy_vs_attack": 0.999734230902896,
+      "drops_detail_exported": true,
+      "fine_held_reduction_vs_baseline": -0.03197,
+      "volume_reduction_vs_baseline": 0.0235,
+      "is_baseline": false,
+      "rank": 4
+    }
+  ],
+  "recommended": {
+    "scheme": "stacked",
+    "fine_held_pearson_load_vs_attack": null,
+    "attack_volume_recoverable_via_drops": 0.0,
+    "note": "Recommend production `MetricsExportConfig` stacked defaults: min_scrape_interval=30s + quantize_bucket=16 + suppress_ingress_drop_detail. Maps to aegis-node [metrics].",
+    "product_knobs": {
+      "min_scrape_interval_secs": 30.0,
+      "quantize_bucket": 16,
+      "suppress_ingress_drop_detail": true,
+      "allow_high_resolution": false
+    }
+  },
+  "delta_vs_c5_baseline": {
+    "baseline_pearson_dropped_vs_attack": 0.9676922304982072,
+    "baseline_fine_held_pearson": 0.9677640288554763,
+    "baseline_volume_recoverable_via_drops": 0.97,
+    "recommended_scheme": "stacked",
+    "recommended_fine_held_pearson": null,
+    "recommended_volume_recoverable": 0.0
+  },
+  "honest_residuals": [
+    "Privileged observers with RelayHandle::coarse_stats / debug_stats or metrics.allow_high_resolution=true bypass the export gate.",
+    "Suppressing dropped_frames removes the strongest volume channel; processed_fail / queue_dropped buckets can still correlate under flood.",
+    "Coarse scrape-window Pearson can stay high under long cadence when windows align with the attack block \u2014 fine-held Pearson is the timing-blur score used for ranking.",
+    "Not an info-theoretic leakage bound; lab flood model only."
+  ],
+  "sim_to_product": {
+    "baseline_c5_1s": "Raw 1s scrape of coarse + ingress drop counters",
+    "min_cadence": "MetricsExportConfig.min_scrape_interval = 30s ([metrics].min_scrape_interval_secs)",
+    "quantize": "MetricsExportConfig.quantize_bucket = 16 ([metrics].quantize_bucket)",
+    "suppress_drops": "MetricsExportConfig.suppress_ingress_drop_detail = true",
+    "stacked": "MetricsExportConfig::production() / [metrics] defaults",
+    "mapping_doc": "docs/ops/metrics_scrape_defense.md"
+  },
+  "c5_public_api_ref": {
+    "module": "aegis_sim.metrics_sidechannel",
+    "artifact": "sim/data/metrics_sidechannel_characterization.json",
+    "simulate": "simulate_scrape_series",
+    "leakage": "leakage_metrics"
+  },
+  "c5_cross_check": {
+    "c5_pearson_dropped_vs_attack": 0.9676922304982072,
+    "a5_baseline_pearson_dropped_vs_attack": 0.9676922304982072,
+    "match": true
+  }
+}

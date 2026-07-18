@@ -407,15 +407,17 @@ def cover_multihop_defense_report(
         ],
         "sim_to_product": {
             "baseline_local_discard": (
-                "Today: cover_flow.rs COVER_FRAGMENT_RESERVED discard before peel"
+                "Default: cover_flow.rs COVER_FRAGMENT_RESERVED discard before peel"
             ),
             "matched_local_discard": (
-                "Ops: synchronize per-hop cover burst schedules (policy comment / "
-                "future flag) so discard fractions match across hops"
+                "Product A3 (opt-in): [cover] multihop_defense = "
+                "\"matched_local_discard\" + matched_cover_flows — fixed cover "
+                "volume independent of local real count (peer-aligned discard)"
             ),
             "cover_onions": (
-                "Future: peelable cover onions that forward then sink — requires "
-                "Sphinx-shaped cover construction; not implemented in product"
+                "Product A3 scaffold: cover_onions_scaffold + "
+                "COVER_ONION_SCAFFOLD_RESERVED — still discarded; peelable "
+                "forward-then-sink onions not shipped (no continuity claim)"
             ),
             "mapping_doc": "docs/ops/cover_multihop_defense.md",
         },

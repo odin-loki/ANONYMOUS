@@ -469,8 +469,9 @@ def exit_tier_defense_report(
                 "co-active clients — product hook not shipped; sim-only."
             ),
             "presence_pad": (
-                "Decoy / cover clearnet flows from exit or willing clients to "
-                "inflate co-active sets at matched volume Q — policy + cost."
+                "Product (wave A2): opt-in [exit].presence_pad on aegis-node exit "
+                "sink — matched-Q active pad-up + idle decoy inject (default off; "
+                "exit hops only). Clearnet residual / cost remain."
             ),
             "matched_decoy": (
                 "Emit K matched-volume companions when a real flow is active — "
