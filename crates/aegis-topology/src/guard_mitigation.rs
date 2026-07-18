@@ -1,4 +1,4 @@
-//! Adaptive guard mitigation hooks (spec §13 — partial, v1 + v2 + v3 presets).
+//! Adaptive guard mitigation hooks (spec §13 — partial, v1–v4 presets).
 //!
 //! Ties Phase-7 anomaly / peer-health signals to guard rotation policy without
 //! changing production defaults. Does **not** close §13 adaptive exposure.
@@ -77,11 +77,24 @@ impl GuardMitigationPolicy {
     /// v3 preset — hard epoch-age cap 4, decaying stickiness from age 2, rotate on
     /// anomaly / single peer-health spike (sim `mode='mitigated_v3'`).
     ///
-    /// Best in-tree sim mid-horizon defense vs v2; long horizons still saturate — §13 [O].
+    /// Strong mid-horizon defense vs v2; long horizons still saturate — §13 [O].
     pub const fn adaptive_v3() -> Self {
         Self {
             max_sticky_epochs: 4,
             soft_sticky_epochs: 2,
+            rotate_on_anomaly: true,
+            rotate_on_peer_health_spike: true,
+            peer_health_spike_threshold: 1,
+        }
+    }
+
+    /// v4 preset — hard epoch-age cap 2, soft sticky from age 1 (sim `mode='mitigated_v4'`).
+    ///
+    /// Best in-tree sim long-horizon defense vs v3 at E=2000; still saturates — §13 [O].
+    pub const fn adaptive_v4() -> Self {
+        Self {
+            max_sticky_epochs: 2,
+            soft_sticky_epochs: 1,
             rotate_on_anomaly: true,
             rotate_on_peer_health_spike: true,
             peer_health_spike_threshold: 1,
@@ -217,7 +230,7 @@ pub struct GuardMitigationSignals {
 /// See `docs/ops/adaptive_guard_mitigation.md`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GuardMitigationFileConfig {
-    /// Preset name: `"adaptive_first"` | `"adaptive_v2"` | `"adaptive_v3"`.
+    /// Preset name: `"adaptive_first"` | `"adaptive_v2"` | `"adaptive_v3"` | `"adaptive_v4"`.
     /// Preferred over legacy bool.
     #[serde(default)]
     pub preset: Option<String>,
@@ -234,6 +247,7 @@ impl GuardMitigationFileConfig {
                 "adaptive_first" => GuardMitigationPolicy::adaptive_first(),
                 "adaptive_v2" => GuardMitigationPolicy::adaptive_v2(),
                 "adaptive_v3" => GuardMitigationPolicy::adaptive_v3(),
+                "adaptive_v4" => GuardMitigationPolicy::adaptive_v4(),
                 _ => GuardMitigationPolicy::disabled(),
             };
         }
@@ -332,6 +346,30 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_v4_hard_cap_and_soft_sticky_band() {
+        let p = GuardMitigationPolicy::adaptive_v4();
+        assert_eq!(p.max_sticky_epochs, 2);
+        assert_eq!(p.soft_sticky_epochs, 1);
+        assert!(p.should_resample_guards(2, false, 0));
+        assert!(p.should_resample_guards(0, false, 1));
+        assert!(!p.should_resample_guards(0, false, 0));
+        // Soft band is active (soft < hard); age 0 never soft-resamples.
+        assert!(p.soft_sticky_epochs < p.max_sticky_epochs);
+        // Age 1 is in [soft, hard): deterministic soft roll may fire.
+        let age1 = p.should_resample_guards(1, false, 0);
+        let _ = age1;
+    }
+
+    #[test]
+    fn file_config_preset_adaptive_v4() {
+        let file = GuardMitigationFileConfig {
+            preset: Some("adaptive_v4".into()),
+            ..GuardMitigationFileConfig::default()
+        };
+        assert_eq!(file.resolve_policy(), GuardMitigationPolicy::adaptive_v4());
+    }
+
+    #[test]
     fn file_config_unknown_preset_is_disabled() {
         let file = GuardMitigationFileConfig {
             preset: Some("unknown".into()),
@@ -380,6 +418,16 @@ mod tests {
         let p = GuardMitigationPolicy::adaptive_v3();
         let signals = GuardMitigationSignals {
             epoch_age: 4,
+            ..GuardMitigationSignals::default()
+        };
+        assert_ne!(p.client_seed_for_guards(42, &signals), 42);
+    }
+
+    #[test]
+    fn client_seed_resamples_on_v4_hard_cap() {
+        let p = GuardMitigationPolicy::adaptive_v4();
+        let signals = GuardMitigationSignals {
+            epoch_age: 2,
             ..GuardMitigationSignals::default()
         };
         assert_ne!(p.client_seed_for_guards(42, &signals), 42);

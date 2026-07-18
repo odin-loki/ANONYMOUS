@@ -428,3 +428,117 @@ fn tamper_alpha_or_gamma_rejected() {
         CryptoError::IntegrityFailure
     ));
 }
+
+/// Adversarial tagging KAT (wave S1): bit-flip map across beta slot boundaries.
+/// Not a formal tagging-resistance proof — regression gate on gamma covering beta.
+#[test]
+fn tagging_bit_flip_map_beta_rejects() {
+    let mut rng = OsRng;
+    let (path, secrets) = make_path(4);
+    let packet = build(&path, b"bit-flip-map", &mut rng).expect("build");
+    let offsets = [
+        0usize,
+        31,
+        32,
+        ROUTING_SLOT_LEN - 1,
+        ROUTING_SLOT_LEN,
+        ROUTING_SLOT_LEN + 32,
+        BETA_LEN / 2,
+        BETA_LEN - 1,
+    ];
+    for off in offsets {
+        let mut tampered = packet.clone();
+        tamper_beta_byte(&mut tampered, off);
+        let mut replay = ReplayCache::new();
+        let err = process(&tampered, &secrets[0], &mut replay).unwrap_err();
+        assert!(
+            matches!(err, CryptoError::IntegrityFailure),
+            "beta offset {off} must fail integrity"
+        );
+    }
+}
+
+/// Delta tamper is not covered by hop-0 gamma (MAC is over beta only).
+/// Documents design: payload integrity is layered stream-XOR, not AEAD at hop-0.
+#[test]
+fn delta_bit_flip_does_not_fail_hop0_mac() {
+    use aegis_crypto::sphinx::{ALPHA_LEN, GAMMA_LEN};
+
+    let mut rng = OsRng;
+    let (path, secrets) = make_path(3);
+    let packet = build(&path, b"delta-gap", &mut rng).expect("build");
+
+    let mut delta_tampered = packet.clone();
+    let delta_off = ALPHA_LEN + BETA_LEN + GAMMA_LEN;
+    delta_tampered.0[delta_off] ^= 0x01;
+
+    // MAC over beta unchanged ⇒ process proceeds past integrity and Forwards.
+    let mut replay = ReplayCache::new();
+    let out = process(&delta_tampered, &secrets[0], &mut replay).expect("delta flip passes MAC");
+    assert!(matches!(out, Processed::Forward { .. }));
+}
+
+/// Wrong-hop after first peel: hop-0 packet rejected by hop-1 secret (skip attack).
+#[test]
+fn skip_hop_secret_rejected() {
+    let mut rng = OsRng;
+    let (path, secrets) = make_path(5);
+    let packet = build(&path, b"skip-hop", &mut rng).expect("build");
+
+    // Attempt to process entry packet with hop-1 secret (skip hop-0).
+    let mut replay = ReplayCache::new();
+    let err = process(&packet, &secrets[1], &mut replay).unwrap_err();
+    assert!(matches!(
+        err,
+        CryptoError::IntegrityFailure | CryptoError::Malformed(_)
+    ));
+
+    // Correct peel then wrong later hop still fails.
+    let mut replay0 = ReplayCache::new();
+    let mid = match process(&packet, &secrets[0], &mut replay0).expect("hop0") {
+        Processed::Forward { packet: next, .. } => next,
+        other => panic!("expected forward, got {other:?}"),
+    };
+    let mut replay_wrong = ReplayCache::new();
+    let err2 = process(&mid, &secrets[3], &mut replay_wrong).unwrap_err();
+    assert!(matches!(
+        err2,
+        CryptoError::IntegrityFailure | CryptoError::Malformed(_)
+    ));
+}
+
+/// Path-length adversarial: payload-at-max and unused-slot randomness keep size fixed.
+#[test]
+fn path_length_adversarial_size_invariant() {
+    let mut rng = OsRng;
+    for len in 2..=MAX_HOPS {
+        let (path, secrets) = make_path(len);
+        let packet = build(&path, &[0xAA; DELTA_LEN], &mut rng).expect("build");
+        assert_eq!(packet.as_bytes().len(), SPHINX_PACKET_LEN);
+        let mut replay = ReplayCache::new();
+        let out = process(&packet, &secrets[0], &mut replay).expect("hop0");
+        match out {
+            Processed::Forward { next_hop, packet: next } => {
+                assert_eq!(next_hop, path[1].id);
+                assert_eq!(next.as_bytes().len(), SPHINX_PACKET_LEN);
+            }
+            other => panic!("expected forward, got {other:?}"),
+        }
+    }
+}
+
+/// Public replay_tag KAT shared with Python oracle (secret = 0x11 * 32).
+#[test]
+fn replay_tag_shared_kat_with_python_oracle() {
+    use aegis_crypto::kem::SharedSecret;
+    use aegis_crypto::sphinx::replay_tag;
+
+    let secret = SharedSecret([0x11u8; 32]);
+    let tag = replay_tag(&secret);
+    const EXPECT: [u8; 32] = [
+        0x26, 0x1d, 0x03, 0x7e, 0xad, 0x23, 0xe8, 0xbc, 0x7a, 0x09, 0x2e, 0x7f, 0x36, 0x23,
+        0xea, 0x4c, 0x78, 0x60, 0x7f, 0x6f, 0x9a, 0x44, 0x09, 0x70, 0x2a, 0x1f, 0x0e, 0xb5,
+        0xa8, 0x61, 0x83, 0xac,
+    ];
+    assert_eq!(tag, EXPECT);
+}

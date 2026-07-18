@@ -1,6 +1,6 @@
 # AEGIS — Implementation-Level Threat Model
 
-**Date:** 2026-07-12 (mitigation sync **2026-07-17**)  
+**Date:** 2026-07-12 (mitigation sync **2026-07-17**; crypto gap ledger **2026-07-18** / Wave S2)  
 **Scope:** Maps the paper threat model in `docs/AEGIS_SPEC_v3_consolidated.md` §2–§9 onto the **actual Rust/Python code** in this workspace.  
 **Adversary baseline:** Nation-state global passive adversary (GPA) + active fraction `f` of compromised mixes, for a **permissioned consortium** mixnet.  
 **Cross-references:** `docs/AEGIS_crypto_constant_time_review.md` (crypto side channels), `docs/AEGIS_phase8_hardening_notes.md` (real-trace / adaptive-adversary quantification). This document does **not** repeat those findings.
@@ -15,9 +15,9 @@
 |---|---------|------------------|----------|
 | 1 | **`send_payload` / legacy paced send go quiet after 18 ticks** — unpaced burst and one-shot paced path expose true cadence at client TCP ingress. **Soft-closed (2026-07-17):** default CLI uses `PacedSession` with continuous dummy cover + connection reuse; `send_payload` / `send_payload_with_options` are `#[deprecated]` (traces/`--raw` only). Residual: deliberate raw integration or `--raw` still unpaced. | `aegis-client::send`, `aegis-client::session`, CLI `--raw` | **Low–medium** (was Medium; High if misusing raw API) |
 | 2 | **~~No admission rate limit~~** — ~~compromised consortium signing key ⇒ unlimited signed Sybil relays; fresh Sybils get NEUTRAL reputation (0.5) and pass the 0.3 floor immediately.~~ **Mitigated (2026-07-12):** probationary admission reputation (0.1) + configurable rate limit (default 5/24h). **Mitigated (2026-07-17):** M-of-N threshold admission (`ThresholdConsortium` / `admit_threshold_signed`). Live peer-health drains feed EWMA via `feed_peer_outcomes` (`aegis-node` 30s). Residual: consortium key ceremony out of band. | `aegis-topology::roster`, `aegis-trust::reputation` | **Low–medium** (was High) |
-| 3 | **Hop link auth (LegacyPsk + Auto/Noise)** — default `handshake = "auto"`: Noise when local (+ peer) `noise_static_*` keys are present, else LegacyPsk (X25519 ECDH + PSK MAC + **`identity_binding`**). **Partial/Mitigated (2026-07-17):** `LinkHandshakeMode::Auto`/`Noise` (`noise-link`) run Noise_IK-compatible mutual auth with roster static X25519 keys; see `docs/ops/noise_link_auth.md`. Residual: Noise transcript uses SHA3 not BLAKE2s (not full Noise/`snow`); ingress admits holders of the configured ingress static/PSK; static secrets still operator-distributed; Auto without keys stays LegacyPsk. | `aegis-crypto::link`, `aegis-crypto::noise_link`, `aegis-relay::net`, `aegis-node::config` | **Low–medium** (was Medium) |
+| 3 | **Hop link auth (LegacyPsk + Auto/Noise)** — default `handshake = "auto"`: Noise when local (+ peer) `noise_static_*` keys are present, else LegacyPsk (X25519 ECDH + PSK MAC + **`identity_binding`**). **Partial/Mitigated (2026-07-18):** identity + optional KEM commitment binding property-tested (`tests/threat_model_gaps.rs`); Noise_IK path via `noise-link` (see `docs/ops/noise_link_auth.md`). Residual **accepted**: ingress still admits holders of configured static/PSK; static secrets operator-distributed; Auto without keys stays LegacyPsk; not full BLAKE2s/`snow` interchange claim beyond feature path. | `aegis-crypto::link`, `aegis-crypto::noise_link`, `aegis-relay::net`, `aegis-node::config` | **Low–medium** |
 | 4 | **Relay error/load counters observable** — fine-grained per-error counters remain available via [`RelayHandle::debug_stats`] for in-process tests only; external surfaces must use [`RelayHandle::coarse_stats`] (aggregated buckets). Residual GPA risk if coarse buckets are scraped at high frequency under flood. | `aegis-relay::node::RelayCoarseStats` | **Low–medium** (was Medium) |
-| 5 | **Replay cache eviction under sustained flood** — **Mitigated (2026-07-17):** CT FIFO membership scan (`ct_contains`); generation/`advance_epoch()` + proactive shorten at 85% fill on large caches. Residual: O(capacity) CPU per check; shortened window under flood is intentional trade-off. | `aegis-crypto::replay` | **Low** (was Medium) |
+| 5 | **Replay cache eviction under sustained flood** — **Mitigated / Tested (2026-07-18):** CT FIFO scan; capacity-bound + duplicate properties in `tests/threat_model_gaps.rs`; generation advance at 85% fill. Residual **accepted**: O(capacity) CPU; shortened window under flood intentional. | `aegis-crypto::replay` | **Low** |
 
 ---
 
@@ -39,8 +39,8 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| Hop identity in Sphinx routing slots is 32-byte opaque id; no PKI binding to roster admission in this crate. | `sphinx::build`, `PathHop::id` | **Open gap** — roster binding is in `aegis-topology`; crypto layer trusts caller-supplied ids. | Low (by design; admission is out-of-crate) |
-| Link frames carry no peer identity inside AEAD — session auth from ephemeral ECDH + PSK MAC; roster `RelayId` bound in confirm/finish MAC when `identity_binding` enabled. | `link::LinkKey::open`, `link::link_handshake_*`, `LinkHandshakeBinding` | **Partial (2026-07-17)** — per-connection forward secrecy; stolen peer-A PSK cannot auth as peer B when binding on. Residual: config-held PSK; AEAD frames still anonymous. | — |
+| Hop identity in Sphinx routing slots is 32-byte opaque id; no PKI binding to roster admission in this crate. | `sphinx::build`, `PathHop::id` | **Accepted assumption (2026-07-18)** — roster/PKI binding is out-of-crate (`aegis-topology` / client `build_packet_require_bindings`). Crypto trusts caller-supplied ids by design. Property: `tests/threat_model_gaps.rs::opaque_hop_ids_roundtrip_on_peel`. Residual severity: **Low**. | Low |
+| Link frames carry no peer identity inside AEAD — session auth from ephemeral ECDH + PSK MAC; roster `RelayId` bound in confirm/finish MAC when `identity_binding` enabled. | `link::LinkKey::open`, `link::link_handshake_*`, `LinkHandshakeBinding` | **Partial / Tested (2026-07-18)** — binding properties covered in `tests/threat_model_gaps.rs` (wrong peer id / wrong KEM commitment fail closed; AEAD frame width has no peer-id slot). Residual **accepted**: config-held PSK; AEAD frames remain anonymous by design. Sev: **Low**. | Low |
 
 ### Tampering
 
@@ -61,17 +61,17 @@ Simulations backing numeric claims:
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
 | Per-hop peel reveals only next-hop id to relay (standard Sphinx). | `sphinx::process` → `Processed::Forward` | **Mitigated** by onion design. | — |
-| MAC verify pass/fail may leak via timing (branch after `ct_eq`). | `sphinx::process` | **Partial** — documented in constant-time review; not byte-comparison leak. | Low |
-| `ReplayCache::check_and_insert` membership scan. | `replay.rs` (`ct_contains`) | **Mitigated (2026-07-17)** — fixed-capacity CT equality scan over FIFO window; `HashSet` not used on check path. Residual: O(capacity) CPU; branch after aggregated compare. | Low |
+| MAC verify pass/fail may leak via timing (branch after `ct_eq`). | `sphinx::process` | **Accepted residual (2026-07-18)** — functional fail-closed quantified (`tampered_gamma_always_integrity_failure`); not a byte-comparison leak. Timing residual deferred to S6 / `dudect` (`AEGIS_crypto_constant_time_review.md`). Sev: **Low**. | Low |
+| `ReplayCache::check_and_insert` membership scan. | `replay.rs` (`ct_contains`) | **Mitigated / Tested (2026-07-18)** — CT FIFO scan; duplicate + capacity-bound properties in `tests/threat_model_gaps.rs`. Residual **accepted**: O(capacity) CPU; branch after aggregated compare (dudect / S6). | Low |
 | Fixed packet size regardless of path length. | `SphinxPacket`, `SPHINX_PACKET_LEN` | **Mitigated**. | — |
 
 ### Denial of service
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| Bounded replay cache with generation advance under flood. | `replay::ReplayCache::with_capacity`, `advance_epoch` | **Mitigated (2026-07-17)** — proactive generation advance at 85% fill; CT membership scan; epoch rollover remains primary defense. Residual: O(capacity) per-check cost. | **Low** (was Low–medium) |
+| Bounded replay cache with generation advance under flood. | `replay::ReplayCache::with_capacity`, `advance_epoch` | **Mitigated / Tested (2026-07-18)** — proactive generation advance at 85% fill; CT membership scan; `replay_len_bounded_under_flood` property. Residual **accepted**: O(capacity) per-check cost; shortened window under flood intentional. | **Low** |
 | `process()` on arbitrary bytes returns errors without panic (proptest/fuzz gate). | `sphinx::process`, `tests/parser_fuzz_properties.rs` | **Mitigated**. | — |
-| Large fixed packets (8504 B Sphinx + 18 fragments) — CPU/memory per flood packet. | `fragment`, `sphinx` | **Partial** — no explicit rate limit in crate. | Low |
+| Large fixed packets (8512 B Sphinx + 18×512 B fragments) — CPU/memory per flood packet. | `fragment`, `sphinx` | **Accepted assumption (2026-07-18)** — no rate limit in this crate by design; ingress token-bucket lives in `aegis-relay`. Size/fragment invariants property-tested (`fixed_packet_and_fragment_surface`). Residual: fixed per-packet CPU/memory under flood if limiter mis-set. Sev: **Low**. | Low |
 
 ### Elevation of privilege
 
@@ -79,7 +79,7 @@ Simulations backing numeric claims:
 |---------|----------|--------|-----|
 | No privilege model in crate; relay secret only peels one layer. | `sphinx::process` | **Mitigated** — cannot skip layers without keys. | — |
 
-**Overall:** Crypto core matches Phase-2 gate properties. Residual issues are replay-cache O(capacity) CPU cost and link-layer auth (delegated to deployment). **Do not re-audit constant-time details here** — see `AEGIS_crypto_constant_time_review.md`.
+**Overall:** Crypto core matches Phase-2 gate properties. Wave S2 (2026-07-18) closed or quantified every Open/Partial row in this section via `tests/threat_model_gaps.rs` + accepted residuals in [`ops/CRYPTO_THREAT_GAP_LEDGER.md`](ops/CRYPTO_THREAT_GAP_LEDGER.md). Remaining residuals: replay O(capacity) CPU, MAC/replay post-`ct_eq` branch timing (S6/`dudect`), and deployment-held link PSK. **Do not re-audit constant-time details here** — see `AEGIS_crypto_constant_time_review.md`.
 
 ---
 
@@ -284,7 +284,7 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| Client chooses path hops explicitly in `send_payload`. | `send::ClientHop`, `send_payload` | **Mitigated** if path from topology; **open** if client maliciously picks paths. | Low |
+| Client chooses path hops explicitly in `send_payload`. | `send::ClientHop`, `send_payload` | **Accepted assumption (2026-07-18)** — honest clients use topology `build_bound_path_pruned*` + `build_packet_require_bindings` (KEM binding tests in `aegis-client/tests/kem_binding.rs`). Crypto layer trusts caller ids (TM-CRYPTO-01). Malicious local client picking arbitrary hops is out of threat model for permissioned endpoints. Residual: **Low**. | Low |
 
 ### Tampering
 
@@ -302,7 +302,7 @@ Simulations backing numeric claims:
 
 | Finding | Location | Status | Sev |
 |---------|----------|--------|-----|
-| **`send_payload` / CLI `--raw` bypass emitter** — unpaced burst at client TCP ingress; GPA sees true cadence. | `send.rs`, CLI `--raw`, `trace_capture.rs` | **Soft-closed (2026-07-17)** — default CLI / [`PacedSession`](../../crates/aegis-client/src/session.rs) use continuous emitter + post-send cover; raw APIs `#[deprecated]` with allow only at intentional `--raw`/trace sites. Residual: one-time TCP/handshake per session; adversarial clients can still call raw. | **Low–medium** (High if misusing raw API) |
+| **`send_payload` / CLI `--raw` bypass emitter** — unpaced burst at client TCP ingress; GPA sees true cadence. | `send.rs`, CLI `--raw`, `trace_capture.rs` | **Soft-closed / Accepted residual (2026-07-18)** — default CLI / [`PacedSession`](../../crates/aegis-client/src/session.rs) paced; raw APIs `#[deprecated]`. Residual **accepted**: one-time TCP/handshake per session; adversarial/`--raw` clients still unpaced (High if misused). Crypto fragment size invariants in `tests/threat_model_gaps.rs`. | **Low–medium** |
 | Hard-cap padder emits exactly Q slots per round externally. | `padding::HardCapPadder::round` | **Mitigated** when used. | — |
 | Dummy cells use CSPRNG padding. | `emitter::encode_dummy_cell` | **Mitigated**. | — |
 
@@ -468,8 +468,8 @@ unfinished product wiring:
 | Adversarial clients ignoring paced APIs | deployment | Default CLI + `PacedSession` shaped; raw API deprecated |
 | Sybil plateau under majority layer-1 flood | Mitigated | Admission + g=3+rep block fresh Sybils; unfiltered APIs fenced `test-utils` (science only) |
 | g=1 effective guard vs paper g=3 plateau | Mitigated | `GUARD_SET_SIZE=3` + production multi-guard helpers; sticky primary is intentional entry pin |
-| Replay cache O(capacity) CPU / full `dudect` | research | CT FIFO scan + in-tree hit/miss smoke; full `dudect` is WSL/ops (`docs/ops/constant_time_ci.md`) |
-| MAC-verify branch timing after `ct_eq` | research | Documented in constant-time review; not byte-comparison leak |
+| Replay cache O(capacity) CPU / full `dudect` | research | **Accepted residual (S2)** — capacity/duplicate properties tested; full `dudect` is S6 / WSL (`docs/ops/constant_time_ci.md`); ledger `CRYPTO_THREAT_GAP_LEDGER.md` |
+| MAC-verify branch timing after `ct_eq` | research | **Accepted residual (S2)** — IntegrityFailure property tested; timing → S6/`dudect`; not byte-comparison leak |
 | Weighted fair queues (WFQ) | research/ops | **Done (2026-07-17)** — per-connection inbound + per-next-hop outbound queues; health-weighted credit RR (WFQ-style); residual: discrete quanta not continuous GPS |
 
 Re-verify: `cargo test -p aegis-topology`, `cargo test -p aegis-client -p aegis-crypto`, `cd sim && PYTHONPATH=. pytest -q`.

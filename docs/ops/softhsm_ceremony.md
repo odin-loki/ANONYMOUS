@@ -1,12 +1,13 @@
 # SoftHSM2 ceremony pilot (PKCS#11)
 
-**Status:** **Succeeded** on OdinsPC WSL (2026-07-18, tip `ae536f1`) — SoftHSM2
-user-local build + token `aegis-ceremony` initialized. SoftHSM remains a **software
-token**, not hardware custody. **Not required for CI.**
+**Status:** **Succeeded** on OdinsPC WSL (2026-07-18) — SoftHSM2 user-local build +
+token `aegis-ceremony` initialized; S6 ceremony regress green at tip `3819c1b`.
+SoftHSM remains a **software token**, not hardware custody. **Not required for CI.**
 
 **Parent:** [`consortium_key_ceremony.md`](consortium_key_ceremony.md)  
 **APIs:** `Pkcs11CustodyOps`, `HsmCustodyProvider`, `SimulatedHsmProvider`, `select_ceremony_custody`  
-**Evidence:** [`sim/softhsm_init_evidence.txt`](../../sim/softhsm_init_evidence.txt)
+**Evidence:** [`sim/softhsm_init_evidence.txt`](../../sim/softhsm_init_evidence.txt),
+[`sim/softhsm_ceremony_regress.txt`](../../sim/softhsm_ceremony_regress.txt)
 
 This document is the operator path for standing up **SoftHSM2** under WSL/Linux as a
 PKCS#11 stand-in before linking a vendor HSM. The in-tree Rust workspace remains
@@ -43,7 +44,21 @@ powershell -File scripts/softhsm_wsl.ps1 -Action probe
 powershell -File scripts/softhsm_wsl.ps1 -Action user-build
 powershell -File scripts/softhsm_wsl.ps1 -Action init -Evidence
 powershell -File scripts/softhsm_wsl.ps1 -Action dry-run
+powershell -File scripts/softhsm_wsl.ps1 -Action regress -Evidence   # ceremony regression
+powershell -File scripts/softhsm_wsl.ps1 -Action verify              # probe+init+custody
 ```
+
+### Ceremony regression harness (S6)
+
+After a successful user-build + token init, re-verify without sudo:
+
+```bash
+bash scripts/softhsm_ceremony_regress.sh --evidence sim/softhsm_ceremony_regress.txt
+```
+
+Steps: probe → dry-run → init (expect `ALREADY_INITIALIZED`) → optional pkcs11-tool →
+`cargo test -p aegis-topology custody::tests`. See
+[`sim/softhsm_ceremony_regress.txt`](../../sim/softhsm_ceremony_regress.txt).
 
 ## Install paths
 

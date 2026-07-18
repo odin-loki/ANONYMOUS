@@ -1,0 +1,286 @@
+=== AEGIS Sphinx ProVerif probe ===
+date: 2026-07-18T09:08:14Z
+host: Linux OdinsPC 6.6.87.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun  5 18:30:46 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+
+STATUS: FOUND
+binary: /home/odin/tools/proverif_linux_amd64_static
+Proverif 2.05. Cryptographic protocol verifier, by Bruno Blanchet, Vincent Cheval, and Marc Sylvestre
+
+=== Running sphinx_hop.pv ===
+File "/mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS/tools/proverif/sphinx_hop.pv", line 65, characters 7-9:
+Warning: identifier sid rebound.
+File "/mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS/tools/proverif/sphinx_hop.pv", line 93, characters 63-65:
+Warning: identifier sid rebound.
+File "/mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS/tools/proverif/sphinx_hop.pv", line 111, characters 63-65:
+Warning: identifier sid rebound.
+File "/mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS/tools/proverif/sphinx_hop.pv", line 129, characters 18-20:
+Warning: identifier sid rebound.
+Process 0 (that is, the initial process):
+(
+    {1}out(net, (pk(skA),pk(skB),pk(skC)))
+) | (
+    {2}!
+    {3}new sid_1: bitstring;
+    {4}new ssA: ssecret;
+    {5}new ssB: ssecret;
+    {6}new ssC: ssecret;
+    {7}let betaC: bitstring = senc((END,sid_1),ssC) in
+    {8}let gammaC: bitstring = mac(betaC,ssC) in
+    {9}let deltaC: bitstring = senc(secret_payload,ssC) in
+    {10}let ctC: bitstring = aenc(ssC,pk(skC)) in
+    {11}let betaB: bitstring = senc((HC,ctC,gammaC,betaC,sid_1),ssB) in
+    {12}let gammaB: bitstring = mac(betaB,ssB) in
+    {13}let deltaB: bitstring = senc(deltaC,ssB) in
+    {14}let ctB: bitstring = aenc(ssB,pk(skB)) in
+    {15}let betaA: bitstring = senc((HB,ctB,gammaB,betaB,sid_1),ssA) in
+    {16}let gammaA: bitstring = mac(betaA,ssA) in
+    {17}let deltaA: bitstring = senc(deltaB,ssA) in
+    {18}let ctA: bitstring = aenc(ssA,pk(skA)) in
+    {19}event ClientBuilt(sid_1);
+    {20}out(net, (ctA,betaA,gammaA,deltaA))
+) | (
+    {21}!
+    {22}in(net, (ct: bitstring,beta: bitstring,gamma: bitstring,delta: bitstring));
+    {23}let ss: ssecret = adec(ct,skA) in
+    {24}if (gamma = mac(beta,ss)) then
+    {25}let t: bitstring = rtag(ss) in
+    {34}get seenA(=t) in
+        {26}event ReplayReject(HA)
+    else
+        {27}insert seenA(t);
+        {28}let (=HB,ctN: bitstring,gN: bitstring,bN: bitstring,sid_2: bitstring) = sdec(beta,ss) in
+        {29}let dN: bitstring = sdec(delta,ss) in
+            {30}event HopTook(HA,t);
+            {31}event HopAccept(HA,HB,sid_2);
+            {32}out(net, (ctN,bN,gN,dN))
+        else
+            {33}event MacReject(HA)
+) | (
+    {35}!
+    {36}in(net, (ct_1: bitstring,beta_1: bitstring,gamma_1: bitstring,delta_1: bitstring));
+    {37}let ss_1: ssecret = adec(ct_1,skB) in
+    {38}if (gamma_1 = mac(beta_1,ss_1)) then
+    {39}let t_1: bitstring = rtag(ss_1) in
+    {48}get seenB(=t_1) in
+        {40}event ReplayReject(HB)
+    else
+        {41}insert seenB(t_1);
+        {42}let (=HC,ctN_1: bitstring,gN_1: bitstring,bN_1: bitstring,sid_3: bitstring) = sdec(beta_1,ss_1) in
+        {43}let dN_1: bitstring = sdec(delta_1,ss_1) in
+            {44}event HopTook(HB,t_1);
+            {45}event HopAccept(HB,HC,sid_3);
+            {46}out(net, (ctN_1,bN_1,gN_1,dN_1))
+        else
+            {47}event MacReject(HB)
+) | (
+    {49}!
+    {50}in(net, (ct_2: bitstring,beta_2: bitstring,gamma_2: bitstring,delta_2: bitstring));
+    {51}let ss_2: ssecret = adec(ct_2,skC) in
+    {52}if (gamma_2 = mac(beta_2,ss_2)) then
+    {53}let t_2: bitstring = rtag(ss_2) in
+    {61}get seenC(=t_2) in
+        {54}event ReplayReject(HC)
+    else
+        {55}insert seenC(t_2);
+        {56}let (=END,sid_4: bitstring) = sdec(beta_2,ss_2) in
+        {57}let p: bitstring = sdec(delta_2,ss_2) in
+            {58}event HopTook(HC,t_2);
+            {59}event ExitDeliver(sid_4,p)
+        else
+            {60}event MacReject(HC)
+) | (
+    {62}!
+    {63}in(net, (ct_3: bitstring,beta_3: bitstring,gamma_3: bitstring,delta_3: bitstring));
+    {64}new junk: bitstring;
+    {65}out(net, (ct_3,beta_3,junk,delta_3))
+) | (
+    {66}!
+    {67}in(net, (ct_4: bitstring,beta_4: bitstring,gamma_4: bitstring,delta_4: bitstring));
+    {68}out(net, (ct_4,beta_4,gamma_4,delta_4));
+    {69}out(net, (ct_4,beta_4,gamma_4,delta_4))
+)
+
+File "/mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS/tools/proverif/sphinx_hop.pv", line 58, characters 7-9:
+Warning: identifier sid rebound.
+--  Process 1 (that is, process 0, with let moved downwards):
+(
+    {1}out(net, (pk(skA),pk(skB),pk(skC)))
+) | (
+    {2}!
+    {3}new sid_1: bitstring;
+    {4}new ssA: ssecret;
+    {5}new ssB: ssecret;
+    {6}new ssC: ssecret;
+    {19}event ClientBuilt(sid_1);
+    {18}let ctA: bitstring = aenc(ssA,pk(skA)) in
+    {9}let deltaC: bitstring = senc(secret_payload,ssC) in
+    {13}let deltaB: bitstring = senc(deltaC,ssB) in
+    {17}let deltaA: bitstring = senc(deltaB,ssA) in
+    {14}let ctB: bitstring = aenc(ssB,pk(skB)) in
+    {10}let ctC: bitstring = aenc(ssC,pk(skC)) in
+    {7}let betaC: bitstring = senc((END,sid_1),ssC) in
+    {8}let gammaC: bitstring = mac(betaC,ssC) in
+    {11}let betaB: bitstring = senc((HC,ctC,gammaC,betaC,sid_1),ssB) in
+    {12}let gammaB: bitstring = mac(betaB,ssB) in
+    {15}let betaA: bitstring = senc((HB,ctB,gammaB,betaB,sid_1),ssA) in
+    {16}let gammaA: bitstring = mac(betaA,ssA) in
+    {20}out(net, (ctA,betaA,gammaA,deltaA))
+) | (
+    {21}!
+    {22}in(net, (ct: bitstring,beta: bitstring,gamma: bitstring,delta: bitstring));
+    {23}let ss: ssecret = adec(ct,skA) in
+    {24}if (gamma = mac(beta,ss)) then
+    {25}let t: bitstring = rtag(ss) in
+    {34}get seenA(=t) in
+        {26}event ReplayReject(HA)
+    else
+        {27}insert seenA(t);
+        {28}let (=HB,ctN: bitstring,gN: bitstring,bN: bitstring,sid_2: bitstring) = sdec(beta,ss) in
+        {29}let dN: bitstring = sdec(delta,ss) in
+            {30}event HopTook(HA,t);
+            {31}event HopAccept(HA,HB,sid_2);
+            {32}out(net, (ctN,bN,gN,dN))
+        else
+            {33}event MacReject(HA)
+) | (
+    {35}!
+    {36}in(net, (ct_1: bitstring,beta_1: bitstring,gamma_1: bitstring,delta_1: bitstring));
+    {37}let ss_1: ssecret = adec(ct_1,skB) in
+    {38}if (gamma_1 = mac(beta_1,ss_1)) then
+    {39}let t_1: bitstring = rtag(ss_1) in
+    {48}get seenB(=t_1) in
+        {40}event ReplayReject(HB)
+    else
+        {41}insert seenB(t_1);
+        {42}let (=HC,ctN_1: bitstring,gN_1: bitstring,bN_1: bitstring,sid_3: bitstring) = sdec(beta_1,ss_1) in
+        {43}let dN_1: bitstring = sdec(delta_1,ss_1) in
+            {44}event HopTook(HB,t_1);
+            {45}event HopAccept(HB,HC,sid_3);
+            {46}out(net, (ctN_1,bN_1,gN_1,dN_1))
+        else
+            {47}event MacReject(HB)
+) | (
+    {49}!
+    {50}in(net, (ct_2: bitstring,beta_2: bitstring,gamma_2: bitstring,delta_2: bitstring));
+    {51}let ss_2: ssecret = adec(ct_2,skC) in
+    {52}if (gamma_2 = mac(beta_2,ss_2)) then
+    {53}let t_2: bitstring = rtag(ss_2) in
+    {61}get seenC(=t_2) in
+        {54}event ReplayReject(HC)
+    else
+        {55}insert seenC(t_2);
+        {56}let (=END,sid_4: bitstring) = sdec(beta_2,ss_2) in
+        {57}let p: bitstring = sdec(delta_2,ss_2) in
+            {58}event HopTook(HC,t_2);
+            {59}event ExitDeliver(sid_4,p)
+        else
+            {60}event MacReject(HC)
+) | (
+    {62}!
+    {63}in(net, (ct_3: bitstring,beta_3: bitstring,gamma_3: bitstring,delta_3: bitstring));
+    {64}new junk: bitstring;
+    {65}out(net, (ct_3,beta_3,junk,delta_3))
+) | (
+    {66}!
+    {67}in(net, (ct_4: bitstring,beta_4: bitstring,gamma_4: bitstring,delta_4: bitstring));
+    {68}out(net, (ct_4,beta_4,gamma_4,delta_4));
+    {69}out(net, (ct_4,beta_4,gamma_4,delta_4))
+)
+
+-- Query not attacker_bitstring(secret_payload[]) in process 1.
+Translating the process into Horn clauses...
+Completing...
+Starting query not attacker_bitstring(secret_payload[])
+RESULT not attacker_bitstring(secret_payload[]) is true.
+-- Query event(ExitDeliver(sid_5,secret_payload[])) ==> event(ClientBuilt(sid_5)) in process 1.
+Translating the process into Horn clauses...
+Completing...
+Starting query event(ExitDeliver(sid_5,secret_payload[])) ==> event(ClientBuilt(sid_5))
+goal reachable: b-event(ClientBuilt(sid_5)) -> event(ExitDeliver(sid_5,secret_payload[]))
+Abbreviations:
+sid_5 = sid_1[!1 = @sid]
+RESULT event(ExitDeliver(sid_5,secret_payload[])) ==> event(ClientBuilt(sid_5)) is true.
+
+--------------------------------------------------------------
+Verification summary:
+
+Query not attacker_bitstring(secret_payload[]) is true.
+
+Query event(ExitDeliver(sid_5,secret_payload[])) ==> event(ClientBuilt(sid_5)) is true.
+
+--------------------------------------------------------------
+
+exit_code_sphinx_hop.pv: 0
+
+=== Running sphinx_replay.pv ===
+Process 0 (that is, the initial process):
+(
+    {1}new ss: ssecret;
+    {2}new beta: bitstring;
+    {3}let t: bitstring = rtag(ss) in
+    {4}let gamma: bitstring = mac(beta,ss) in
+    {5}let ct: bitstring = aenc(ss,pk(skH)) in
+    {6}event ClientBuilt(t);
+    {7}out(net, (ct,beta,gamma));
+    {8}phase 1;
+    {9}out(net, (ct,beta,gamma))
+) | (
+    {10}in(net, (ct_1: bitstring,beta_1: bitstring,gamma_1: bitstring));
+    {11}let ss_1: ssecret = adec(ct_1,skH) in
+    {12}if (gamma_1 = mac(beta_1,ss_1)) then
+    {13}let t_1: bitstring = rtag(ss_1) in
+    {14}event HopAccept(t_1);
+    {15}phase 1;
+    {16}in(net, (ct2: bitstring,beta2: bitstring,gamma2: bitstring));
+    {17}event ReplayReject
+)
+
+--  Process 1 (that is, process 0, with let moved downwards):
+(
+    {1}new ss: ssecret;
+    {2}new beta: bitstring;
+    {3}let t: bitstring = rtag(ss) in
+    {6}event ClientBuilt(t);
+    {5}let ct: bitstring = aenc(ss,pk(skH)) in
+    {4}let gamma: bitstring = mac(beta,ss) in
+    {7}out(net, (ct,beta,gamma));
+    {8}phase 1;
+    {9}out(net, (ct,beta,gamma))
+) | (
+    {10}in(net, (ct_1: bitstring,beta_1: bitstring,gamma_1: bitstring));
+    {11}let ss_1: ssecret = adec(ct_1,skH) in
+    {12}if (gamma_1 = mac(beta_1,ss_1)) then
+    {13}let t_1: bitstring = rtag(ss_1) in
+    {14}event HopAccept(t_1);
+    {15}phase 1;
+    {16}in(net, (ct2: bitstring,beta2: bitstring,gamma2: bitstring));
+    {17}event ReplayReject
+)
+
+-- Query inj-event(HopAccept(t_2)) ==> inj-event(ClientBuilt(t_2)) in process 1.
+Translating the process into Horn clauses...
+Completing...
+Starting query inj-event(HopAccept(t_2)) ==> inj-event(ClientBuilt(t_2))
+goal reachable: b-inj-event(ClientBuilt(rtag(ss[])),@occ6[]) -> inj-event(HopAccept(rtag(ss[])),@occ14_1)
+The hypothesis occurs strictly before the conclusion.
+Abbreviations:
+@occ14_1 = @occ14[gamma_1 = mac(beta[],ss[]),beta_1 = beta[],ct_1 = aenc(ss[],pk(skH[]))]
+RESULT inj-event(HopAccept(t_2)) ==> inj-event(ClientBuilt(t_2)) is true.
+
+--------------------------------------------------------------
+Verification summary:
+
+Query inj-event(HopAccept(t_2)) ==> inj-event(ClientBuilt(t_2)) is true.
+
+--------------------------------------------------------------
+
+exit_code_sphinx_replay.pv: 0
+
+=== Summary grep ===
+RESULT not attacker_bitstring(secret_payload[]) is true.
+RESULT event(ExitDeliver(sid_5,secret_payload[])) ==> event(ClientBuilt(sid_5)) is true.
+Query not attacker_bitstring(secret_payload[]) is true.
+Query event(ExitDeliver(sid_5,secret_payload[])) ==> event(ClientBuilt(sid_5)) is true.
+RESULT inj-event(HopAccept(t_2)) ==> inj-event(ClientBuilt(t_2)) is true.
+Query inj-event(HopAccept(t_2)) ==> inj-event(ClientBuilt(t_2)) is true.
+

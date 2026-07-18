@@ -14,6 +14,10 @@ Modules:
                  - fused active(n-1)+intersection ranking, sensitivity, offline horizons
     exit_tier_intersection
                  - multi-client exit window anonymity-set / intersection (C2; not WAN closed)
+    exit_tier_defense
+                 - wave S4: exit-window pad / decoy defenses ranked vs tip-intersection + volume rank
+    cover_multihop_defense
+                 - wave S4: cover onions / matched discard ranked vs multi-hop semantic gap
     fused_adversary
                  - adaptive recompromise ∩ Mode-1 active/intersection coupling (C2)
     faction_sybil_skew
@@ -22,6 +26,13 @@ Modules:
                  - wave C4 lab: issuer correlation, double-spend, merge_from_file eclipse
     gossip_eclipse
                  - wave C1: gossip eclipse + majority_k collusion ([O] QUANTIFIED Partial)
+    gossip_eclipse_defense
+                 - wave S5: raised-K / org-diversity / eclipse-detect vs C1 baseline
+    fused_defense
+                 - wave S5: adaptive_v4 + fused Mode-1 hard_cap under recompromise
+    sphinx_oracle
+                 - wave S1: bit-level Sphinx build/peel/MAC/replay oracle (KEM Rust-only;
+                   not a formal proof)
     metrics      - anonymity metrics (matching accuracy, disclosure, Hurst),
                    plus (Phase 8) shapeability_report for honest per-trace tiering
 
@@ -37,9 +48,14 @@ __all__ = [
     "adversaries",
     "combined_active_intersection",
     "exit_tier_intersection",
+    "exit_tier_defense",
+    "cover_multihop_defense",
     "fused_adversary",
     "faction_sybil_skew",
     "ac_nullifier_unlinkability",
     "gossip_eclipse",
+    "gossip_eclipse_defense",
+    "fused_defense",
+    "sphinx_oracle",
     "metrics",
 ]

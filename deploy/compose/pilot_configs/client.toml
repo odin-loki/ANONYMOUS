@@ -5,7 +5,7 @@
 #
 # Opt-in (default off):
 # [guard_mitigation]
-# preset = "adaptive_v3"   # preferred; or "adaptive_v2" / "adaptive_first"
+# preset = "adaptive_v4"   # preferred; or "adaptive_v3" / "adaptive_v2" / "adaptive_first"
 # [path]
 # epoch_age = 7
 # anomaly_demotion_flag = false

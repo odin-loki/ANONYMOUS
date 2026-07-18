@@ -1,29 +1,29 @@
 === AEGIS dudect lab summary ===
-date: 2026-07-18T08:31:20Z
-lab_mode: deepen
-elapsed_sec_primary_deepen: 761
-chunk_measurements_replay: 100000
-chunk_measurements_mac_recapture: 10000
-timeout_replay_sec: 600
-timeout_mac_sec: 180
+date: 2026-07-18T09:01:49Z
+lab_mode: short
+elapsed_sec: 176
+chunk_measurements_replay: 5000
+max_chunks_replay: 20
+chunk_measurements_mac: 5000
+max_chunks_mac: 20
+timeout_replay_sec: 60
+timeout_mac_sec: 60
 platform: WSL2_or_Linux
 isolation: none
 evidence_code_platform: WSL_NOT_ISOLATED
 external_bar: >=1e5 traces per primitive on isolated CPU (bare metal / privileged VM)
 external_bar_met: NO
-replay_contains_last_meas_line: meas:   81.95 M, max t:   +2.49, max tau: 2.75e-04, (5/tau)^2: 3.30e+08. For the moment, maybe constant time.
-verify_mac_last_meas_line: meas:    1.05 M, max t:   +2.59, max tau: 2.53e-03, (5/tau)^2: 3.91e+06. For the moment, maybe constant time.
-replay_contains_traces_approx: 81950000
-verify_mac_traces_approx: 1050000
-replay_evidence_code: TIMEOUT
-mac_harness_exit: 2 (BUDGET_EXHAUSTED)
+replay_contains_last_meas_line: meas:    0.09 M, max t:   +2.81, max tau: 9.14e-03, (5/tau)^2: 3.00e+05. For the moment, maybe constant time.
+verify_mac_last_meas_line: meas:    0.08 M, max t:   +3.08, max tau: 1.06e-02, (5/tau)^2: 2.24e+05. For the moment, maybe constant time.
+replay_contains_traces_approx: 90000
+verify_mac_traces_approx: 80000
 honest_status: WSL deepen/wiring only; do NOT claim External isolated >=1e5
 
 --- summary / exit lines ---
-AEGIS_DUDECT_SUMMARY primitive=ReplayCache::contains_ct evidence_code=TIMEOUT isolation=none platform=linux_or_wsl external_bar=isolated_ge_1e5_per_primitive
-harness_exit: harness_verify_mac=124 evidence_hint=TIMEOUT
-AEGIS_DUDECT_SUMMARY primitive=Sphinx::verify_mac evidence_code=TIMEOUT isolation=none platform=linux_or_wsl external_bar=isolated_ge_1e5_per_primitive
-AEGIS_DUDECT_SUMMARY primitive=Sphinx::verify_mac chunk_size=10000 max_chunks=200 chunks_ran=200 scheduled_traces=2000000 dudect_state=NO_LEAKAGE_EVIDENCE_YET evidence_code=BUDGET_EXHAUSTED isolation=none platform=linux_or_wsl external_bar=isolated_ge_1e5_per_primitive
+AEGIS_DUDECT_SUMMARY primitive=ReplayCache::contains_ct chunk_size=5000 max_chunks=20 chunks_ran=20 scheduled_traces=100000 dudect_state=NO_LEAKAGE_EVIDENCE_YET evidence_code=BUDGET_EXHAUSTED isolation=none platform=linux_or_wsl external_bar=isolated_ge_1e5_per_primitive
+harness_exit: harness_replay_contains=2 evidence_hint=BUDGET_EXHAUSTED
+AEGIS_DUDECT_SUMMARY primitive=Sphinx::verify_mac chunk_size=5000 max_chunks=20 chunks_ran=20 scheduled_traces=100000 dudect_state=NO_LEAKAGE_EVIDENCE_YET evidence_code=BUDGET_EXHAUSTED isolation=none platform=linux_or_wsl external_bar=isolated_ge_1e5_per_primitive
 harness_exit: harness_verify_mac=2 evidence_hint=BUDGET_EXHAUSTED
 
+overall_exit_code: 0
 full_log: /mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS/sim/dudect_lab_attempt.txt

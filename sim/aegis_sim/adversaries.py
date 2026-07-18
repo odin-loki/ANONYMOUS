@@ -212,7 +212,7 @@ _MITIGATION_V2_AGGRESSIVE = dict(
     rep_signal_scale=0.0, rep_demotion_extra=1.0,
 )
 # v3 — hard epoch-age cap + decaying stickiness + reputation-aware soft rotate.
-# Strongest in-tree long-horizon defense that still maps to client GuardMitigationPolicy.
+# Strong mid-horizon defense; maps to client GuardMitigationPolicy::adaptive_v3.
 # Does NOT close §13 (long horizons still saturate toward 1.0).
 _MITIGATION_V3 = dict(
     max_sticky_epochs=4, demotion_decay=0.40, demotion_floor=0.05,
@@ -220,9 +220,20 @@ _MITIGATION_V3 = dict(
     soft_sticky_epochs=2, stickiness_decay=0.62,
     rep_signal_scale=0.45, rep_demotion_extra=0.88,
 )
+# v4 — targets E=2000 saturation residual vs v3 (S5): tighter hard/soft sticky,
+# stronger demotion + linger, higher reputation soft-rotate pressure.
+# Best in-tree long-horizon sim defense; maps to adaptive_v4 Rust preset.
+# Does NOT close §13 (still saturates, slower).
+_MITIGATION_V4 = dict(
+    max_sticky_epochs=2, demotion_decay=0.30, demotion_floor=0.02,
+    demotion_linger=24, aggressive=True,
+    soft_sticky_epochs=1, stickiness_decay=0.40,
+    rep_signal_scale=0.75, rep_demotion_extra=0.78,
+)
 
 _MITIGATED_MODES = (
-    "mitigated", "mitigated_first", "mitigated_aggressive", "mitigated_v3",
+    "mitigated", "mitigated_first", "mitigated_aggressive",
+    "mitigated_v3", "mitigated_v4",
 )
 
 
@@ -240,6 +251,8 @@ def _mitigation_params_for_mode(mode, max_sticky_epochs=None, demotion_decay=Non
         p = _MITIGATION_V2.copy()
     elif mode == "mitigated_v3":
         p = _MITIGATION_V3.copy()
+    elif mode == "mitigated_v4":
+        p = _MITIGATION_V4.copy()
     else:
         raise ValueError(f"unknown mitigation mode {mode!r}")
     overrides = {
@@ -326,6 +339,8 @@ def adaptive_guard_exposure(c, g, epochs=50, mode="static", trials=2000, rng=Non
                      reputation-aware soft rotate + stronger demotion.
                      Reduces mid/long-horizon exposure vs v2 in sim;
                      does NOT close §13 (saturation residual remains).
+    mode='mitigated_v4': v4 — tighter sticky (hard=2/soft=1), stronger demotion;
+                     targets E=2000 residual vs v3; does NOT close §13.
     """
     rng = rng or np.random.default_rng(0)
     hits = 0
@@ -354,7 +369,7 @@ def adaptive_guard_exposure(c, g, epochs=50, mode="static", trials=2000, rng=Non
 
 
 def adaptive_guard_exposure_mitigation_report(c, g, epochs=200, trials=20000, rng=None):
-    """Compare unmitigated adaptive vs v1/v2/v3 mitigation at one horizon."""
+    """Compare unmitigated adaptive vs v1/v2/v3/v4 mitigation at one horizon."""
     rng = rng or np.random.default_rng(0)
     adaptive = adaptive_guard_exposure(
         c, g, epochs=epochs, mode="adaptive", trials=trials, rng=rng,
@@ -371,6 +386,9 @@ def adaptive_guard_exposure_mitigation_report(c, g, epochs=200, trials=20000, rn
     mitigated_v3 = adaptive_guard_exposure(
         c, g, epochs=epochs, mode="mitigated_v3", trials=trials, rng=rng,
     )
+    mitigated_v4 = adaptive_guard_exposure(
+        c, g, epochs=epochs, mode="mitigated_v4", trials=trials, rng=rng,
+    )
     return {
         "epochs": epochs,
         "adaptive_unmitigated": adaptive,
@@ -378,15 +396,19 @@ def adaptive_guard_exposure_mitigation_report(c, g, epochs=200, trials=20000, rn
         "mitigated_v2": mitigated_v2,
         "mitigated_aggressive": mitigated_aggressive,
         "mitigated_v3": mitigated_v3,
+        "mitigated_v4": mitigated_v4,
         "reduction_v1": adaptive - mitigated_first,
         "reduction_v2": adaptive - mitigated_v2,
         "reduction_v3": adaptive - mitigated_v3,
+        "reduction_v4": adaptive - mitigated_v4,
         "v2_improvement_vs_v1": mitigated_first - mitigated_v2,
         "v3_improvement_vs_v2": mitigated_v2 - mitigated_v3,
+        "v4_improvement_vs_v3": mitigated_v3 - mitigated_v4,
         "mitigation_params_v1": _MITIGATION_V1,
         "mitigation_params_v2": _MITIGATION_V2,
         "mitigation_params_v2_aggressive": _MITIGATION_V2_AGGRESSIVE,
         "mitigation_params_v3": _MITIGATION_V3,
+        "mitigation_params_v4": _MITIGATION_V4,
     }
 
 
@@ -395,9 +417,10 @@ def adaptive_guard_exposure_curve(c, g, epoch_grid=(5, 20, 50, 100, 200, 500, 80
     """Exposure vs horizon for static (plateau) vs adaptive (redrawn each epoch).
 
     Includes `mitigated_by_epochs` (v2), `mitigated_first_by_epochs` (v1),
-    `mitigated_aggressive_by_epochs`, and `mitigated_v3_by_epochs`. Returns a dict
-    suitable for JSON commit under sim/data/. Tag [O]: characterizes the open item;
-    mitigation reduces but does not close it.
+    `mitigated_aggressive_by_epochs`, `mitigated_v3_by_epochs`, and
+    `mitigated_v4_by_epochs`. Returns a dict suitable for JSON commit under
+    sim/data/. Tag [O]: characterizes the open item; mitigation reduces but
+    does not close it.
     """
     rng = rng or np.random.default_rng(divmod(hash((c, g)), 2**32)[1])
     static_plateau = 1 - (1 - c) ** g
@@ -407,6 +430,7 @@ def adaptive_guard_exposure_curve(c, g, epoch_grid=(5, 20, 50, 100, 200, 500, 80
     mitigated = {}
     mitigated_aggressive = {}
     mitigated_v3 = {}
+    mitigated_v4 = {}
     for e in epoch_grid:
         adaptive[str(e)] = adaptive_guard_exposure(
             c, g, epochs=e, mode="adaptive", trials=trials, rng=rng
@@ -423,11 +447,14 @@ def adaptive_guard_exposure_curve(c, g, epoch_grid=(5, 20, 50, 100, 200, 500, 80
         mitigated_v3[str(e)] = adaptive_guard_exposure(
             c, g, epochs=e, mode="mitigated_v3", trials=trials, rng=rng
         )
+        mitigated_v4[str(e)] = adaptive_guard_exposure(
+            c, g, epochs=e, mode="mitigated_v4", trials=trials, rng=rng
+        )
     return {
         "tag": "spec_13_O_adaptive_compromised_mix_set",
         "characterizes_not_closes": True,
         "mitigation_partial_not_closed": True,
-        "best_mitigation_preset": "adaptive_v3",
+        "best_mitigation_preset": "adaptive_v4",
         "c": c,
         "g": g,
         "trials": trials,
@@ -439,12 +466,17 @@ def adaptive_guard_exposure_curve(c, g, epoch_grid=(5, 20, 50, 100, 200, 500, 80
         "mitigated_by_epochs": mitigated,
         "mitigated_aggressive_by_epochs": mitigated_aggressive,
         "mitigated_v3_by_epochs": mitigated_v3,
+        "mitigated_v4_by_epochs": mitigated_v4,
         "mitigation_params_v1": _MITIGATION_V1,
         "mitigation_params_v2": _MITIGATION_V2,
         "mitigation_params_v2_aggressive": _MITIGATION_V2_AGGRESSIVE,
         "mitigation_params_v3": _MITIGATION_V3,
+        "mitigation_params_v4": _MITIGATION_V4,
         "mitigation_at_200": adaptive_guard_exposure_mitigation_report(
             c, g, epochs=200, trials=trials, rng=rng,
+        ),
+        "mitigation_at_2000": adaptive_guard_exposure_mitigation_report(
+            c, g, epochs=2000, trials=min(trials, 8000), rng=rng,
         ),
     }
 
@@ -478,6 +510,9 @@ def adaptive_mitigation_param_sweep(c=0.015, g=3, epochs=200, trials=2500, rng=N
     v3_default = adaptive_guard_exposure(
         c, g, epochs=epochs, mode="mitigated_v3", trials=trials, rng=rng,
     )
+    v4_default = adaptive_guard_exposure(
+        c, g, epochs=epochs, mode="mitigated_v4", trials=trials, rng=rng,
+    )
     points = []
     for i, knobs in enumerate(grid):
         p = adaptive_guard_exposure(
@@ -500,9 +535,12 @@ def adaptive_mitigation_param_sweep(c=0.015, g=3, epochs=200, trials=2500, rng=N
         "trials": trials,
         "v2_baseline": v2,
         "v3_default": v3_default,
+        "v4_default": v4_default,
+        "v4_improvement_vs_v3": v3_default - v4_default,
         "points": points,
         "best_point_id": points[0]["id"] if points else None,
         "locked_v3_params": _MITIGATION_V3,
+        "locked_v4_params": _MITIGATION_V4,
     }
 
 
@@ -532,12 +570,16 @@ def adaptive_mitigation_offline_characterization(
                 "mitigated_v3": adaptive_guard_exposure(
                     c, g, epochs=e, mode="mitigated_v3", trials=trials, rng=rng,
                 ),
+                "mitigated_v4": adaptive_guard_exposure(
+                    c, g, epochs=e, mode="mitigated_v4", trials=trials, rng=rng,
+                ),
             }
         return out
 
     ci = _curve(trials_ci)
     offline = _curve(trials_offline)
     e200 = offline["by_epochs"].get("200", {})
+    e2000 = offline["by_epochs"].get("2000", {})
     return {
         "tag": "adaptive_mitigation_offline_characterization",
         "characterizes_not_closes": True,
@@ -551,15 +593,30 @@ def adaptive_mitigation_offline_characterization(
             "adaptive": e200.get("adaptive"),
             "mitigated_v2": e200.get("mitigated_v2"),
             "mitigated_v3": e200.get("mitigated_v3"),
+            "mitigated_v4": e200.get("mitigated_v4"),
             "v3_improvement_vs_v2": (
                 None if e200.get("mitigated_v2") is None
                 else e200["mitigated_v2"] - e200["mitigated_v3"]
             ),
+            "v4_improvement_vs_v3": (
+                None if e200.get("mitigated_v3") is None
+                else e200["mitigated_v3"] - e200["mitigated_v4"]
+            ),
+        },
+        "summary_at_2000": {
+            "adaptive": e2000.get("adaptive"),
+            "mitigated_v3": e2000.get("mitigated_v3"),
+            "mitigated_v4": e2000.get("mitigated_v4"),
+            "v4_improvement_vs_v3": (
+                None if e2000.get("mitigated_v3") is None
+                else e2000["mitigated_v3"] - e2000["mitigated_v4"]
+            ),
         },
         "mitigation_params_v2": _MITIGATION_V2,
         "mitigation_params_v3": _MITIGATION_V3,
+        "mitigation_params_v4": _MITIGATION_V4,
         "honest_limit": (
-            "v3 lowers mid-horizon exposure vs v2 but long horizons still "
+            "v4 lowers E=2000 exposure vs v3 but long horizons still "
             "saturate toward 1.0; spec §13 remains [O]."
         ),
     }

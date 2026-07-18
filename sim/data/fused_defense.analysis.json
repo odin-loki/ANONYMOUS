@@ -1,0 +1,274 @@
+{
+  "tag": "coverage_S5_fused_adaptive_defense",
+  "status": "[O] QUANTIFIED",
+  "claim_closed": false,
+  "wan_closed": false,
+  "characterizes_not_closes": true,
+  "wave": "S5",
+  "parent_wave": "C2",
+  "best_defense": "fused_v4",
+  "compare": {
+    "epoch_grid": [
+      200,
+      800,
+      2000
+    ],
+    "trials": 80,
+    "c": 0.015,
+    "g": 3,
+    "M": 30,
+    "baseline_receiver_uniform": 0.03333333333333333,
+    "leaky_scheme_on_compromise": "constant_only",
+    "by_mode": {
+      "undefended": {
+        "200": {
+          "p_adaptive_exposed": 1.0,
+          "p_mode1_confirm": 0.4,
+          "p_union_success": 1.0,
+          "p_joint_success": 0.4,
+          "mean_dirty_epoch_fraction": 0.0446
+        },
+        "800": {
+          "p_adaptive_exposed": 1.0,
+          "p_mode1_confirm": 0.8625,
+          "p_union_success": 1.0,
+          "p_joint_success": 0.8625,
+          "mean_dirty_epoch_fraction": 0.0433
+        },
+        "2000": {
+          "p_adaptive_exposed": 1.0,
+          "p_mode1_confirm": 1.0,
+          "p_union_success": 1.0,
+          "p_joint_success": 1.0,
+          "mean_dirty_epoch_fraction": 0.044
+        }
+      },
+      "mitigated_v3": {
+        "200": {
+          "p_adaptive_exposed": 0.45,
+          "p_mode1_confirm": 0.1125,
+          "p_union_success": 0.4625,
+          "p_joint_success": 0.1,
+          "mean_dirty_epoch_fraction": 0.0029
+        },
+        "800": {
+          "p_adaptive_exposed": 0.9,
+          "p_mode1_confirm": 0.15,
+          "p_union_success": 0.9,
+          "p_joint_success": 0.15,
+          "mean_dirty_epoch_fraction": 0.0025
+        },
+        "2000": {
+          "p_adaptive_exposed": 0.9875,
+          "p_mode1_confirm": 0.325,
+          "p_union_success": 0.9875,
+          "p_joint_success": 0.325,
+          "mean_dirty_epoch_fraction": 0.0023
+        }
+      },
+      "mitigated_v4": {
+        "200": {
+          "p_adaptive_exposed": 0.2375,
+          "p_mode1_confirm": 0.0375,
+          "p_union_success": 0.275,
+          "p_joint_success": 0.0,
+          "mean_dirty_epoch_fraction": 0.0012
+        },
+        "800": {
+          "p_adaptive_exposed": 0.5375,
+          "p_mode1_confirm": 0.0625,
+          "p_union_success": 0.5375,
+          "p_joint_success": 0.0625,
+          "mean_dirty_epoch_fraction": 0.001
+        },
+        "2000": {
+          "p_adaptive_exposed": 0.925,
+          "p_mode1_confirm": 0.125,
+          "p_union_success": 0.925,
+          "p_joint_success": 0.125,
+          "mean_dirty_epoch_fraction": 0.0009
+        }
+      },
+      "hard_cap_forced": {
+        "200": {
+          "p_adaptive_exposed": 1.0,
+          "p_mode1_confirm": 0.0125,
+          "p_union_success": 1.0,
+          "p_joint_success": 0.0125,
+          "mean_dirty_epoch_fraction": 0.047
+        },
+        "800": {
+          "p_adaptive_exposed": 1.0,
+          "p_mode1_confirm": 0.0,
+          "p_union_success": 1.0,
+          "p_joint_success": 0.0,
+          "mean_dirty_epoch_fraction": 0.0448
+        },
+        "2000": {
+          "p_adaptive_exposed": 1.0,
+          "p_mode1_confirm": 0.0375,
+          "p_union_success": 1.0,
+          "p_joint_success": 0.0375,
+          "mean_dirty_epoch_fraction": 0.0451
+        }
+      },
+      "fused_v4": {
+        "200": {
+          "p_adaptive_exposed": 0.2,
+          "p_mode1_confirm": 0.0625,
+          "p_union_success": 0.225,
+          "p_joint_success": 0.0375,
+          "mean_dirty_epoch_fraction": 0.0011
+        },
+        "800": {
+          "p_adaptive_exposed": 0.5,
+          "p_mode1_confirm": 0.0875,
+          "p_union_success": 0.5,
+          "p_joint_success": 0.0875,
+          "mean_dirty_epoch_fraction": 0.0009
+        },
+        "2000": {
+          "p_adaptive_exposed": 0.85,
+          "p_mode1_confirm": 0.1625,
+          "p_union_success": 0.8625,
+          "p_joint_success": 0.15,
+          "mean_dirty_epoch_fraction": 0.001
+        }
+      }
+    },
+    "deltas_vs_undefended": {
+      "mitigated_v3": {
+        "200": {
+          "delta_mode1_confirm": 0.2875,
+          "delta_adaptive_exposed": 0.55,
+          "delta_union": 0.5375
+        },
+        "800": {
+          "delta_mode1_confirm": 0.7125,
+          "delta_adaptive_exposed": 0.1,
+          "delta_union": 0.1
+        },
+        "2000": {
+          "delta_mode1_confirm": 0.675,
+          "delta_adaptive_exposed": 0.0125,
+          "delta_union": 0.0125
+        }
+      },
+      "mitigated_v4": {
+        "200": {
+          "delta_mode1_confirm": 0.3625,
+          "delta_adaptive_exposed": 0.7625,
+          "delta_union": 0.725
+        },
+        "800": {
+          "delta_mode1_confirm": 0.8,
+          "delta_adaptive_exposed": 0.4625,
+          "delta_union": 0.4625
+        },
+        "2000": {
+          "delta_mode1_confirm": 0.875,
+          "delta_adaptive_exposed": 0.075,
+          "delta_union": 0.075
+        }
+      },
+      "hard_cap_forced": {
+        "200": {
+          "delta_mode1_confirm": 0.3875,
+          "delta_adaptive_exposed": 0.0,
+          "delta_union": 0.0
+        },
+        "800": {
+          "delta_mode1_confirm": 0.8625,
+          "delta_adaptive_exposed": 0.0,
+          "delta_union": 0.0
+        },
+        "2000": {
+          "delta_mode1_confirm": 0.9625,
+          "delta_adaptive_exposed": 0.0,
+          "delta_union": 0.0
+        }
+      },
+      "fused_v4": {
+        "200": {
+          "delta_mode1_confirm": 0.3375,
+          "delta_adaptive_exposed": 0.8,
+          "delta_union": 0.775
+        },
+        "800": {
+          "delta_mode1_confirm": 0.775,
+          "delta_adaptive_exposed": 0.5,
+          "delta_union": 0.5
+        },
+        "2000": {
+          "delta_mode1_confirm": 0.8375,
+          "delta_adaptive_exposed": 0.15,
+          "delta_union": 0.1375
+        }
+      }
+    },
+    "adaptive_only_ref_at_long_E": {
+      "E": 2000,
+      "adaptive": 1.0,
+      "mitigated_v3": 0.99,
+      "mitigated_v4": 0.84
+    },
+    "mitigation_params_v3": {
+      "max_sticky_epochs": 4,
+      "demotion_decay": 0.4,
+      "demotion_floor": 0.05,
+      "demotion_linger": 10,
+      "aggressive": true,
+      "soft_sticky_epochs": 2,
+      "stickiness_decay": 0.62,
+      "rep_signal_scale": 0.45,
+      "rep_demotion_extra": 0.88
+    },
+    "mitigation_params_v4": {
+      "max_sticky_epochs": 2,
+      "demotion_decay": 0.3,
+      "demotion_floor": 0.02,
+      "demotion_linger": 24,
+      "aggressive": true,
+      "soft_sticky_epochs": 1,
+      "stickiness_decay": 0.4,
+      "rep_signal_scale": 0.75,
+      "rep_demotion_extra": 0.78
+    }
+  },
+  "summary_at_long_horizon": {
+    "E": 2000,
+    "undefended": {
+      "p_adaptive_exposed": 1.0,
+      "p_mode1_confirm": 1.0,
+      "p_union_success": 1.0,
+      "p_joint_success": 1.0,
+      "mean_dirty_epoch_fraction": 0.044
+    },
+    "fused_v4": {
+      "p_adaptive_exposed": 0.85,
+      "p_mode1_confirm": 0.1625,
+      "p_union_success": 0.8625,
+      "p_joint_success": 0.15,
+      "mean_dirty_epoch_fraction": 0.001
+    },
+    "hard_cap_forced": {
+      "p_adaptive_exposed": 1.0,
+      "p_mode1_confirm": 0.0375,
+      "p_union_success": 1.0,
+      "p_joint_success": 0.0375,
+      "mean_dirty_epoch_fraction": 0.0451
+    },
+    "mode1_confirm_reduction_vs_undefended": 0.8375,
+    "reading": "fused_v4 lowers dirty-epoch fraction via adaptive_v4, so Mode-1 stays on hard_cap longer; hard_cap_forced keeps confirm ~1/M but does not reduce adaptive exposure. \u00a713 remains open."
+  },
+  "findings": [
+    "adaptive_v4 sticky/demotion reduces cumulative exposure vs v3 at E=2000 in adaptive-only sim; fused coupling inherits fewer leaky epochs.",
+    "hard_cap_forced keeps p_mode1_confirm near uniform baseline even under recompromise \u2014 the Mode-1 product invariant \u2014 but adaptive exposure is unchanged.",
+    "Best coupled defense is fused_v4 (mitigated dirtiness + hard_cap on clean epochs). Does not close \u00a713 or WAN C2."
+  ],
+  "honest_limits": [
+    "Synthetic Poisson Mode-1 + sim demotion model.",
+    "Not WAN closed; exit clearnet residual remains a weaker tier.",
+    "Never claim \u00a713 closed; long horizons may still saturate."
+  ]
+}

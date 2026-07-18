@@ -104,6 +104,7 @@ def test_adaptive_guard_exposure_artifact_is_consistent():
     assert "mitigated_v3_by_epochs" in artifact
     assert "mitigation_params_v2" in artifact
     assert "mitigation_params_v3" in artifact
+    assert artifact["best_mitigation_preset"] in ("adaptive_v3", "adaptive_v4")
     for e in artifact["epoch_grid"]:
         a = artifact["adaptive_by_epochs"][str(e)]
         m1 = artifact["mitigated_first_by_epochs"][str(e)]
@@ -111,6 +112,9 @@ def test_adaptive_guard_exposure_artifact_is_consistent():
         m3 = artifact["mitigated_v3_by_epochs"][str(e)]
         assert 0.0 <= m3 <= m2 + 0.02, f"E={e}: v3 should be near/below v2 (allow tiny MC noise)"
         assert 0.0 <= m2 <= m1 <= a <= 1.0 + 1e-9, f"E={e}: v2 should be <= v1 <= adaptive"
+        if "mitigated_v4_by_epochs" in artifact:
+            m4 = artifact["mitigated_v4_by_epochs"][str(e)]
+            assert 0.0 <= m4 <= m3 + 0.03, f"E={e}: v4 should be near/below v3"
     # Spot-check one mid horizon against a cheap live run (not full artifact recompute).
     live = adv.adaptive_guard_exposure(
         artifact["c"], artifact["g"], epochs=200, mode="adaptive", trials=2000, rng=RNG(205),
@@ -184,6 +188,25 @@ def test_mitigated_v3_still_saturates_long_horizon():
     assert mid < 0.70, f"v3 mid-horizon should be well below v2 (~0.77); got {mid:.3f}"
     assert long > mid + 0.05, "exposure should still grow with horizon under v3"
     assert long > 0.55, "long-horizon saturation residual remains (open risk)"
+
+
+def test_mitigated_v4_improves_e2000_vs_v3():
+    """S5: v4 targets E=2000 saturation residual vs v3; §13 still open."""
+    c, g = 0.015, 3
+    v3 = adv.adaptive_guard_exposure(
+        c, g, epochs=2000, mode="mitigated_v3", trials=1500, rng=RNG(230),
+    )
+    v4 = adv.adaptive_guard_exposure(
+        c, g, epochs=2000, mode="mitigated_v4", trials=1500, rng=RNG(231),
+    )
+    assert v4 < v3 - 0.04, (
+        f"v4 should beat v3 at E=2000 (v3={v3:.3f} v4={v4:.3f})"
+    )
+    assert v4 > 0.45, "honest residual: long-horizon exposure remains material"
+    mid_v4 = adv.adaptive_guard_exposure(
+        c, g, epochs=200, mode="mitigated_v4", trials=2000, rng=RNG(232),
+    )
+    assert mid_v4 < 0.40, f"v4 mid-horizon should beat v3 (~0.45); got {mid_v4:.3f}"
 
 
 def test_adaptive_mitigation_param_sweep_ci_bound():

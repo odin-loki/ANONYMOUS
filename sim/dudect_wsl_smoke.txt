@@ -1,87 +1,16 @@
-=== AEGIS WSL constant-time smoke ===
-date: 2026-07-17T12:19:24Z
-host: Linux OdinsPC 6.6.87.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun  5 18:30:46 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
-rustc: rustc 1.97.0 (2d8144b78 2026-07-07)
-cargo: cargo 1.97.0 (c980f4866 2026-06-30)
-
---- in-tree timing_smoke + dudect_smoke ---
-    Updating crates.io index
- Downloading crates ...
-  Downloaded ctr v0.9.2
-  Downloaded polyval v0.6.2
-  Downloaded ghash v0.5.1
-  Downloaded aes v0.8.4
-  Downloaded aes-gcm v0.10.3
-   Compiling libc v0.2.186
-   Compiling proc-macro2 v1.0.106
-   Compiling quote v1.0.46
-   Compiling getrandom v0.3.4
-   Compiling getrandom v0.4.3
-   Compiling rustix v1.1.4
-   Compiling zerocopy v0.8.54
-   Compiling thiserror v1.0.69
-   Compiling generic-array v0.14.7
-   Compiling snow v0.9.6
-   Compiling num-traits v0.2.19
-   Compiling curve25519-dalek v4.1.3
-   Compiling inout v0.1.4
-   Compiling block-buffer v0.10.4
-   Compiling syn v2.0.118
-   Compiling getrandom v0.2.17
-   Compiling wait-timeout v0.2.1
-   Compiling tempfile v3.27.0
-   Compiling rand_core v0.6.4
-   Compiling rand_core v0.9.5
-   Compiling crypto-common v0.1.7
-   Compiling rand v0.9.5
-   Compiling rand_xorshift v0.4.0
-   Compiling ppv-lite86 v0.2.21
-   Compiling rusty-fork v0.3.1
-   Compiling universal-hash v0.5.1
-   Compiling digest v0.10.7
-   Compiling aead v0.5.2
-   Compiling rand_chacha v0.9.0
-   Compiling polyval v0.6.2
-   Compiling poly1305 v0.8.0
-   Compiling proptest v1.11.0
-   Compiling sha2 v0.10.9
-   Compiling blake2 v0.10.6
-   Compiling sha3 v0.10.9
-   Compiling ghash v0.5.1
-   Compiling zeroize_derive v1.5.0
-   Compiling curve25519-dalek-derive v0.1.1
-   Compiling thiserror-impl v1.0.69
-   Compiling zeroize v1.9.0
-   Compiling cipher v0.4.4
-   Compiling kem v0.3.0-pre.0
-   Compiling ml-kem v0.2.3
-   Compiling ctr v0.9.2
-   Compiling chacha20 v0.9.1
-   Compiling aes v0.8.4
-   Compiling chacha20poly1305 v0.10.1
-   Compiling aes-gcm v0.10.3
-   Compiling x25519-dalek v2.0.1
    Compiling aegis-crypto v0.1.0 (/mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS/crates/aegis-crypto)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 41s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.95s
      Running tests/dudect_smoke.rs (target/debug/deps/dudect_smoke-a5bb32c009ed7000)
 
 running 1 test
 test ct_contains_hit_miss_timing_smoke ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
 
      Running tests/timing_smoke.rs (target/debug/deps/timing_smoke-d4415fe94ee3acca)
 
 running 1 test
 test mac_verify_timing_smoke_no_gross_skew ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.57s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.86s
 
-
---- external gap (not run by this script) ---
-Full oreparaz/dudect C harness with isolated CPU, >=1e5 traces, and
-class-0/class-1 probes for verify_mac / contains_ct requires a dedicated
-Linux lab (bare metal or VM with cpufreq/taskset). WSL2 may ignore isolation.
-See docs/ops/constant_time_ci.md for manual dudect-bench workflow.
-
-exit_code: 0

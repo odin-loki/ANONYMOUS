@@ -11,7 +11,7 @@ core. It does **not** modify `docs/AEGIS_SPEC_v3_consolidated.md` (frozen source
 | `beta` (routing onion, 6 fixed slots) | 7104 | 1120 |
 | `gamma` (per-hop integrity MAC) | 32 | 8224 |
 | `delta` (payload onion) | 256 | 8256 |
-| **Total `SPHINX_PACKET_LEN`** | **8504** | |
+| **Total `SPHINX_PACKET_LEN`** | **8512** | |
 
 - **`MAX_HOPS = 6`** — supports acceptance tests for path lengths 2..=6 with unused
   routing slots filled with CSPRNG randomness (length unchanged).
@@ -56,7 +56,7 @@ AAD `b"aegis-link-v1"`.
 
 ## Deviations from illustrative spec figures
 
-1. **512 B cell** — retained for link/dummy traffic only; Sphinx packets are 8504 B.
+1. **512 B cell** — retained for link/dummy traffic only; Sphinx packets are 8512 B.
 2. **LIONESS delta** — not implemented; stream-XOR onion chosen for correctness and test coverage.
 3. **`sphinx::process` on `Cell`** — returns `Malformed`; callers must use `SphinxPacket`.
 
@@ -64,4 +64,6 @@ AAD `b"aegis-link-v1"`.
 
 - Gate: `crates/aegis-crypto/tests/vectors.rs` (gate + edge-case property/KAT tests, unignored).
 - Additional unit tests: `kem.rs`, `sphinx.rs` (peel-pad invariants, multi-hop forward, tamper offsets), `link.rs` (tamper offsets, link AEAD).
-- **Status (2026-07-18):** edge cases + peel-order KATs (2/3/max hops, all path lengths property), wrong-hop reject, alpha/gamma tamper, seeded relay-key structural KAT. Formal Sphinx proof remains spec §13 open item **[O]** — not claimed here.
+- Python bit-oracle (wave S1): `sim/aegis_sim/sphinx_oracle.py` + `sim/tests/test_sphinx_oracle.py` — build/peel/MAC/replay-tag from secrets; hybrid KEM remains Rust-only. Shared primitive KATs also asserted in `sphinx.rs` unit tests.
+- Fuzz: `crates/aegis-crypto/fuzz/README.md` — overnight `fuzz_sphinx_process` (WSL/Linux + `cargo-fuzz`); seed via `scripts/seed_sphinx_fuzz_corpus.py`.
+- **Status (2026-07-18, wave S1):** edge cases + peel-order KATs, wrong-hop / skip-hop reject, alpha/gamma/beta bit-flip tagging map, delta-MAC coverage gap documented, seeded relay-key structural KAT, Python↔Rust shared primitive KATs. Formal Sphinx proof remains spec §13 open item **[O]** — **not claimed**.

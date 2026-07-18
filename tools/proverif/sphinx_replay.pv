@@ -1,0 +1,62 @@
+(* ============================================================================
+ * AEGIS Sphinx — focused replay lemma (Wave S3 companion)
+ * ============================================================================
+ * Single hop; accept only in phase 0; phase 1 only ReplayReject.
+ * Adversary may replay observed wire messages (no fresh KEM minting
+ * required for this lemma — pk is not published).
+ *
+ * Proves: inj-event(HopAccept(t)) ==> inj-event(ClientBuilt(t))
+ * Idealized crypto only — not ML-KEM / EasyCrypt.
+ * ============================================================================ *)
+
+set reconstructTrace = true.
+
+free net: channel.
+
+type skey.
+type pkey.
+type ssecret.
+
+fun pk(skey): pkey.
+fun aenc(ssecret, pkey): bitstring.
+reduc forall m: ssecret, k: skey; adec(aenc(m, pk(k)), k) = m.
+
+fun mac(bitstring, ssecret): bitstring.
+fun rtag(ssecret): bitstring.
+
+free skH: skey [private].
+
+event ClientBuilt(bitstring).
+event HopAccept(bitstring).
+event ReplayReject().
+
+(* L3 Replay — injective accept of client session tag (at most once) *)
+query t: bitstring;
+  inj-event(HopAccept(t)) ==> inj-event(ClientBuilt(t)).
+
+let client =
+  new ss: ssecret;
+  new beta: bitstring;
+  let t = rtag(ss) in
+  let gamma = mac(beta, ss) in
+  let ct = aenc(ss, pk(skH)) in
+  event ClientBuilt(t);
+  out(net, (ct, beta, gamma));
+  phase 1;
+  out(net, (ct, beta, gamma)).
+
+let hop =
+  in(net, (ct: bitstring, beta: bitstring, gamma: bitstring));
+  let ss: ssecret = adec(ct, skH) in
+  if gamma = mac(beta, ss) then
+    let t = rtag(ss) in
+    event HopAccept(t);
+    phase 1;
+    in(net, (ct2: bitstring, beta2: bitstring, gamma2: bitstring));
+    (* Same (or any) packet in phase 1 is rejected — no second HopAccept *)
+    event ReplayReject()
+  else
+    0.
+
+process
+  client | hop

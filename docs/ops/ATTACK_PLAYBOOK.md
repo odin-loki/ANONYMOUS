@@ -64,9 +64,10 @@ This document maps named attack primitives to **current mitigation status**, **r
 | v1 mitigation (`mode='mitigated_first'`) | **Partial** — lower curve, not closed | ~0.90 at E=200; → 1.0 at E=2000 | Artifact `mitigated_first_by_epochs` |
 | v2 mitigation (`mode='mitigated'`) | **Partial** — ~13 pp better than v1 at E=200 | ~0.77 at E=200; → 1.0 at E=2000 | Artifact `mitigated_by_epochs` |
 | v3 mitigation (`mode='mitigated_v3'`) | **Partial** — ~32 pp better than v2 at E=200 | ~0.45 at E=200; still → ~0.99 at E=2000 (saturation residual) | Artifact `mitigated_v3_by_epochs`; [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md) |
-| Rust client preset | **Partial** — hard/soft sticky + resample hooks | Defaults **disabled**; prefer `preset = "adaptive_v3"` (or `adaptive_v2` / legacy `adaptive_first`) | `aegis-topology/src/guard_mitigation.rs`; client `[guard_mitigation]` + `[path].epoch_age` |
+| v4 mitigation (`mode='mitigated_v4'`) | **Partial (S5)** — tighter sticky + stronger demotion; best long-horizon sim | ~0.23 at E=200; ~0.85 at E=2000 (~14 pp better than v3; still saturates) | `sim/data/adaptive_v4_saturation.analysis.json`; `test_hardening.py` |
+| Rust client preset | **Partial** — hard/soft sticky + resample hooks | Defaults **disabled**; prefer `preset = "adaptive_v4"` (or `adaptive_v3` / `adaptive_v2` / legacy `adaptive_first`) | `aegis-topology/src/guard_mitigation.rs`; client `[guard_mitigation]` + `[path].epoch_age` |
 
-**Adaptive summary:** **Partial v1–v3** lowers sim exposure (v3 best mid-horizon); **does not close §13**. Operators enable `preset = "adaptive_v3"` on clients for pilot; field recompromise rates unmeasured.
+**Adaptive summary:** **Partial v1–v4** lowers sim exposure (v4 best at E=2000; v3 still strong mid-horizon); **does not close §13**. Operators enable `preset = "adaptive_v4"` on clients for pilot; field recompromise rates unmeasured.
 
 ---
 
@@ -130,9 +131,10 @@ This document maps named attack primitives to **current mitigation status**, **r
 | Payload extraction | **By design at exit** — exit operator sees delta | Trust exit operator; separate exit approval in charter | `sphinx::process` peel |
 | Sender anonymity set at exit | **Partial [O] QUANTIFIED** — multi-client exit window | No receiver hard-cap on clearnet; long-horizon ∩ / volume ranking above 1/N | `sim/data/exit_tier_intersection.analysis.json`; `exit_tier_intersection.py` |
 | Clearnet residual volume | **By design (weaker)** — unshaped exit↔server link | GPA sees ordinary encrypted volume; Mode-1 hard-cap does not transfer | Phase 8 §3; artifact `honest_limits` / `wan_closed: false` |
+| Exit-tier defenses (S4) | **Partial [O] QUANTIFIED** — ranked sim pads/decoys | Clearnet still cannot hard-cap; decoys burn bandwidth; tip knowledge residual | `exit_tier_defense.py`; `sim/data/exit_tier_defense.analysis.json`; [`exit_tier_defense.md`](exit_tier_defense.md) |
 | Trace `[trace].path` on mix hops | **Mitigated** — off by default in production template | Misconfig leaks forward timing | [`DEPLOYMENT.md`](DEPLOYMENT.md) |
 
-**Exit observation summary:** **Weaker tier by design.** Position as sender-anonymity-set to exit, not internal Mode 1 receiver guarantees. Sim C2 quantifies co-active window sizes and long-horizon intersection/volume ranking on unshaped clearnet residual — **not WAN closed**.
+**Exit observation summary:** **Weaker tier by design.** Position as sender-anonymity-set to exit, not internal Mode 1 receiver guarantees. Sim C2 quantifies co-active window sizes and long-horizon intersection/volume ranking on unshaped clearnet residual — **not WAN closed**. Wave S4 recommends `presence_pad` at E=100 (practical); `pool_hard_cap` is strongest composite; product egress pad hooks are **not shipped**.
 
 ### 7.1 Fused long-horizon adversary (adaptive ∩ active/intersection)
 
@@ -143,8 +145,9 @@ This document maps named attack primitives to **current mitigation status**, **r
 | Adaptive-only baseline | **[O] QUANTIFIED** | Exposure → ~1 at long E (`c=0.015`, `g=3`) | `adaptive_guard_exposure.analysis.json` (reused) |
 | Combined-only baseline | **[O] QUANTIFIED** | `constant_only` saturates; `hard_cap` ~1/M | `combined_active_intersection.analysis.json` (reused) |
 | Fused coupling | **[O] QUANTIFIED** | Dirty epochs unlock leaky Mode-1 obs; clean epochs stay hard_cap | `sim/data/fused_adversary.analysis.json`; `fused_adversary.py` |
+| Fused defenses (S5) | **Partial [O] QUANTIFIED** — `fused_v4` / `hard_cap_forced` | v4 lowers dirty-epoch frac so Mode-1 stays hard_cap longer; forced hard_cap keeps confirm ~1/M but not adaptive exposure | `fused_defense.py`; `sim/data/fused_defense.analysis.json` |
 
-**Fused note:** Coupling gates Mode-1 leakage on adaptive exposure — union success tracks the worse surface; hard_cap on clean epochs does not erase adaptive risk. **Not WAN closed**; exit clearnet residual remains a separate weaker tier (§7).
+**Fused note:** Coupling gates Mode-1 leakage on adaptive exposure — union success tracks the worse surface; hard_cap on clean epochs does not erase adaptive risk. S5 `fused_v4` reduces leaky epochs via adaptive_v4; **does not close §13**. **Not WAN closed**; exit clearnet residual remains a separate weaker tier (§7).
 
 ---
 
@@ -177,6 +180,7 @@ This document maps named attack primitives to **current mitigation status**, **r
 | Burst-heavy scenario | **Partial** — baseline + `burst_heavy` bundle in same artifact | Lab model; not WAN GPA | `compare_cover_modes_under_burst` |
 | Multi-hop semantic gap | **Partial (2026-07-18)** — cover/invalid lower `implied_packet_continuity` vs Sphinx-only; raise `semantic_gap_score` | Single-hop gap CV can still look τ-like while hop semantics diverge | `cover_multihop.py`; `sim/data/cover_multihop_characterization.json` |
 | Cover discard vs Sphinx forward | **Partial** — next hop discards `COVER_FRAGMENT_RESERVED`; forwards do not continue | GPA with ≥2 hop vantage sees wire≠forward yield | `cover_flow.rs`; multihop artifact `delta.continuity_ratio_*` |
+| Cover multi-hop defenses (S4) | **Partial [O] QUANTIFIED** — cover onions restore continuity≈1 in-sim; matched discard lowers hop L1 | Product still local-discard only; peelable cover onions not shipped | `cover_multihop_defense.py`; `sim/data/cover_multihop_defense.analysis.json`; [`cover_multihop_defense.md`](cover_multihop_defense.md) |
 | Invalid onion (fail peel) | **Partial** — modeled as non-forwarding wire inflation (like discard, different counter path) | Contributes `processed_fail` if it reaches peel; semantic gap score rises | multihop `sphinx_plus_invalid` |
 | Reserved-byte cover marker | **Mitigated** — cover never reassembled as Sphinx | Volume/count correlation still possible | Phase 8 cover marker notes |
 | Ingress KEM client-binding | **Partial** — `require_ingress_kem_commitment` fail-closed on LegacyPsk; matching binding required | Noise_IK does not bind KEM commitment (fails closed if require+Noise); holders of ingress PSK + correct commitment still admitted | `aegis-relay` `net.rs`; node `[link].require_ingress_kem_commitment` |
@@ -194,6 +198,7 @@ See also [`anonymous_reputation.md`](anonymous_reputation.md) § anonymity bound
 | Vector | Mitigation status | Residual | Evidence |
 |--------|-------------------|----------|----------|
 | **Gossip eclipse** | **Partial** — **[O] QUANTIFIED** neighbor-only adverts; peer table from config | Victim with `adv ≥ K` under coordinated report-first gets pure-adv medians; full eclipse (`f=1`) → bias≈0.9 / FP≈1 in sim; no global view | `sim/aegis_sim/gossip_eclipse.py`; `sim/data/gossip_eclipse*.json`; [`health_gossip.md`](health_gossip.md); threat model §4 |
+| **Gossip defenses (S5)** | **Partial [O] QUANTIFIED** — raised K + org diversity + eclipse-detect (`stacked`) | Cuts FP vs C1 baseline at partial `f`; `f=1` still saturates / needs quarantine | `gossip_eclipse_defense.py`; `sim/data/gossip_eclipse_defense.analysis.json` |
 | **`majority_k` collusion** | **Partial** — **[O] QUANTIFIED** K distinct authority reporters before median merge (default K=2) | Solo quorum needs `adv ≥ K`; mixed sets where adv hold median majority (e.g. 2-of-3) still attack-rate; half-weight preserves ratio | `PeerHealthTracker::apply_gossip_outcomes`; C1 gates `test_gossip_eclipse.py` |
 | Equivocation | **Mitigated** — quorum log rejects conflicting `(epoch, reporter, subject)` | Local log only; not multi-org BFT | `health_quorum_log.rs` |
 | Anonymous presentation | **Partial** — no RelayId in proof blob | Issuer learns id at issue; local nullifier only | `anonymous_reputation.md` |
@@ -204,10 +209,11 @@ See also [`anonymous_reputation.md`](anonymous_reputation.md) § anonymity bound
 
 **Eclipse / majority_k guidance for operators:**
 
-- Set `majority_k ≥ 2` in production; **`majority_k = 1` is lab-only** (immediate merge).
-- Diversify gossip neighbors across operators/jurisdictions; monitor for partition.
+- Set `majority_k ≥ 2` in production; prefer **K≥3–4** where peer-table size allows (S5 `raised_k`); **`majority_k = 1` is lab-only**.
+- Diversify gossip neighbors across operators/jurisdictions (S5 `diverse_org` / `min_orgs≥2`); monitor for partition.
+- Prefer eclipse-detect quarantine when merge median diverges sharply from local health (S5 heuristic; sim-proposed).
 - Do not treat gossip median as ground truth without independent health checks.
-- Treat C1 sim numbers as characterization only: raising `K` blocks solo eclipse but not colluding median majorities inside a `K`-set.
+- Treat C1/S5 sim numbers as characterization only: raising `K` blocks solo eclipse but not colluding median majorities inside a `K`-set; multi-org BFT remains External.
 - Anonymous credentials: treat issuer as trusted at issue time; use epoch rotation + nullifier merge only with authenticated operator channels.
 - Nullifier sync: authenticate `export_to_file` / `merge_from_file` channels; minimize merge delay; do not treat file merge as consensus. See C4 residual scores in `sim/data/ac_nullifier_unlinkability.json`.
 
@@ -219,17 +225,19 @@ See also [`anonymous_reputation.md`](anonymous_reputation.md) § anonymity bound
 
 | Property | Mitigation status | Residual | Evidence |
 |----------|-------------------|----------|----------|
-| Fixed packet size | **Mitigated** | — | `vectors.rs` `constant_size_regardless_of_path_length` |
+| Fixed packet size | **Mitigated** | Doc historically said 8504; wire size is **8512** | `vectors.rs` `constant_size_*`; `SPHINX_PACKET_LEN` |
 | MAC before peel | **Mitigated** | Timing branch after verify (low) | Phase 2 gate; CT review |
 | Replay cache | **Mitigated** | O(capacity) CPU under flood | `replay.rs` |
 | Hop peel ordering / next-hop ids | **Partial [T]** — 2/3/max-hop KATs + all-length property | Per-hop DH blinding documented as best-effort in `kem.rs` | `vectors.rs` `hop_peel_ordering_*`, `peel_order_property_all_path_lengths` |
-| Wrong-hop / later-secret peel | **Partial [T]** — integrity fail | Not a formal unlinkability proof | `wrong_hop_secret_rejected_*`, `later_hop_secret_cannot_peel_*` |
+| Wrong-hop / later-secret / skip-hop peel | **Partial [T]** — integrity fail | Not a formal unlinkability proof | `wrong_hop_secret_rejected_*`, `later_hop_secret_cannot_peel_*`, `skip_hop_secret_rejected` |
 | Seeded relay-key structural KAT | **Partial [T]** — size + peel-order stability | Encapsulation RNG still live (`OsRng`); no official cross-impl vector | `seeded_relay_keys_build_size_and_peel_kat` |
-| Alpha/gamma tamper | **Mitigated** | — | `tamper_alpha_or_gamma_rejected` |
+| Alpha/gamma/beta tagging bit-flips | **Mitigated [T]** — hop-0 integrity fail | Delta not under gamma (by design) | `tamper_alpha_or_gamma_rejected`, `tagging_bit_flip_map_beta_rejects`, `delta_bit_flip_does_not_fail_hop0_mac` |
+| Python bit-oracle (build/peel/MAC/replay) | **Partial [T] (S1)** — secrets+headers oracle; KEM Rust-only | No hybrid encap in Python; not a proof | `sim/aegis_sim/sphinx_oracle.py`, `test_sphinx_oracle.py`, `python_oracle_shared_primitive_kats` |
 | Max-path forward count | **Partial [T]** | Terminal hop still Forward to exit id | `vectors.rs` `max_hops_forward_count_is_layers_minus_one` |
+| LibFuzzer `fuzz_sphinx_process` | **Partial [T]** — harness + overnight recipe | Empty corpus was easy gap; seeder added | `fuzz/README.md`, `scripts/seed_sphinx_fuzz_corpus.py` |
 | Formal verification | **Open [O] External** | Mechanized proof not in repo | `RESEARCH_AGENDA.md` §5 |
 
-**Sphinx summary:** Phase-2 KATs/property tests pass (expanded peel-order gates); **formal proof explicitly not claimed**.
+**Sphinx summary (surgical S1):** Phase-2 KATs + Python oracle + tagging/path/wrong-hop gates; **formal proof explicitly not claimed**.
 
 ---
 
@@ -240,13 +248,18 @@ See also [`anonymous_reputation.md`](anonymous_reputation.md) § anonymity bound
 cd sim && PYTHONPATH=. python scripts/generate_research_artifacts.py
 cd sim && PYTHONPATH=. python scripts/run_cover_burst_gpa_characterization.py
 cd sim && PYTHONPATH=. python scripts/run_cover_multihop_characterization.py
+cd sim && PYTHONPATH=. python scripts/run_exit_tier_defense.py
+cd sim && PYTHONPATH=. python scripts/run_cover_multihop_defense.py
 cd sim && PYTHONPATH=. python scripts/run_metrics_sidechannel_characterization.py
 cd sim && PYTHONPATH=. python scripts/run_c2_shapeability_pipeline.py --synthetic-stress
 cd sim && PYTHONPATH=. python -m aegis_sim.ac_nullifier_unlinkability
-cd sim && PYTHONPATH=. pytest -q tests/test_hardening.py tests/test_cover_burst_gpa.py tests/test_cover_multihop.py tests/test_metrics_sidechannel.py tests/test_c2_shapeability_pipeline.py tests/test_ac_nullifier_unlinkability.py
+cd sim && PYTHONPATH=. pytest -q tests/test_hardening.py tests/test_cover_burst_gpa.py tests/test_cover_multihop.py tests/test_exit_tier_defense.py tests/test_cover_multihop_defense.py tests/test_metrics_sidechannel.py tests/test_c2_shapeability_pipeline.py tests/test_ac_nullifier_unlinkability.py
 
-# Sphinx property gates
+# Sphinx property gates + S1 oracle
 cargo test -p aegis-crypto --test vectors
+cargo test -p aegis-crypto python_oracle_shared_primitive_kats
+cd sim && PYTHONPATH=. pytest -q tests/test_sphinx_oracle.py
+# Overnight fuzz (WSL): see crates/aegis-crypto/fuzz/README.md
 
 # Ingress KEM commitment (Partial)
 cargo test -p aegis-relay require_ingress_kem_commitment

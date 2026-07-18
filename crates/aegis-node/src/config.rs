@@ -1773,6 +1773,22 @@ preset = "adaptive_v3"
     }
 
     #[test]
+    fn guard_mitigation_preset_adaptive_v4_parses_and_resolves() {
+        let toml = r#"
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "127.0.0.1:9000"
+
+[guard_mitigation]
+preset = "adaptive_v4"
+"#;
+        let file: NodeConfigFile = toml::from_str(toml).unwrap();
+        let policy = file.guard_mitigation.resolve_policy();
+        assert_eq!(policy, GuardMitigationPolicy::adaptive_v4());
+        assert!(policy.should_resample_guards(2, false, 0));
+        assert_eq!(policy.soft_sticky_epochs, 1);
+    }
+
+    #[test]
     fn guard_mitigation_wires_into_runtime() {
         let dir = test_config_dir("guard-mitigation-runtime");
         let _ = std::fs::create_dir_all(&dir);

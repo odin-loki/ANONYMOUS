@@ -177,3 +177,64 @@ Slot 0 (0x78da30d7): SoftHSM slot ID 0x78da30d7
   pin min/max        : 4/255
 Slot 1 (0x1): SoftHSM slot ID 0x1
   token state:   uninitialized
+
+---
+# SoftHSM init evidence block
+# Captured: 2026-07-18T08:58:54Z
+# Host: Linux 6.6.87.2-microsoft-standard-WSL2 x86_64
+# User: odin
+# Repo: /mnt/c/Users/odinl/OneDrive/Desktop/ANONYMOUS
+RESULT_CODE=ALREADY_INITIALIZED
+RESULT_DETAIL=label=aegis-ceremony
+SOFTHSM2_UTIL=/home/odin/.local/bin/softhsm2-util
+AEGIS_PKCS11_MODULE=/home/odin/.local/lib/softhsm/libsofthsm2.so
+SOFTHSM2_CONF=/home/odin/.config/softhsm2/softhsm2.conf
+LABEL=aegis-ceremony SLOT=0 DRY_RUN=0
+SOFTHSM2_VERSION=2.6.1
+--- show-slots ---
+Available slots:
+Slot 2027565271
+    Slot info:
+        Description:      SoftHSM slot ID 0x78da30d7                                      
+        Manufacturer ID:  SoftHSM project                 
+        Hardware version: 2.6
+        Firmware version: 2.6
+        Token present:    yes
+    Token info:
+        Manufacturer ID:  SoftHSM project                 
+        Model:            SoftHSM v2      
+        Hardware version: 2.6
+        Firmware version: 2.6
+        Serial number:    d372e589f8da30d7
+        Initialized:      yes
+        User PIN init.:   yes
+        Label:            aegis-ceremony                  
+Slot 1
+    Slot info:
+        Description:      SoftHSM slot ID 0x1                                             
+        Manufacturer ID:  SoftHSM project                 
+        Hardware version: 2.6
+        Firmware version: 2.6
+        Token present:    yes
+    Token info:
+        Manufacturer ID:  SoftHSM project                 
+        Model:            SoftHSM v2      
+        Hardware version: 2.6
+        Firmware version: 2.6
+        Serial number:                    
+        Initialized:      no
+        User PIN init.:   no
+        Label:                                            
+--- pkcs11-tool --list-slots ---
+Available slots:
+Slot 0 (0x78da30d7): SoftHSM slot ID 0x78da30d7
+  token label        : aegis-ceremony
+  token manufacturer : SoftHSM project
+  token model        : SoftHSM v2
+  token flags        : login required, rng, token initialized, PIN initialized, other flags=0x20
+  hardware version   : 2.6
+  firmware version   : 2.6
+  serial num         : d372e589f8da30d7
+  pin min/max        : 4/255
+Slot 1 (0x1): SoftHSM slot ID 0x1
+  token state:   uninitialized

@@ -1,0 +1,152 @@
+(* ============================================================================
+ * AEGIS Sphinx — idealized hop peel + MAC + replay (Wave S3)
+ * ============================================================================
+ * Tool:    ProVerif 2.05 (typed pi-calculus / Dolev–Yao)
+ * Scope:   Build with N=3 secrets → peel reveals next_hop → MAC / replay.
+ *
+ * HONEST LIMITS:
+ *   - Idealized enc/mac/KEM ≠ computational ML-KEM-768 / X25519 proof
+ *   - Not EasyCrypt; not bit-exact vs crates/aegis-crypto/src/sphinx.rs
+ *   - No anonymity lemmas
+ *
+ * Companion: sphinx_replay.pv — focused injective replay lemma (phases)
+ *
+ * Rust order: Decap → verify gamma → replay tag → peel
+ * ============================================================================ *)
+
+set reconstructTrace = true.
+set ignoreTypes = false.
+
+free net: channel.
+
+type skey.
+type pkey.
+type hopid.
+type ssecret.
+
+fun pk(skey): pkey.
+fun aenc(ssecret, pkey): bitstring.
+reduc forall m: ssecret, k: skey; adec(aenc(m, pk(k)), k) = m.
+
+fun senc(bitstring, ssecret): bitstring.
+reduc forall m: bitstring, ss: ssecret; sdec(senc(m, ss), ss) = m.
+
+fun mac(bitstring, ssecret): bitstring.
+fun rtag(ssecret): bitstring.
+
+const HA, HB, HC: hopid.
+const END: bitstring.
+
+free skA, skB, skC: skey [private].
+free secret_payload: bitstring [private].
+
+event ClientBuilt(bitstring).
+event HopAccept(hopid, hopid, bitstring).
+event ExitDeliver(bitstring, bitstring).
+event MacReject(hopid).
+event ReplayReject(hopid).
+event HopTook(hopid, bitstring).
+
+table seenA(bitstring).
+table seenB(bitstring).
+table seenC(bitstring).
+
+(* L1 Secrecy — non-path DY adversary *)
+query attacker(secret_payload).
+
+(* L2 Integrity — confidential payload delivered only for a client session *)
+query sid: bitstring;
+  event(ExitDeliver(sid, secret_payload)) ==> event(ClientBuilt(sid)).
+
+(* L3 (full-path): see sphinx_replay.pv for injective replay.
+ * Here, hop tables encode ReplayReject on duplicate rtag(ss). *)
+
+let client =
+  new sid: bitstring;
+  new ssA: ssecret;
+  new ssB: ssecret;
+  new ssC: ssecret;
+  let betaC = senc((END, sid), ssC) in
+  let gammaC = mac(betaC, ssC) in
+  let deltaC = senc(secret_payload, ssC) in
+  let ctC = aenc(ssC, pk(skC)) in
+  let betaB = senc((HC, ctC, gammaC, betaC, sid), ssB) in
+  let gammaB = mac(betaB, ssB) in
+  let deltaB = senc(deltaC, ssB) in
+  let ctB = aenc(ssB, pk(skB)) in
+  let betaA = senc((HB, ctB, gammaB, betaB, sid), ssA) in
+  let gammaA = mac(betaA, ssA) in
+  let deltaA = senc(deltaB, ssA) in
+  let ctA = aenc(ssA, pk(skA)) in
+  event ClientBuilt(sid);
+  out(net, (ctA, betaA, gammaA, deltaA)).
+
+let hopA =
+  in(net, (ct: bitstring, beta: bitstring, gamma: bitstring, delta: bitstring));
+  let ss: ssecret = adec(ct, skA) in
+  if gamma = mac(beta, ss) then
+    let t = rtag(ss) in
+    get seenA(=t) in
+      event ReplayReject(HA)
+    else
+      insert seenA(t);
+      let (=HB, ctN: bitstring, gN: bitstring, bN: bitstring, sid: bitstring) =
+        sdec(beta, ss) in
+      let dN = sdec(delta, ss) in
+      event HopTook(HA, t);
+      event HopAccept(HA, HB, sid);
+      out(net, (ctN, bN, gN, dN))
+  else
+    event MacReject(HA).
+
+let hopB =
+  in(net, (ct: bitstring, beta: bitstring, gamma: bitstring, delta: bitstring));
+  let ss: ssecret = adec(ct, skB) in
+  if gamma = mac(beta, ss) then
+    let t = rtag(ss) in
+    get seenB(=t) in
+      event ReplayReject(HB)
+    else
+      insert seenB(t);
+      let (=HC, ctN: bitstring, gN: bitstring, bN: bitstring, sid: bitstring) =
+        sdec(beta, ss) in
+      let dN = sdec(delta, ss) in
+      event HopTook(HB, t);
+      event HopAccept(HB, HC, sid);
+      out(net, (ctN, bN, gN, dN))
+  else
+    event MacReject(HB).
+
+let hopC =
+  in(net, (ct: bitstring, beta: bitstring, gamma: bitstring, delta: bitstring));
+  let ss: ssecret = adec(ct, skC) in
+  if gamma = mac(beta, ss) then
+    let t = rtag(ss) in
+    get seenC(=t) in
+      event ReplayReject(HC)
+    else
+      insert seenC(t);
+      let (=END, sid: bitstring) = sdec(beta, ss) in
+      let p = sdec(delta, ss) in
+      event HopTook(HC, t);
+      event ExitDeliver(sid, p)
+  else
+    event MacReject(HC).
+
+let mac_attacker =
+  in(net, (ct: bitstring, beta: bitstring, gamma: bitstring, delta: bitstring));
+  new junk: bitstring;
+  out(net, (ct, beta, junk, delta)).
+
+let replay_attacker =
+  in(net, (ct: bitstring, beta: bitstring, gamma: bitstring, delta: bitstring));
+  out(net, (ct, beta, gamma, delta));
+  out(net, (ct, beta, gamma, delta)).
+
+let publish_pks =
+  out(net, (pk(skA), pk(skB), pk(skC))).
+
+process
+  publish_pks |
+  (!client) | (!hopA) | (!hopB) | (!hopC) |
+  (!mac_attacker) | (!replay_attacker)

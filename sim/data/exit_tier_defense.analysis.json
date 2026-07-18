@@ -1,0 +1,544 @@
+{
+  "tag": "wave_S4_exit_tier_defense",
+  "extends": "coverage_C2_exit_tier_intersection",
+  "characterizes_not_closes": true,
+  "status": "[O] QUANTIFIED",
+  "wan_closed": false,
+  "n_clients": 40,
+  "p_active": 0.25,
+  "bg_rate": 2.0,
+  "signal_rate": 6.0,
+  "window": 1,
+  "tip_rate": 0.08,
+  "pad_q": 10.0,
+  "presence_rate": 0.55,
+  "matched_decoys": 4,
+  "trials": 120,
+  "epoch_grid": [
+    20,
+    50,
+    100,
+    200,
+    400,
+    800
+  ],
+  "decision_horizon": 100,
+  "baseline_uniform": 0.025,
+  "schemes_evaluated": [
+    "baseline",
+    "volume_equalize",
+    "exit_window_pad_up",
+    "exit_window_hard_cap",
+    "presence_pad",
+    "matched_decoy",
+    "pool_hard_cap"
+  ],
+  "metrics_at_decision_horizon": {
+    "baseline": {
+      "mean_anonymity_set": 9.091,
+      "mean_intersection_size": 1.2583,
+      "p_intersection_singleton": 0.9083,
+      "p_volume_rank_top": 1.0,
+      "composite_risk": 0.9496
+    },
+    "volume_equalize": {
+      "mean_anonymity_set": 9.1028,
+      "mean_intersection_size": 1.5167,
+      "p_intersection_singleton": 0.8833,
+      "p_volume_rank_top": 1.0,
+      "composite_risk": 0.9358
+    },
+    "exit_window_pad_up": {
+      "mean_anonymity_set": 9.0696,
+      "mean_intersection_size": 1.5583,
+      "p_intersection_singleton": 0.8,
+      "p_volume_rank_top": 1.0,
+      "composite_risk": 0.89
+    },
+    "exit_window_hard_cap": {
+      "mean_anonymity_set": 10.4388,
+      "mean_intersection_size": 1.4833,
+      "p_intersection_singleton": 0.8167,
+      "p_volume_rank_top": 1.0,
+      "composite_risk": 0.8992
+    },
+    "presence_pad": {
+      "mean_anonymity_set": 26.0509,
+      "mean_intersection_size": 4.4333,
+      "p_intersection_singleton": 0.2833,
+      "p_volume_rank_top": 0.9583,
+      "composite_risk": 0.5871
+    },
+    "matched_decoy": {
+      "mean_anonymity_set": 11.1125,
+      "mean_intersection_size": 2.2917,
+      "p_intersection_singleton": 0.7333,
+      "p_volume_rank_top": 1.0,
+      "composite_risk": 0.8533
+    },
+    "pool_hard_cap": {
+      "mean_anonymity_set": 40.0,
+      "mean_intersection_size": 40.0,
+      "p_intersection_singleton": 0.0,
+      "p_volume_rank_top": 0.0,
+      "composite_risk": 0.0
+    }
+  },
+  "metrics_at_long_horizon": {
+    "baseline": {
+      "mean_anonymity_set": 9.0891,
+      "mean_intersection_size": 1.0,
+      "p_intersection_singleton": 1.0,
+      "p_volume_rank_top": 1.0,
+      "composite_risk": 1.0
+    },
+    "volume_equalize": {
+      "mean_anonymity_set": 9.0943,
+      "mean_intersection_size": 1.0,
+      "p_intersection_singleton": 1.0,
+      "p_volume_rank_top": 1.0,
+      "composite_risk": 1.0
+    },
+    "exit_window_pad_up": {
+      "mean_anonymity_set": 9.0889,
+      "mean_intersection_size": 1.0,
+      "p_intersection_singleton": 1.0,
+      "p_volume_rank_top": 1.0,
+      "composite_risk": 1.0
+    },
+    "exit_window_hard_cap": {
+      "mean_anonymity_set": 10.4168,
+      "mean_intersection_size": 1.0,
+      "p_intersection_singleton": 1.0,
+      "p_volume_rank_top": 1.0,
+      "composite_risk": 1.0
+    },
+    "presence_pad": {
+      "mean_anonymity_set": 26.0914,
+      "mean_intersection_size": 1.0,
+      "p_intersection_singleton": 1.0,
+      "p_volume_rank_top": 1.0,
+      "composite_risk": 1.0
+    },
+    "matched_decoy": {
+      "mean_anonymity_set": 11.1662,
+      "mean_intersection_size": 1.0,
+      "p_intersection_singleton": 1.0,
+      "p_volume_rank_top": 1.0,
+      "composite_risk": 1.0
+    },
+    "pool_hard_cap": {
+      "mean_anonymity_set": 40.0,
+      "mean_intersection_size": 40.0,
+      "p_intersection_singleton": 0.0,
+      "p_volume_rank_top": 0.0,
+      "composite_risk": 0.0
+    }
+  },
+  "defense_ranking": [
+    {
+      "scheme": "pool_hard_cap",
+      "p_intersection_singleton": 0.0,
+      "p_volume_rank_top": 0.0,
+      "mean_intersection_size": 40.0,
+      "mean_anonymity_set": 40.0,
+      "composite_risk": 0.0,
+      "beats_baseline": true,
+      "volume_near_uniform": true
+    },
+    {
+      "scheme": "presence_pad",
+      "p_intersection_singleton": 0.2833,
+      "p_volume_rank_top": 0.9583,
+      "mean_intersection_size": 4.4333,
+      "mean_anonymity_set": 26.0509,
+      "composite_risk": 0.5871,
+      "beats_baseline": true,
+      "volume_near_uniform": false
+    },
+    {
+      "scheme": "matched_decoy",
+      "p_intersection_singleton": 0.7333,
+      "p_volume_rank_top": 1.0,
+      "mean_intersection_size": 2.2917,
+      "mean_anonymity_set": 11.1125,
+      "composite_risk": 0.8533,
+      "beats_baseline": true,
+      "volume_near_uniform": false
+    },
+    {
+      "scheme": "exit_window_pad_up",
+      "p_intersection_singleton": 0.8,
+      "p_volume_rank_top": 1.0,
+      "mean_intersection_size": 1.5583,
+      "mean_anonymity_set": 9.0696,
+      "composite_risk": 0.89,
+      "beats_baseline": true,
+      "volume_near_uniform": false
+    },
+    {
+      "scheme": "exit_window_hard_cap",
+      "p_intersection_singleton": 0.8167,
+      "p_volume_rank_top": 1.0,
+      "mean_intersection_size": 1.4833,
+      "mean_anonymity_set": 10.4388,
+      "composite_risk": 0.8992,
+      "beats_baseline": true,
+      "volume_near_uniform": false
+    },
+    {
+      "scheme": "volume_equalize",
+      "p_intersection_singleton": 0.8833,
+      "p_volume_rank_top": 1.0,
+      "mean_intersection_size": 1.5167,
+      "mean_anonymity_set": 9.1028,
+      "composite_risk": 0.9358,
+      "beats_baseline": false,
+      "volume_near_uniform": false
+    },
+    {
+      "scheme": "baseline",
+      "p_intersection_singleton": 0.9083,
+      "p_volume_rank_top": 1.0,
+      "mean_intersection_size": 1.2583,
+      "mean_anonymity_set": 9.091,
+      "composite_risk": 0.9496,
+      "beats_baseline": false,
+      "volume_near_uniform": false
+    }
+  ],
+  "recommended": {
+    "scheme": "presence_pad",
+    "decision_horizon": 100,
+    "composite_risk": 0.5871,
+    "p_intersection_singleton": 0.2833,
+    "p_volume_rank_top": 0.9583,
+    "strongest_composite_scheme": "pool_hard_cap",
+    "note": "Recommend `presence_pad` in-sim at E=100: preference-ordered practical scheme that reduces tip-sparse \u2229 / volume ranking vs baseline (strongest composite: `pool_hard_cap`). Not a clearnet receiver hard-cap; long-horizon residual may still rise (see metrics_at_long_horizon)."
+  },
+  "honest_residuals": [
+    "Synthetic Poisson model \u2014 not WAN / operational exit C2.",
+    "Clearnet destination cannot run HardCapPadder; exit_window_* / pool_hard_cap are egress-shaping models at the exit tier.",
+    "presence_pad / matched_decoy / pool_hard_cap burn bandwidth; adversarial idle clients may refuse decoy participation.",
+    "Ranking uses decision_horizon (mid E); long-horizon tip-\u2229 can re-collapse when pads are intermittent (see metrics_at_long_horizon).",
+    "volume_equalize alone does not stop tip-sparse presence \u2229."
+  ],
+  "sim_to_product": {
+    "baseline": "unshaped exit\u2194clearnet residual (today)",
+    "exit_window_hard_cap": "Optional exit-relay per-destination egress pad to flat Q among co-active clients \u2014 product hook not shipped; sim-only.",
+    "presence_pad": "Decoy / cover clearnet flows from exit or willing clients to inflate co-active sets at matched volume Q \u2014 policy + cost.",
+    "matched_decoy": "Emit K matched-volume companions when a real flow is active \u2014 closest analogue to receiver-side cover without clearnet pad.",
+    "pool_hard_cap": "Always-on flat-Q egress for the entire exit client pool \u2014 strongest sim defense; highest bandwidth cost.",
+    "mapping_doc": "docs/ops/exit_tier_defense.md"
+  },
+  "curves": {
+    "baseline": {
+      "20": {
+        "mean_anonymity_set": 9.0958,
+        "mean_intersection_size": 17.2667,
+        "p_intersection_singleton": 0.1167,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.5142
+      },
+      "50": {
+        "mean_anonymity_set": 9.0938,
+        "mean_intersection_size": 4.375,
+        "p_intersection_singleton": 0.5,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.725
+      },
+      "100": {
+        "mean_anonymity_set": 9.091,
+        "mean_intersection_size": 1.2583,
+        "p_intersection_singleton": 0.9083,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.9496
+      },
+      "200": {
+        "mean_anonymity_set": 9.0995,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      },
+      "400": {
+        "mean_anonymity_set": 9.0985,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      },
+      "800": {
+        "mean_anonymity_set": 9.0891,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      }
+    },
+    "volume_equalize": {
+      "20": {
+        "mean_anonymity_set": 9.1104,
+        "mean_intersection_size": 17.7667,
+        "p_intersection_singleton": 0.1,
+        "p_volume_rank_top": 0.975,
+        "composite_risk": 0.4937
+      },
+      "50": {
+        "mean_anonymity_set": 9.1487,
+        "mean_intersection_size": 5.35,
+        "p_intersection_singleton": 0.475,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.7112
+      },
+      "100": {
+        "mean_anonymity_set": 9.1028,
+        "mean_intersection_size": 1.5167,
+        "p_intersection_singleton": 0.8833,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.9358
+      },
+      "200": {
+        "mean_anonymity_set": 9.0928,
+        "mean_intersection_size": 1.0083,
+        "p_intersection_singleton": 0.9917,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.9954
+      },
+      "400": {
+        "mean_anonymity_set": 9.0973,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      },
+      "800": {
+        "mean_anonymity_set": 9.0943,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      }
+    },
+    "exit_window_pad_up": {
+      "20": {
+        "mean_anonymity_set": 9.1058,
+        "mean_intersection_size": 18.175,
+        "p_intersection_singleton": 0.1,
+        "p_volume_rank_top": 0.975,
+        "composite_risk": 0.4937
+      },
+      "50": {
+        "mean_anonymity_set": 9.0807,
+        "mean_intersection_size": 5.5917,
+        "p_intersection_singleton": 0.4417,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.6929
+      },
+      "100": {
+        "mean_anonymity_set": 9.0696,
+        "mean_intersection_size": 1.5583,
+        "p_intersection_singleton": 0.8,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.89
+      },
+      "200": {
+        "mean_anonymity_set": 9.0896,
+        "mean_intersection_size": 1.0083,
+        "p_intersection_singleton": 0.9917,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.9954
+      },
+      "400": {
+        "mean_anonymity_set": 9.0968,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      },
+      "800": {
+        "mean_anonymity_set": 9.0889,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      }
+    },
+    "exit_window_hard_cap": {
+      "20": {
+        "mean_anonymity_set": 10.3487,
+        "mean_intersection_size": 20.0,
+        "p_intersection_singleton": 0.0167,
+        "p_volume_rank_top": 0.875,
+        "composite_risk": 0.4029
+      },
+      "50": {
+        "mean_anonymity_set": 10.3963,
+        "mean_intersection_size": 7.5833,
+        "p_intersection_singleton": 0.35,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.6425
+      },
+      "100": {
+        "mean_anonymity_set": 10.4388,
+        "mean_intersection_size": 1.4833,
+        "p_intersection_singleton": 0.8167,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.8992
+      },
+      "200": {
+        "mean_anonymity_set": 10.432,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      },
+      "400": {
+        "mean_anonymity_set": 10.4365,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      },
+      "800": {
+        "mean_anonymity_set": 10.4168,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      }
+    },
+    "presence_pad": {
+      "20": {
+        "mean_anonymity_set": 26.0471,
+        "mean_intersection_size": 25.6833,
+        "p_intersection_singleton": 0.0,
+        "p_volume_rank_top": 0.4,
+        "composite_risk": 0.18
+      },
+      "50": {
+        "mean_anonymity_set": 26.0568,
+        "mean_intersection_size": 13.225,
+        "p_intersection_singleton": 0.025,
+        "p_volume_rank_top": 0.8167,
+        "composite_risk": 0.3812
+      },
+      "100": {
+        "mean_anonymity_set": 26.0509,
+        "mean_intersection_size": 4.4333,
+        "p_intersection_singleton": 0.2833,
+        "p_volume_rank_top": 0.9583,
+        "composite_risk": 0.5871
+      },
+      "200": {
+        "mean_anonymity_set": 26.0772,
+        "mean_intersection_size": 1.2917,
+        "p_intersection_singleton": 0.7833,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.8808
+      },
+      "400": {
+        "mean_anonymity_set": 26.0919,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      },
+      "800": {
+        "mean_anonymity_set": 26.0914,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      }
+    },
+    "matched_decoy": {
+      "20": {
+        "mean_anonymity_set": 10.9908,
+        "mean_intersection_size": 22.7583,
+        "p_intersection_singleton": 0.0167,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.4592
+      },
+      "50": {
+        "mean_anonymity_set": 11.1043,
+        "mean_intersection_size": 8.875,
+        "p_intersection_singleton": 0.1917,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.5554
+      },
+      "100": {
+        "mean_anonymity_set": 11.1125,
+        "mean_intersection_size": 2.2917,
+        "p_intersection_singleton": 0.7333,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.8533
+      },
+      "200": {
+        "mean_anonymity_set": 11.1299,
+        "mean_intersection_size": 1.0583,
+        "p_intersection_singleton": 0.9917,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 0.9954
+      },
+      "400": {
+        "mean_anonymity_set": 11.137,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      },
+      "800": {
+        "mean_anonymity_set": 11.1662,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "composite_risk": 1.0
+      }
+    },
+    "pool_hard_cap": {
+      "20": {
+        "mean_anonymity_set": 40.0,
+        "mean_intersection_size": 40.0,
+        "p_intersection_singleton": 0.0,
+        "p_volume_rank_top": 0.0,
+        "composite_risk": 0.0
+      },
+      "50": {
+        "mean_anonymity_set": 40.0,
+        "mean_intersection_size": 40.0,
+        "p_intersection_singleton": 0.0,
+        "p_volume_rank_top": 0.0,
+        "composite_risk": 0.0
+      },
+      "100": {
+        "mean_anonymity_set": 40.0,
+        "mean_intersection_size": 40.0,
+        "p_intersection_singleton": 0.0,
+        "p_volume_rank_top": 0.0,
+        "composite_risk": 0.0
+      },
+      "200": {
+        "mean_anonymity_set": 40.0,
+        "mean_intersection_size": 40.0,
+        "p_intersection_singleton": 0.0,
+        "p_volume_rank_top": 0.0,
+        "composite_risk": 0.0
+      },
+      "400": {
+        "mean_anonymity_set": 40.0,
+        "mean_intersection_size": 40.0,
+        "p_intersection_singleton": 0.0,
+        "p_volume_rank_top": 0.0,
+        "composite_risk": 0.0
+      },
+      "800": {
+        "mean_anonymity_set": 40.0,
+        "mean_intersection_size": 40.0,
+        "p_intersection_singleton": 0.0,
+        "p_volume_rank_top": 0.0,
+        "composite_risk": 0.0
+      }
+    }
+  }
+}

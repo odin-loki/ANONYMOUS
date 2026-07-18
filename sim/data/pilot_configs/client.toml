@@ -9,9 +9,11 @@ threshold = 1
 authority_pubkeys = ["2c0e2c6c299cde735e527506c5ab4ac3eef994741d3ced645de588c2d9b25258"]
 allow_unverified_roster = false
 
-# Optional adaptive guard mitigation (spec §13 first pass — default off).
+# Optional adaptive guard mitigation (spec §13 — default off).
+# Prefer adaptive_v4 (S5; best long-horizon sim) or adaptive_v3.
 # [guard_mitigation]
-# adaptive_first = true
+# preset = "adaptive_v4"
+# # legacy: adaptive_first = true
 
 [link]
 handshake = "auto"

@@ -37,6 +37,14 @@
 //! so inter-cell gaps match client paced bulk when possible. Residual: multi-hop forwarding
 //! semantics and valid Sphinx ciphertext still differ — cover is discarded at the next hop
 //! and never peels/forwards like genuine bulk.
+//!
+//! ## Cover padding policy (research wave S4; sim-ranked, not product flags)
+//!
+//! Sim ranking in `sim/aegis_sim/cover_multihop_defense.py` prefers **cover onions**
+//! (peel/forward then sink) to raise `implied_packet_continuity` toward Sphinx, with
+//! **matched local discard** as the low-risk ops lever (synchronize per-hop cover burst
+//! schedules so discard fractions match). This crate still implements local
+//! `COVER_FRAGMENT_RESERVED` discard only — peelable cover onions are not shipped.
 
 use aegis_crypto::cell::{Cell, Command, CELL_LEN};
 use aegis_crypto::fragment::{

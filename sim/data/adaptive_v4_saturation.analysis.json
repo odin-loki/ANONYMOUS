@@ -1,0 +1,68 @@
+{
+  "tag": "adaptive_v4_saturation_S5",
+  "status": "[O] QUANTIFIED",
+  "claim_closed": false,
+  "characterizes_not_closes": true,
+  "mitigation_partial_not_closed": true,
+  "best_mitigation_preset": "adaptive_v4",
+  "c": 0.015,
+  "g": 3,
+  "trials": 2500,
+  "epoch_grid": [
+    200,
+    800,
+    2000
+  ],
+  "by_epochs": {
+    "200": {
+      "adaptive": 1.0,
+      "mitigated_v3": 0.4504,
+      "mitigated_v4": 0.226,
+      "v4_improvement_vs_v3": 0.22440000000000002
+    },
+    "800": {
+      "adaptive": 1.0,
+      "mitigated_v3": 0.8584,
+      "mitigated_v4": 0.562,
+      "v4_improvement_vs_v3": 0.2964
+    },
+    "2000": {
+      "adaptive": 1.0,
+      "mitigated_v3": 0.9892,
+      "mitigated_v4": 0.8528,
+      "v4_improvement_vs_v3": 0.13639999999999997
+    }
+  },
+  "mitigation_params_v3": {
+    "max_sticky_epochs": 4,
+    "demotion_decay": 0.4,
+    "demotion_floor": 0.05,
+    "demotion_linger": 10,
+    "aggressive": true,
+    "soft_sticky_epochs": 2,
+    "stickiness_decay": 0.62,
+    "rep_signal_scale": 0.45,
+    "rep_demotion_extra": 0.88
+  },
+  "mitigation_params_v4": {
+    "max_sticky_epochs": 2,
+    "demotion_decay": 0.3,
+    "demotion_floor": 0.02,
+    "demotion_linger": 24,
+    "aggressive": true,
+    "soft_sticky_epochs": 1,
+    "stickiness_decay": 0.4,
+    "rep_signal_scale": 0.75,
+    "rep_demotion_extra": 0.78
+  },
+  "metrics_vs_prior": {
+    "focus": "E=2000 saturation residual",
+    "v3_at_2000": 0.9892,
+    "v4_at_2000": 0.8528,
+    "v4_pp_gain_vs_v3_at_2000": 0.13639999999999997,
+    "v3_at_200": 0.4504,
+    "v4_at_200": 0.226
+  },
+  "honest_limit": "v4 lowers E=2000 exposure vs v3 in sim but does not close \u00a713; field recompromise rates unmeasured.",
+  "elapsed_s": 30.93
+}

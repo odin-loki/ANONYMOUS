@@ -1,18 +1,36 @@
 # Constant-time evidence CI / local `dudect`
 
-**Status (2026-07-18, coverage wave C6):** In-tree timing smokes; WSL wrappers capture smoke +
-lab attempt/summary evidence; `tools/dudect/` auto-clones oreparaz/dudect +
-`aegis-crypto-dudect-ffi` Rust exports scaffold the external lab boundary.
+**Status (2026-07-18, wave S6):** In-tree timing smokes green on WSL; short lab
+evidence refreshed; deepen numbers retained as best WSL deepen (still not External).
+`tools/dudect/` + `aegis-crypto-dudect-ffi` scaffold the external lab boundary.
 
-### C6 deepen numbers (this host, WSL2 — not isolated)
+### S6 short refresh (this host, WSL2 — not isolated)
+
+CI-safe path: `.\scripts\run_dudect_lab_wsl.ps1 -LabMode short` (≈3 min).  
+Smokes: `cargo test -p aegis-crypto --test timing_smoke --test dudect_smoke` → **ok**.
+
+| Primitive | Approx traces (short) | Stop reason | Isolated? |
+|-----------|----------------------|-------------|-----------|
+| `ReplayCache::contains_ct` | **≈ 9×10⁴** (0.09 M) | `BUDGET_EXHAUSTED` @ 20×5e3 | **No** |
+| Sphinx `verify_mac` | **≈ 8×10⁴** (0.08 M) | `BUDGET_EXHAUSTED` @ 20×5e3 | **No** |
+
+Source: [`sim/dudect_lab_summary.txt`](../../sim/dudect_lab_summary.txt) (`lab_mode: short`).
+`external_bar_met=NO`. Do **not** re-run 10–12 min deepen unless needed; prior deepen
+pointer below remains the deepest WSL numbers on this PC.
+
+### C6 / prior deepen numbers (WSL2 — not isolated; deepen pointer)
 
 | Primitive | Approx traces (dudect `meas:`) | Stop reason | Isolated? |
 |-----------|--------------------------------|-------------|-----------|
 | `ReplayCache::contains_ct` | **≈ 8.195×10⁷** (81.95 M) | `TIMEOUT` @ 600s, chunk=1e5 | **No** |
 | Sphinx `verify_mac` | **≈ 1.05×10⁶** (1.05 M) | `BUDGET_EXHAUSTED` @ 200×1e4 chunks | **No** |
 
-Source: [`sim/dudect_lab_summary.txt`](../../sim/dudect_lab_summary.txt).
-Numeric counts can exceed 10⁵ on WSL; the External bar (≥10⁵ **per primitive on an isolated CPU**) is still **unmet** (`external_bar_met=NO`).
+Deepen pointer (do not re-run for S6): captured 2026-07-18T08:31:20Z on this host;
+numbers above are the archived deepen result. S6 short refresh overwrote
+[`sim/dudect_lab_summary.txt`](../../sim/dudect_lab_summary.txt) /
+[`sim/dudect_lab_attempt.txt`](../../sim/dudect_lab_attempt.txt) with `lab_mode: short`.
+Numeric deepen counts can exceed 10⁵ on WSL; the External bar (≥10⁵ **per primitive on
+an isolated CPU**) is still **unmet**.
 
 ## In-tree smokes (run anywhere)
 

@@ -1,0 +1,1106 @@
+{
+  "tag": "wave_S4_cover_multihop_defense",
+  "extends": "coverage_C5_cover_multihop",
+  "disclaimer": "Partial multi-hop cover *defense* ranking \u2014 not info-theoretic cover indistinguishability. Cover onions / matched discard are sim policies; product still discards COVER_FRAGMENT_RESERVED before reassembly.",
+  "claims_info_theoretic_indistinguishability": false,
+  "characterizes_not_closes": true,
+  "status": "[O] QUANTIFIED",
+  "n_hops": 3,
+  "n_sends": 4,
+  "tau_secs": 0.35,
+  "cover_secs": 2.0,
+  "relay_cover_bursts_per_hop": 1,
+  "cover_onion_packets_per_send": 2,
+  "schemes_evaluated": [
+    "baseline_local_discard",
+    "matched_local_discard",
+    "cover_onions",
+    "cover_onions_plus_matched",
+    "sphinx_only_reference"
+  ],
+  "by_scheme": {
+    "baseline_local_discard": {
+      "scenario": "baseline_local_discard",
+      "n_hops": 3,
+      "tau_secs": 0.35,
+      "n_sends": 4,
+      "mean_discard_fraction": 0.5609756097560976,
+      "mean_forward_yield": 0.02439024390243903,
+      "mean_implied_packet_continuity": 0.43902439024390244,
+      "hop_volume_l1": 0.0,
+      "forward_continuity": 1.0,
+      "gap_ks_hop0_vs_hop1": 0.07361963190184051,
+      "semantic_gap_score": 1.1219512195121952,
+      "hops": [
+        {
+          "hop_index": 0,
+          "n_wire_cells": 164,
+          "n_sphinx_fragments": 72,
+          "n_cover_discarded": 92,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 4,
+          "discard_fraction": 0.5609756097560976,
+          "forward_yield": 0.024390243902439025,
+          "implied_packet_continuity": 0.43902439024390244,
+          "gap_cv": 0.013073953695390456,
+          "fraction_near_tau": 1.0,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              61,
+              102,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.37423312883435583,
+              0.6257668711656442,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 163
+          }
+        },
+        {
+          "hop_index": 1,
+          "n_wire_cells": 164,
+          "n_sphinx_fragments": 72,
+          "n_cover_discarded": 92,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 4,
+          "discard_fraction": 0.5609756097560976,
+          "forward_yield": 0.024390243902439025,
+          "implied_packet_continuity": 0.43902439024390244,
+          "gap_cv": 0.03371042132348849,
+          "fraction_near_tau": 0.9938650306748467,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              59,
+              103,
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.3619631901840491,
+              0.6319018404907976,
+              0.006134969325153374,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 163
+          }
+        },
+        {
+          "hop_index": 2,
+          "n_wire_cells": 164,
+          "n_sphinx_fragments": 72,
+          "n_cover_discarded": 92,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 4,
+          "discard_fraction": 0.5609756097560976,
+          "forward_yield": 0.024390243902439025,
+          "implied_packet_continuity": 0.43902439024390244,
+          "gap_cv": 0.038689179450606265,
+          "fraction_near_tau": 0.9938650306748467,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              55,
+              107,
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.3374233128834356,
+              0.656441717791411,
+              0.006134969325153374,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 163
+          }
+        }
+      ],
+      "disclaimer": "Partial multi-hop cover *defense* ranking \u2014 not info-theoretic cover indistinguishability. Cover onions / matched discard are sim policies; product still discards COVER_FRAGMENT_RESERVED before reassembly."
+    },
+    "matched_local_discard": {
+      "scenario": "matched_local_discard",
+      "n_hops": 3,
+      "tau_secs": 0.35,
+      "n_sends": 4,
+      "mean_discard_fraction": 0.5609756097560976,
+      "mean_forward_yield": 0.02439024390243903,
+      "mean_implied_packet_continuity": 0.43902439024390244,
+      "hop_volume_l1": 0.0,
+      "forward_continuity": 1.0,
+      "gap_ks_hop0_vs_hop1": 0.07361963190184051,
+      "semantic_gap_score": 1.1219512195121952,
+      "hops": [
+        {
+          "hop_index": 0,
+          "n_wire_cells": 164,
+          "n_sphinx_fragments": 72,
+          "n_cover_discarded": 92,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 4,
+          "discard_fraction": 0.5609756097560976,
+          "forward_yield": 0.024390243902439025,
+          "implied_packet_continuity": 0.43902439024390244,
+          "gap_cv": 0.013073953695390456,
+          "fraction_near_tau": 1.0,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              61,
+              102,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.37423312883435583,
+              0.6257668711656442,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 163
+          }
+        },
+        {
+          "hop_index": 1,
+          "n_wire_cells": 164,
+          "n_sphinx_fragments": 72,
+          "n_cover_discarded": 92,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 4,
+          "discard_fraction": 0.5609756097560976,
+          "forward_yield": 0.024390243902439025,
+          "implied_packet_continuity": 0.43902439024390244,
+          "gap_cv": 0.03371042132348849,
+          "fraction_near_tau": 0.9938650306748467,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              59,
+              103,
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.3619631901840491,
+              0.6319018404907976,
+              0.006134969325153374,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 163
+          }
+        },
+        {
+          "hop_index": 2,
+          "n_wire_cells": 164,
+          "n_sphinx_fragments": 72,
+          "n_cover_discarded": 92,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 4,
+          "discard_fraction": 0.5609756097560976,
+          "forward_yield": 0.024390243902439025,
+          "implied_packet_continuity": 0.43902439024390244,
+          "gap_cv": 0.038689179450606265,
+          "fraction_near_tau": 0.9938650306748467,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              55,
+              107,
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.3374233128834356,
+              0.656441717791411,
+              0.006134969325153374,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 163
+          }
+        }
+      ],
+      "disclaimer": "Partial multi-hop cover *defense* ranking \u2014 not info-theoretic cover indistinguishability. Cover onions / matched discard are sim policies; product still discards COVER_FRAGMENT_RESERVED before reassembly."
+    },
+    "cover_onions": {
+      "scenario": "cover_onions",
+      "n_hops": 3,
+      "tau_secs": 0.35,
+      "n_sends": 4,
+      "mean_discard_fraction": 0.0,
+      "mean_forward_yield": 0.05555555555555555,
+      "mean_implied_packet_continuity": 1.0,
+      "hop_volume_l1": 0.0,
+      "forward_continuity": 1.0,
+      "gap_ks_hop0_vs_hop1": 0.046511627906976744,
+      "semantic_gap_score": 0.0,
+      "hops": [
+        {
+          "hop_index": 0,
+          "n_wire_cells": 216,
+          "n_sphinx_fragments": 216,
+          "n_cover_discarded": 0,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 12,
+          "discard_fraction": 0.0,
+          "forward_yield": 0.05555555555555555,
+          "implied_packet_continuity": 1.0,
+          "gap_cv": 0.028176636015438763,
+          "fraction_near_tau": 0.9953488372093023,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              80,
+              134,
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.37209302325581395,
+              0.6232558139534884,
+              0.004651162790697674,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 215
+          }
+        },
+        {
+          "hop_index": 1,
+          "n_wire_cells": 216,
+          "n_sphinx_fragments": 216,
+          "n_cover_discarded": 0,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 12,
+          "discard_fraction": 0.0,
+          "forward_yield": 0.05555555555555555,
+          "implied_packet_continuity": 1.0,
+          "gap_cv": 0.04668078462815466,
+          "fraction_near_tau": 0.9906976744186047,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              83,
+              130,
+              2,
+              0,
+              0,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.386046511627907,
+              0.6046511627906976,
+              0.009302325581395349,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 215
+          }
+        },
+        {
+          "hop_index": 2,
+          "n_wire_cells": 216,
+          "n_sphinx_fragments": 216,
+          "n_cover_discarded": 0,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 12,
+          "discard_fraction": 0.0,
+          "forward_yield": 0.05555555555555555,
+          "implied_packet_continuity": 1.0,
+          "gap_cv": 0.047491553233214114,
+          "fraction_near_tau": 0.9906976744186047,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              82,
+              131,
+              2,
+              0,
+              0,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.3813953488372093,
+              0.6093023255813953,
+              0.009302325581395349,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 215
+          }
+        }
+      ],
+      "disclaimer": "Partial multi-hop cover *defense* ranking \u2014 not info-theoretic cover indistinguishability. Cover onions / matched discard are sim policies; product still discards COVER_FRAGMENT_RESERVED before reassembly."
+    },
+    "cover_onions_plus_matched": {
+      "scenario": "cover_onions_plus_matched",
+      "n_hops": 3,
+      "tau_secs": 0.35,
+      "n_sends": 4,
+      "mean_discard_fraction": 0.2987012987012987,
+      "mean_forward_yield": 0.03896103896103896,
+      "mean_implied_packet_continuity": 0.7012987012987013,
+      "hop_volume_l1": 0.0,
+      "forward_continuity": 1.0,
+      "gap_ks_hop0_vs_hop1": 0.02931596091205213,
+      "semantic_gap_score": 0.5974025974025974,
+      "hops": [
+        {
+          "hop_index": 0,
+          "n_wire_cells": 308,
+          "n_sphinx_fragments": 216,
+          "n_cover_discarded": 92,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 12,
+          "discard_fraction": 0.2987012987012987,
+          "forward_yield": 0.03896103896103896,
+          "implied_packet_continuity": 0.7012987012987013,
+          "gap_cv": 0.02618117746259973,
+          "fraction_near_tau": 0.996742671009772,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              136,
+              170,
+              1,
+              0,
+              0,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.44299674267100975,
+              0.5537459283387622,
+              0.003257328990228013,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 307
+          }
+        },
+        {
+          "hop_index": 1,
+          "n_wire_cells": 308,
+          "n_sphinx_fragments": 216,
+          "n_cover_discarded": 92,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 12,
+          "discard_fraction": 0.2987012987012987,
+          "forward_yield": 0.03896103896103896,
+          "implied_packet_continuity": 0.7012987012987013,
+          "gap_cv": 0.03935900840485497,
+          "fraction_near_tau": 0.993485342019544,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              137,
+              168,
+              2,
+              0,
+              0,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.44625407166123776,
+              0.5472312703583062,
+              0.006514657980456026,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 307
+          }
+        },
+        {
+          "hop_index": 2,
+          "n_wire_cells": 308,
+          "n_sphinx_fragments": 216,
+          "n_cover_discarded": 92,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 12,
+          "discard_fraction": 0.2987012987012987,
+          "forward_yield": 0.03896103896103896,
+          "implied_packet_continuity": 0.7012987012987013,
+          "gap_cv": 0.0404324604595588,
+          "fraction_near_tau": 0.993485342019544,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              135,
+              170,
+              2,
+              0,
+              0,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.43973941368078173,
+              0.5537459283387622,
+              0.006514657980456026,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 307
+          }
+        }
+      ],
+      "disclaimer": "Partial multi-hop cover *defense* ranking \u2014 not info-theoretic cover indistinguishability. Cover onions / matched discard are sim policies; product still discards COVER_FRAGMENT_RESERVED before reassembly."
+    },
+    "sphinx_only_reference": {
+      "scenario": "sphinx_only_reference",
+      "n_hops": 3,
+      "tau_secs": 0.35,
+      "n_sends": 4,
+      "mean_discard_fraction": 0.0,
+      "mean_forward_yield": 0.05555555555555555,
+      "mean_implied_packet_continuity": 1.0,
+      "hop_volume_l1": 0.0,
+      "forward_continuity": 1.0,
+      "gap_ks_hop0_vs_hop1": 0.12676056338028163,
+      "semantic_gap_score": 0.0,
+      "hops": [
+        {
+          "hop_index": 0,
+          "n_wire_cells": 72,
+          "n_sphinx_fragments": 72,
+          "n_cover_discarded": 0,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 4,
+          "discard_fraction": 0.0,
+          "forward_yield": 0.05555555555555555,
+          "implied_packet_continuity": 1.0,
+          "gap_cv": 0.2710219517466267,
+          "fraction_near_tau": 0.9577464788732394,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              37,
+              31,
+              0,
+              0,
+              3,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.5211267605633803,
+              0.43661971830985913,
+              0.0,
+              0.0,
+              0.04225352112676056,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 71
+          }
+        },
+        {
+          "hop_index": 1,
+          "n_wire_cells": 72,
+          "n_sphinx_fragments": 72,
+          "n_cover_discarded": 0,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 4,
+          "discard_fraction": 0.0,
+          "forward_yield": 0.05555555555555555,
+          "implied_packet_continuity": 1.0,
+          "gap_cv": 0.26795738867579266,
+          "fraction_near_tau": 0.9577464788732394,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              38,
+              30,
+              0,
+              0,
+              3,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.5352112676056338,
+              0.4225352112676056,
+              0.0,
+              0.0,
+              0.04225352112676056,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 71
+          }
+        },
+        {
+          "hop_index": 2,
+          "n_wire_cells": 72,
+          "n_sphinx_fragments": 72,
+          "n_cover_discarded": 0,
+          "n_invalid_onion_cells": 0,
+          "n_packets_forwarded": 4,
+          "discard_fraction": 0.0,
+          "forward_yield": 0.05555555555555555,
+          "implied_packet_continuity": 1.0,
+          "gap_cv": 0.2668003112002067,
+          "fraction_near_tau": 0.9577464788732394,
+          "gap_histogram": {
+            "edges_tau_mult": [
+              0.0,
+              0.5,
+              0.75,
+              1.0,
+              1.25,
+              1.5,
+              2.0,
+              3.0,
+              5.0,
+              Infinity
+            ],
+            "bin_labels": [
+              "[0,0.5)*tau",
+              "[0.5,0.75)*tau",
+              "[0.75,1)*tau",
+              "[1,1.25)*tau",
+              "[1.25,1.5)*tau",
+              "[1.5,2)*tau",
+              "[2,3)*tau",
+              "[3,5)*tau",
+              ">=5*tau"
+            ],
+            "counts": [
+              0,
+              0,
+              28,
+              40,
+              0,
+              0,
+              3,
+              0,
+              0
+            ],
+            "fractions": [
+              0.0,
+              0.0,
+              0.39436619718309857,
+              0.5633802816901409,
+              0.0,
+              0.0,
+              0.04225352112676056,
+              0.0,
+              0.0
+            ],
+            "n_gaps": 71
+          }
+        }
+      ],
+      "disclaimer": "Partial multi-hop cover *defense* ranking \u2014 not info-theoretic cover indistinguishability. Cover onions / matched discard are sim policies; product still discards COVER_FRAGMENT_RESERVED before reassembly."
+    }
+  },
+  "defense_ranking": [
+    {
+      "scheme": "cover_onions",
+      "mean_implied_packet_continuity": 1.0,
+      "semantic_gap_score": 0.0,
+      "mean_discard_fraction": 0.0,
+      "hop_volume_l1": 0.0,
+      "continuity_gain_vs_baseline": 0.560976,
+      "gap_reduction_vs_baseline": 1.121951,
+      "is_reference": false
+    },
+    {
+      "scheme": "cover_onions_plus_matched",
+      "mean_implied_packet_continuity": 0.701299,
+      "semantic_gap_score": 0.597403,
+      "mean_discard_fraction": 0.298701,
+      "hop_volume_l1": 0.0,
+      "continuity_gain_vs_baseline": 0.262274,
+      "gap_reduction_vs_baseline": 0.524549,
+      "is_reference": false
+    },
+    {
+      "scheme": "baseline_local_discard",
+      "mean_implied_packet_continuity": 0.439024,
+      "semantic_gap_score": 1.121951,
+      "mean_discard_fraction": 0.560976,
+      "hop_volume_l1": 0.0,
+      "continuity_gain_vs_baseline": 0.0,
+      "gap_reduction_vs_baseline": 0.0,
+      "is_reference": false
+    },
+    {
+      "scheme": "matched_local_discard",
+      "mean_implied_packet_continuity": 0.439024,
+      "semantic_gap_score": 1.121951,
+      "mean_discard_fraction": 0.560976,
+      "hop_volume_l1": 0.0,
+      "continuity_gain_vs_baseline": 0.0,
+      "gap_reduction_vs_baseline": 0.0,
+      "is_reference": false
+    },
+    {
+      "scheme": "sphinx_only_reference",
+      "mean_implied_packet_continuity": 1.0,
+      "semantic_gap_score": 0.0,
+      "mean_discard_fraction": 0.0,
+      "hop_volume_l1": 0.0,
+      "continuity_gain_vs_baseline": 0.560976,
+      "gap_reduction_vs_baseline": 1.121951,
+      "is_reference": true
+    }
+  ],
+  "recommended": {
+    "scheme": "cover_onions",
+    "mean_implied_packet_continuity": 1.0,
+    "semantic_gap_score": 0.0,
+    "note": "Recommend `cover_onions` in-sim: raises implied_packet_continuity and/or lowers semantic_gap_score vs local-discard baseline. Product still needs real peelable cover onions \u2014 not shipped."
+  },
+  "delta_vs_baseline": {
+    "baseline_continuity": 0.43902439024390244,
+    "baseline_semantic_gap_score": 1.1219512195121952,
+    "sphinx_reference_continuity": 1.0,
+    "recommended_continuity": 1.0,
+    "continuity_ratio_recommended_over_sphinx": 1.0
+  },
+  "honest_residuals": [
+    "Cover onions in this lab forward like Sphinx on the path; product cover still uses COVER_FRAGMENT_RESERVED local discard.",
+    "Matched discard lowers hop volume L1 but alone cannot restore implied_packet_continuity when cover never forwards.",
+    "Valid Sphinx ciphertext / peel MAC still differ from synthetic cover onions \u2014 GPA with crypto vantage is out of scope here.",
+    "Not info-theoretic indistinguishability; single-hop gap CV may still look \u03c4-like under all schemes."
+  ],
+  "sim_to_product": {
+    "baseline_local_discard": "Today: cover_flow.rs COVER_FRAGMENT_RESERVED discard before peel",
+    "matched_local_discard": "Ops: synchronize per-hop cover burst schedules (policy comment / future flag) so discard fractions match across hops",
+    "cover_onions": "Future: peelable cover onions that forward then sink \u2014 requires Sphinx-shaped cover construction; not implemented in product",
+    "mapping_doc": "docs/ops/cover_multihop_defense.md"
+  },
+  "c5_public_api_ref": {
+    "module": "aegis_sim.cover_multihop",
+    "artifact": "sim/data/cover_multihop_characterization.json",
+    "simulate": "simulate_multihop_path",
+    "characterize": "characterize_multihop"
+  },
+  "c5_cross_check": {
+    "c5_continuity": 0.43902439024390244,
+    "s4_baseline_continuity": 0.43902439024390244,
+    "match": true
+  }
+}

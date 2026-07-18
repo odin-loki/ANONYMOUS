@@ -199,8 +199,8 @@ def check_pilot_tomls(findings: Findings) -> None:
         text = path.read_text(encoding="utf-8")
         if "guard_mitigation" not in text:
             findings.warn(f"{path.name}: missing guard_mitigation documentation comment")
-        if not any(p in text for p in ("adaptive_v3", "adaptive_v2", "adaptive_first")):
-            findings.warn(f"{path.name}: guard_mitigation comment should mention adaptive_v3")
+        if not any(p in text for p in ("adaptive_v4", "adaptive_v3", "adaptive_v2", "adaptive_first")):
+            findings.warn(f"{path.name}: guard_mitigation comment should mention adaptive_v4")
 
         peers = cfg.get("peers") or []
         for peer in peers:
@@ -228,8 +228,8 @@ def check_pilot_tomls(findings: Findings) -> None:
                 findings.warn("client.toml: missing guard_mitigation documentation")
             if "roster-path" not in text and "roster_path" not in text and "[path]" not in text:
                 findings.warn("client.toml: should document roster-path / [path] wiring")
-            if not any(p in text for p in ("adaptive_v3", "adaptive_v2", "adaptive_first")):
-                findings.warn("client.toml: should document preset = adaptive_v3")
+            if not any(p in text for p in ("adaptive_v4", "adaptive_v3", "adaptive_v2", "adaptive_first")):
+                findings.warn("client.toml: should document preset = adaptive_v4")
 
     findings.note("pilot TOML structural checks complete")
 
@@ -243,8 +243,8 @@ def check_templates(findings: Findings) -> None:
         text = path.read_text(encoding="utf-8")
         if "guard_mitigation" not in text:
             findings.warn(f"{name}: missing [guard_mitigation] docs")
-        if not any(p in text for p in ("adaptive_v3", "adaptive_v2", "adaptive_first")):
-            findings.warn(f"{name}: should document preset = \"adaptive_v3\"")
+        if not any(p in text for p in ("adaptive_v4", "adaptive_v3", "adaptive_v2", "adaptive_first")):
+            findings.warn(f"{name}: should document preset = \"adaptive_v4\"")
         if name == "client.production.toml" and "roster-path" not in text and "[path]" not in text:
             findings.warn(f"{name}: should document roster-path / [path]")
         if "allow_unverified_roster = false" not in text:

@@ -7,12 +7,14 @@
 #   powershell -File scripts/softhsm_wsl.ps1 -Action init
 #   powershell -File scripts/softhsm_wsl.ps1 -Action init -Evidence
 #   powershell -File scripts/softhsm_wsl.ps1 -Action dry-run
+#   powershell -File scripts/softhsm_wsl.ps1 -Action regress -Evidence
+#   powershell -File scripts/softhsm_wsl.ps1 -Action verify
 #
 # Repo root is inferred from this script's location.
 
 [CmdletBinding()]
 param(
-    [ValidateSet("probe", "user-build", "init", "dry-run", "fix-pkcs11")]
+    [ValidateSet("probe", "user-build", "init", "dry-run", "fix-pkcs11", "regress", "verify")]
     [string]$Action = "probe",
     [string]$WslUser = "odin",
     [switch]$Evidence
@@ -54,5 +56,15 @@ switch ($Action) {
             $args = "--evidence sim/softhsm_init_evidence.txt"
         }
         exit (Invoke-WslBashScript "scripts/softhsm_init.sh" $args)
+    }
+    "verify" {
+        exit (Invoke-WslBashScript "scripts/softhsm_verify_and_test.sh")
+    }
+    "regress" {
+        $args = ""
+        if ($Evidence) {
+            $args = "--evidence sim/softhsm_ceremony_regress.txt"
+        }
+        exit (Invoke-WslBashScript "scripts/softhsm_ceremony_regress.sh" $args)
     }
 }

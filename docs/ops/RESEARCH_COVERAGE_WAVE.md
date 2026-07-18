@@ -15,15 +15,19 @@
 | C5 | Cover multi-hop + metrics scrape | `cover_multihop` / `metrics_sidechannel` + 12 tests | Continuity ~0.44 vs 1.0; scrape Pearson≈0.97 | Info-theoretic cover |
 | C6 | dudect WSL deepen | Lab deepen scripts + evidence | ~8×10⁷ / ~1×10⁶ traces on WSL | Isolated ≥10⁵ bar **not** met |
 
+**S4 follow-on:** defense rankings from C2/C5 — see [`PC_VERIFY_RESEARCH_WAVE.md`](PC_VERIFY_RESEARCH_WAVE.md) §S4 (`exit_tier_defense`, `cover_multihop_defense`).
+
 ## Regenerate / test
 
 ```bash
 cd sim && PYTHONPATH=. pytest -q \
   tests/test_gossip_eclipse.py \
   tests/test_exit_tier_intersection.py tests/test_fused_adversary.py \
+  tests/test_exit_tier_defense.py \
   tests/test_faction_sybil_skew.py \
   tests/test_ac_nullifier_unlinkability.py \
-  tests/test_cover_multihop.py tests/test_metrics_sidechannel.py
+  tests/test_cover_multihop.py tests/test_cover_multihop_defense.py \
+  tests/test_metrics_sidechannel.py
 
 # dudect deepen (WSL, long):
 # powershell -File scripts/run_dudect_lab_wsl.ps1 -Mode deepen
