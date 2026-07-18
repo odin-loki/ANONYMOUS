@@ -98,6 +98,17 @@ impl RelayPruningPolicy {
     }
 }
 
+/// True when enough distinct peer anomaly flags fired this epoch to treat as a
+/// health spike (hook for guard mitigation / sticky-cap rotation in topology).
+pub fn peer_health_spike_detected(
+    policy: &RelayPruningPolicy,
+    peer_anomaly_count: u32,
+    threshold: u32,
+) -> bool {
+    let _ = policy;
+    peer_anomaly_count >= threshold
+}
+
 /// Feed a scalar peer failure-rate sample into anomaly-driven pruning.
 ///
 /// `fail_rate` is typically `failures / (successes + failures)` over a local
@@ -225,5 +236,12 @@ mod tests {
         }
         assert!(policy.ledger().score(relay(4)).0 > before);
         assert!(policy.is_eligible(relay(4), DEFAULT_PATH_REPUTATION_FLOOR));
+    }
+
+    #[test]
+    fn peer_health_spike_threshold() {
+        let policy = RelayPruningPolicy::new(0.9, 0.2, 3.0).unwrap();
+        assert!(!peer_health_spike_detected(&policy, 1, 2));
+        assert!(peer_health_spike_detected(&policy, 2, 2));
     }
 }

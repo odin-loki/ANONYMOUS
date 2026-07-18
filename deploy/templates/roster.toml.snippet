@@ -1,0 +1,12 @@
+# Paste into [roster] section of node.production.toml / client.production.toml
+# after `aegis-ceremony` (see docs/ops/consortium_key_ceremony.md).
+
+[roster]
+path = "data/roster.json"
+threshold = 2
+allow_unverified_roster = false
+authority_pubkeys = [
+  "<paste authority-0.pub.hex>",
+  "<paste authority-1.pub.hex>",
+  "<paste authority-2.pub.hex>",
+]

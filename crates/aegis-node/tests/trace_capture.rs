@@ -190,6 +190,7 @@ impl TcpTestnet {
             first_hop_relay_id: hops[0].id,
             link_key_bytes: client_ingress_key,
             kem_commitment: None,
+            peer_noise_static: None,
         };
 
         Self {
@@ -226,6 +227,7 @@ async fn capture_burst_trace_to_csv() {
             &payload,
             &mut rng,
             BuildPacketOptions::legacy_dev(),
+            &LinkBridgeConfig::default(),
         )
         .await
         .expect("client send over TcpStream");
@@ -306,6 +308,7 @@ async fn capture_malicious_burst_trace_to_csv() {
             &payload,
             &mut rng,
             BuildPacketOptions::legacy_dev(),
+            &LinkBridgeConfig::default(),
         )
         .await
         .is_ok();

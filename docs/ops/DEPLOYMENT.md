@@ -5,6 +5,16 @@
 
 This is a concise go-live gate. It does **not** replace threat-model review or consortium ceremony docs.
 
+## Config templates and validation
+
+Production-oriented TOML starters live under [`deploy/templates/`](../../deploy/templates/) (`node.production.toml`, `client.production.toml`, `roster.toml.snippet`). Copy per relay/client, replace placeholders, then:
+
+```bash
+cargo run -p aegis-node -- validate --config /path/to/node.toml
+```
+
+Fails closed on lab flags (`allow_unverified_roster`, inline KEM, `[trace].path`, disabled ingress caps). See [`PILOT.md`](PILOT.md) for the full pilot sequence.
+
 ## Pre-flight
 
 | Check | Production setting | Why |
@@ -39,6 +49,8 @@ This is a concise go-live gate. It does **not** replace threat-model review or c
 
 ## Related ops docs
 
+- [`PILOT.md`](PILOT.md) — pilot packaging, templates, staged rollout  
+- [`CONSORTIUM_CHARTER.md`](CONSORTIUM_CHARTER.md) — governance draft (membership, vetting, compromise response)  
 - [`noise_link_auth.md`](noise_link_auth.md) — handshake modes and static keys  
 - [`health_gossip.md`](health_gossip.md) — gossip signing and quorum  
 - [`anonymous_reputation.md`](anonymous_reputation.md) — issuer + nullifier checklist  

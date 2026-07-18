@@ -37,7 +37,7 @@ impl TcpCellTransport {
             &link.link_key_bytes,
             aegis_relay::RelayId::from(link.first_hop_relay_id),
             link.kem_commitment,
-            None,
+            link.peer_noise_static,
             connect_rng,
             bridge_config,
         )

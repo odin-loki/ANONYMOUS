@@ -1,16 +1,17 @@
 //! Runnable mix relay process: config file + TCP link bridge + [`RelayNode`].
 
 use std::path::PathBuf;
+use std::process;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aegis_node::{exit_sink, NodeConfigFile, ReputationConfig};
+use aegis_node::{exit_sink, validate_production_config, NodeConfigFile, ReputationConfig};
 use aegis_relay::{
     spawn_link_bridge, start_bulk_cover, unix_timestamp_secs, GossipOutbound, HealthQuorumLog,
     PeerHealthAdvert, PeerHealthTracker, RelayForwardTrace, RelayId, RelayNode,
     RELAY_CHANNEL_CAPACITY,
 };
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use rand_core::OsRng;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
@@ -19,6 +20,32 @@ use tokio::sync::Mutex;
 #[derive(Parser, Debug)]
 #[command(name = "aegis-node", about = "AEGIS mix relay node")]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// Path to the node TOML configuration file (legacy: omit subcommand).
+    #[arg(long)]
+    config: Option<PathBuf>,
+
+    /// Override listen address from the config file.
+    #[arg(long)]
+    listen: Option<String>,
+
+    /// Mixing rate μ (overrides config).
+    #[arg(long)]
+    mu: Option<f64>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Run the mix relay (default when `--config` is passed without subcommand).
+    Run(RunArgs),
+    /// Validate production config; fail closed on lab flags (exit 1 on errors).
+    Validate(ValidateArgs),
+}
+
+#[derive(Parser, Debug)]
+struct RunArgs {
     /// Path to the node TOML configuration file.
     #[arg(long)]
     config: PathBuf,
@@ -32,18 +59,52 @@ struct Cli {
     mu: Option<f64>,
 }
 
+#[derive(Parser, Debug)]
+struct ValidateArgs {
+    /// Path to the node TOML configuration file.
+    #[arg(long)]
+    config: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let mut file = NodeConfigFile::load(&cli.config)?;
-    NodeConfigFile::load_or_init_kem(&cli.config, &mut file, &mut OsRng)?;
-    if let Some(listen) = cli.listen {
+    match cli.command {
+        Some(Commands::Validate(args)) => run_validate(&args.config),
+        Some(Commands::Run(args)) => run_relay(args.config, args.listen, args.mu).await,
+        None => {
+            let config = cli
+                .config
+                .ok_or("--config is required (or use: aegis-node validate --config <path>)")?;
+            run_relay(config, cli.listen, cli.mu).await
+        }
+    }
+}
+
+fn run_validate(config: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let report = validate_production_config(config)?;
+    println!("{report}");
+    if !report.ok() {
+        process::exit(1);
+    }
+    Ok(())
+}
+
+async fn run_relay(
+    config: PathBuf,
+    listen: Option<String>,
+    mu: Option<f64>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cli_config = config;
+    let mut file = NodeConfigFile::load(&cli_config)?;
+    NodeConfigFile::load_or_init_kem(&cli_config, &mut file, &mut OsRng)?;
+    if let Some(listen) = listen {
         file.listen = listen;
     }
-    if let Some(mu) = cli.mu {
+    if let Some(mu) = mu {
         file.mu = mu;
     }
-    let runtime = file.into_runtime(&cli.config)?;
+    let runtime = file.into_runtime(&cli_config)?;
 
     if let Some(ref roster) = runtime.roster {
         eprintln!("loaded roster ({} relays)", roster.len());

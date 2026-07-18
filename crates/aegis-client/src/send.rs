@@ -67,6 +67,8 @@ pub struct ClientLink {
     pub link_key_bytes: [u8; 32],
     /// Optional first-hop roster KEM commitment for link handshake MAC binding.
     pub kem_commitment: Option<[u8; 32]>,
+    /// First-hop Noise static public when ingress uses `handshake = "auto"` with keys.
+    pub peer_noise_static: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Error)]
@@ -192,7 +194,7 @@ pub async fn send_payload<R: RngCore + CryptoRngCore>(
     rng: &mut R,
 ) -> Result<SphinxPacket, SendError> {
     #[allow(deprecated)]
-    send_payload_with_options(hops, link, payload, rng, BuildPacketOptions::legacy_dev()).await
+    send_payload_with_options(hops, link, payload, rng, BuildPacketOptions::legacy_dev(), &LinkBridgeConfig::default()).await
 }
 
 /// Like [`send_payload`] with explicit roster binding policy.
@@ -208,6 +210,7 @@ pub async fn send_payload_with_options<R: RngCore + CryptoRngCore>(
     payload: &[u8],
     rng: &mut R,
     options: BuildPacketOptions,
+    bridge_config: &LinkBridgeConfig,
 ) -> Result<SphinxPacket, SendError> {
     let packet = build_packet_with_options(hops, payload, rng, options)?;
     send_sphinx_packet(
@@ -215,10 +218,10 @@ pub async fn send_payload_with_options<R: RngCore + CryptoRngCore>(
         &link.link_key_bytes,
         aegis_relay::RelayId::from(link.first_hop_relay_id),
         link.kem_commitment,
-        None,
+        link.peer_noise_static,
         &packet,
         rng,
-        &LinkBridgeConfig::default(),
+        bridge_config,
     )
     .await?;
     Ok(packet)

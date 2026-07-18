@@ -11,6 +11,10 @@ workspace = true
 name = "aegis-ceremony"
 path = "src/bin/aegis_ceremony.rs"
 
+[[bin]]
+name = "aegis-pilot-gen"
+path = "src/bin/aegis_pilot_gen.rs"
+
 [features]
 default = []
 ## Lab-only APIs: unsigned roster admission and unfiltered path/guard selection

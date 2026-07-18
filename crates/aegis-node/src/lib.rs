@@ -3,6 +3,7 @@
 pub mod config;
 pub mod exit_sink;
 pub mod kem_seed_protect;
+pub mod operator_check;
 
 pub use config::{
     kem_seed_file_path, load_roster_from_config, persist_kem_seeds_file,
@@ -15,3 +16,4 @@ pub use kem_seed_protect::{
     is_dpapi_protected, is_keyring_protected, kem_keyring_account, protect_seed_bytes,
     unprotect_seed_bytes, KEM_KEYRING_SERVICE, KEM_SEED_DPAPI_MAGIC, KEM_SEED_KEYRING_MAGIC,
 };
+pub use operator_check::{validate_production_config, ValidationReport};

@@ -1,0 +1,81 @@
+# AEGIS production mix relay — template
+# Copy per relay; replace ALL placeholder hex values and paths.
+# Validate: cargo run -p aegis-node -- validate --config this-file.toml
+# Docs: docs/ops/DEPLOYMENT.md, docs/ops/PILOT.md, docs/ops/CONSORTIUM_CHARTER.md
+
+relay_id = "0100000000000000000000000000000000000000000000000000000000000000"
+listen = "0.0.0.0:9000"
+mu = 80.0
+
+# First run writes kem.seeds beside this file (DPAPI/keyring when available).
+# Do NOT set allow_plaintext_kem in production.
+[kem]
+file = "kem.seeds"
+
+# Optional: bind inbound handshake MACs to roster KEM commitment (recommended).
+# kem_commitment = "<64 hex chars>"
+
+[link]
+handshake = "auto"
+read_timeout_secs = 30
+max_inbound_connections = 256
+identity_binding = true
+# Mode-1 τ-paced defaults (~2.86 cells/s); tune for your deployment.
+max_cells_per_sec = 2.86
+burst = 4
+global_max_cells_per_sec = 22.86
+noise_static_secret = "<64 hex — local Noise static secret>"
+# ingress_noise_static_public = "<64 hex — expected client static, if any>"
+
+[ingress]
+link_key = "<64 hex — PSK for authorized ingress clients>"
+
+[cover]
+enabled = true
+require = true
+target_flow_count = 8
+round_secs = 30
+
+[roster]
+path = "data/roster.json"
+threshold = 2
+allow_unverified_roster = false
+authority_pubkeys = [
+  "<64 hex consortium authority 0>",
+  "<64 hex consortium authority 1>",
+  "<64 hex consortium authority 2>",
+]
+
+[reputation]
+ledger_path = "data/reputation.json"
+nullifier_registry_path = "data/nullifiers.json"
+# operator_signing_key_file = "secrets/reputation-signing.seed"
+
+[health_gossip]
+enabled = true
+signing_key_file = "secrets/gossip-signing.seed"
+interval_secs = 60
+majority_k = 2
+quorum_log_path = "data/health_quorum.log"
+
+# Mix relays: leave trace unset. Exit-only nodes may configure [exit] instead.
+# [trace]
+# path = ...
+
+# Exit hop only — omit on intermediate mix relays.
+# [exit]
+# deliver_to = "file:data/exit-deliveries.log"
+
+[[peers]]
+id = "0200000000000000000000000000000000000000000000000000000000000000"
+addr = "10.0.0.2:9000"
+link_key = "<64 hex shared link PSK>"
+gossip_verifying_key = "<64 hex peer gossip Ed25519 VK>"
+noise_static_public = "<64 hex peer Noise static public>"
+
+# [[peers]]
+# id = "..."
+# addr = "..."
+# link_key = "..."
+# gossip_verifying_key = "..."
+# noise_static_public = "..."

@@ -13,6 +13,7 @@ pub mod beacon;
 pub mod ceremony;
 pub mod custody;
 pub mod error;
+pub mod guard_mitigation;
 pub mod guards;
 pub mod layers;
 pub mod path;
@@ -39,6 +40,7 @@ pub use shamir::{
     decode_share_hex, encode_share_hex, reconstruct_seed, split_seed, SeedShare, ShamirError,
 };
 pub use error::{RosterError, TopologyError};
+pub use guard_mitigation::GuardMitigationPolicy;
 pub use guards::{
     guard_exposure_plateau, GuardConfig, GuardPinMode, GuardSelector, GUARD_SET_SIZE,
 };

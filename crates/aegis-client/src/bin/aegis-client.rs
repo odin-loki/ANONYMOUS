@@ -12,7 +12,7 @@ use aegis_client::send::{BuildPacketOptions, ClientHop, ClientLink};
 use aegis_client::session::{PacedSession, PacedSessionConfig};
 use aegis_crypto::kem::RelayKemSecret;
 use aegis_topology::types::KemPublicCommitment;
-use aegis_relay::LinkBridgeConfig;
+use aegis_relay::{LinkBridgeConfig, LinkHandshakeMode};
 use clap::Parser;
 use rand_core::OsRng;
 use serde::Deserialize;
@@ -70,6 +70,19 @@ struct ClientConfigFile {
     /// Optional permissioned roster; when set, loaded with consortium re-verify.
     #[serde(default)]
     roster: Option<RosterFileConfig>,
+    /// Optional first-hop Noise link settings (production ingress).
+    #[serde(default)]
+    link: Option<ClientLinkFileConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ClientLinkFileConfig {
+    #[serde(default)]
+    handshake: Option<String>,
+    #[serde(default)]
+    noise_static_secret: Option<String>,
+    #[serde(default)]
+    first_hop_noise_static_public: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +116,29 @@ fn hex_nibble(b: u8) -> Result<u8, String> {
         b'A'..=b'F' => Ok(b - b'A' + 10),
         _ => Err("invalid hex".into()),
     }
+}
+
+fn parse_link_handshake_mode(s: &str) -> Result<LinkHandshakeMode, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "legacy_psk" | "legacy" | "psk" => Ok(LinkHandshakeMode::LegacyPsk),
+        "auto" => Ok(LinkHandshakeMode::Auto),
+        "noise" | "noise_ik" => Ok(LinkHandshakeMode::Noise),
+        _ => Err("link.handshake must be \"auto\", \"legacy_psk\", or \"noise\"".into()),
+    }
+}
+
+fn build_link_bridge_config(link: &Option<ClientLinkFileConfig>) -> Result<LinkBridgeConfig, String> {
+    let mut cfg = LinkBridgeConfig::default();
+    let Some(link) = link else {
+        return Ok(cfg);
+    };
+    if let Some(ref mode) = link.handshake {
+        cfg.handshake = parse_link_handshake_mode(mode)?;
+    }
+    if let Some(ref hex) = link.noise_static_secret {
+        cfg.noise_static_secret = Some(parse_hex32(hex)?);
+    }
+    Ok(cfg)
 }
 
 #[tokio::main]
@@ -157,13 +193,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .first()
         .map(|hop| hop.id)
         .ok_or("config must include at least one hop")?;
+    let link_key_bytes = parse_hex32(&file.ingress_link_key)?;
+    let peer_noise_static = file
+        .link
+        .as_ref()
+        .and_then(|l| l.first_hop_noise_static_public.as_deref())
+        .map(parse_hex32)
+        .transpose()?;
+    let bridge_config = build_link_bridge_config(&file.link)?;
     let link = ClientLink {
         first_hop_addr,
         first_hop_relay_id,
-        link_key_bytes: parse_hex32(&file.ingress_link_key)?,
+        link_key_bytes,
         kem_commitment: hops
             .first()
             .and_then(|h| h.kem_commitment.map(|c| c.0)),
+        peer_noise_static,
     };
 
     let require_kem_binding = if cli.no_require_kem_binding {
@@ -179,7 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cli.raw {
         #[allow(deprecated)]
         let packet =
-            aegis_client::send::send_payload_with_options(&hops, &link, &payload, &mut rng, packet_options)
+            aegis_client::send::send_payload_with_options(&hops, &link, &payload, &mut rng, packet_options, &bridge_config)
                 .await?;
         eprintln!(
             "sent sphinx packet (raw/unpaced, {} B payload) to {}",
@@ -190,7 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         let mut session = PacedSession::connect(
             &link,
-            &LinkBridgeConfig::default(),
+            &bridge_config,
             PacedSessionConfig {
                 emitter_config: config_with_tau_and_peak(cli.tau_secs, cli.peak_rate),
                 cover_after_send: Duration::from_secs_f64(cli.cover_secs),

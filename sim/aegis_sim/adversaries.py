@@ -178,7 +178,8 @@ def bulk_correlation(config, k=20, W=100.0, n_buckets=4, n_rounds=5, trials=200,
 # Tag: [O] -- this quantifies the open item, it does not close it (real
 # adversaries' recompromise *rate* is unknown; here it is a free parameter).
 # ---------------------------------------------------------------------------
-def adaptive_guard_exposure(c, g, epochs=50, mode="static", trials=2000, rng=None):
+def adaptive_guard_exposure(c, g, epochs=50, mode="static", trials=2000, rng=None,
+                           max_sticky_epochs=10, demotion_decay=0.72, demotion_floor=0.15):
     """P(a client's g stable guards include a compromised relay within
     `epochs`), for a large relay pool, per-relay compromise prob `c`.
 
@@ -190,6 +191,11 @@ def adaptive_guard_exposure(c, g, epochs=50, mode="static", trials=2000, rng=Non
                      exposure now grows with `epochs` even for a stable guard
                      set, since a clean guard this epoch may be dirty next
                      epoch.
+    mode='mitigated': first mitigation model — on anomaly/recompromise signal
+                     (any guard dirty this epoch) or sticky-cap expiry
+                     (`max_sticky_epochs`), re-sample guards and shrink effective
+                     `c` (pool demotion / rotate pin). Reduces long-horizon
+                     exposure vs `adaptive` in sim; does NOT close §13.
     """
     rng = rng or np.random.default_rng(0)
     hits = 0
@@ -197,7 +203,7 @@ def adaptive_guard_exposure(c, g, epochs=50, mode="static", trials=2000, rng=Non
         if mode == "static":
             dirty = rng.random(g) < c
             hits += bool(dirty.any())
-        else:
+        elif mode == "adaptive":
             ever = False
             for _ in range(epochs):
                 dirty = rng.random(g) < c
@@ -205,27 +211,80 @@ def adaptive_guard_exposure(c, g, epochs=50, mode="static", trials=2000, rng=Non
                     ever = True
                     break
             hits += ever
+        elif mode == "mitigated":
+            ever = False
+            eff_c = float(c)
+            sticky = 0
+            floor_c = c * demotion_floor
+            for _ in range(epochs):
+                sticky += 1
+                dirty = rng.random(g) < eff_c
+                if dirty.any():
+                    ever = True
+                if dirty.any() or sticky >= max_sticky_epochs:
+                    sticky = 0
+                    eff_c = max(floor_c, eff_c * demotion_decay)
+                eff_c = max(floor_c, eff_c * (1.0 - 2e-4))
+            hits += ever
+        else:
+            raise ValueError(f"unknown mode {mode!r}")
     return hits / trials
 
 
+def adaptive_guard_exposure_mitigation_report(c, g, epochs=200, trials=20000, rng=None,
+                                              max_sticky_epochs=10, demotion_decay=0.72,
+                                              demotion_floor=0.15):
+    """Compare unmitigated adaptive vs first mitigation at one horizon."""
+    rng = rng or np.random.default_rng(0)
+    adaptive = adaptive_guard_exposure(
+        c, g, epochs=epochs, mode="adaptive", trials=trials, rng=rng,
+    )
+    mitigated = adaptive_guard_exposure(
+        c, g, epochs=epochs, mode="mitigated", trials=trials, rng=rng,
+        max_sticky_epochs=max_sticky_epochs, demotion_decay=demotion_decay,
+        demotion_floor=demotion_floor,
+    )
+    return {
+        "epochs": epochs,
+        "adaptive_unmitigated": adaptive,
+        "mitigated_first": mitigated,
+        "reduction": adaptive - mitigated,
+        "mitigation_params": {
+            "max_sticky_epochs": max_sticky_epochs,
+            "demotion_decay": demotion_decay,
+            "demotion_floor": demotion_floor,
+        },
+    }
+
+
 def adaptive_guard_exposure_curve(c, g, epoch_grid=(5, 20, 50, 100, 200, 500, 800, 2000),
-                                  trials=20000, rng=None):
+                                  trials=20000, rng=None,
+                                  max_sticky_epochs=10, demotion_decay=0.72,
+                                  demotion_floor=0.15):
     """Exposure vs horizon for static (plateau) vs adaptive (redrawn each epoch).
 
+    Includes `mitigated_by_epochs` for the first mitigation model (sim only).
     Returns a dict suitable for JSON commit under sim/data/. Tag [O]: characterizes
-    the open item; does not close it (real recompromise rate unknown).
+    the open item; mitigation reduces but does not close it.
     """
     rng = rng or np.random.default_rng(divmod(hash((c, g)), 2**32)[1])
     static_plateau = 1 - (1 - c) ** g
     static_sim = adaptive_guard_exposure(c, g, mode="static", trials=trials, rng=rng)
     adaptive = {}
+    mitigated = {}
     for e in epoch_grid:
         adaptive[str(e)] = adaptive_guard_exposure(
             c, g, epochs=e, mode="adaptive", trials=trials, rng=rng
         )
+        mitigated[str(e)] = adaptive_guard_exposure(
+            c, g, epochs=e, mode="mitigated", trials=trials, rng=rng,
+            max_sticky_epochs=max_sticky_epochs, demotion_decay=demotion_decay,
+            demotion_floor=demotion_floor,
+        )
     return {
         "tag": "spec_13_O_adaptive_compromised_mix_set",
         "characterizes_not_closes": True,
+        "mitigation_partial_not_closed": True,
         "c": c,
         "g": g,
         "trials": trials,
@@ -233,6 +292,17 @@ def adaptive_guard_exposure_curve(c, g, epoch_grid=(5, 20, 50, 100, 200, 500, 80
         "static_sim": static_sim,
         "epoch_grid": list(epoch_grid),
         "adaptive_by_epochs": adaptive,
+        "mitigated_by_epochs": mitigated,
+        "mitigation_params": {
+            "max_sticky_epochs": max_sticky_epochs,
+            "demotion_decay": demotion_decay,
+            "demotion_floor": demotion_floor,
+        },
+        "mitigation_at_200": adaptive_guard_exposure_mitigation_report(
+            c, g, epochs=200, trials=trials, rng=rng,
+            max_sticky_epochs=max_sticky_epochs, demotion_decay=demotion_decay,
+            demotion_floor=demotion_floor,
+        ),
     }
 
 

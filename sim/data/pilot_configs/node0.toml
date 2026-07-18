@@ -1,0 +1,44 @@
+relay_id = "ff2e63c467253f6cca42364d6f018302c3bc001a97ec07a9fe6fdf07fb4f7093"
+listen = "127.0.0.1:17419"
+mu = 80.0
+
+[kem]
+allow_plaintext_kem = true
+x25519_seed = "a0b0000000000000000000000000000000000000000000000000000000000000"
+mlkem_d = "c0d0000000000000000000000000000000000000000000000000000000000000"
+mlkem_z = "e0f0000000000000000000000000000000000000000000000000000000000000"
+
+kem_commitment = "df97053a7f0d5d61a82c1eef877ee09cdb9fd766635aae224bb45a1dceb6d934"
+
+[roster]
+path = "roster.json"
+threshold = 1
+authority_pubkeys = ["2c0e2c6c299cde735e527506c5ab4ac3eef994741d3ced645de588c2d9b25258"]
+allow_unverified_roster = false
+
+[cover]
+enabled = true
+require = true
+
+[health_gossip]
+enabled = true
+signing_seed = "15d7d1a69267e3ec1a7ec2a448d51223f6bf9d45bf60f98d3370e62944c766ff"
+interval_secs = 60
+majority_k = 2
+quorum_log_path = "data/health_quorum.log"
+
+[link]
+handshake = "auto"
+noise_static_secret = "6aed482551c532c478534d34772b6548fa68639bb8423893ee1317f3961da1e7"
+ingress_noise_static_public = "1a218cddfb9a53cc1e15f8a69594b8c2362d4b179f2d3c031c29f966326d7400"
+
+[ingress]
+link_key = "d0a5000000000000000000000000000000000000000000000000000000000000"
+
+[[peers]]
+id = "96b9b4a39fda2cc119e0a2a67c0c5948b49eab1ac569169ceef9f35d0509910a"
+addr = "127.0.0.1:17420"
+link_key = "01a5000000000000000000000000000000000000000000000000000000000000"
+noise_static_public = "af38fb58b7ce41b963910bd3a1d16b4564daf5778edd5e63a12920efc93e485c"
+gossip_verifying_key = "0a61823fdeab76239e4288fc52d73c4e9932731e4f8d8b9f247c2ec3faadf981"
+

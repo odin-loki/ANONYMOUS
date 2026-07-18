@@ -179,6 +179,7 @@ impl TcpTestnet {
             first_hop_relay_id: hops[0].id,
             link_key_bytes: client_ingress_key,
             kem_commitment: hops[0].kem_commitment.map(|c| c.0),
+            peer_noise_static: None,
         };
 
         Self {
@@ -240,6 +241,7 @@ async fn tcp_testnet_routes_sphinx_over_real_sockets() {
         PAYLOAD,
         &mut rng,
         BuildPacketOptions::default(),
+        &LinkBridgeConfig::default(),
     )
         .await
         .expect("client send over TcpStream");
@@ -291,6 +293,7 @@ async fn tcp_testnet_exit_sink_file_receives_payload() {
         PAYLOAD,
         &mut rng,
         BuildPacketOptions::default(),
+        &LinkBridgeConfig::default(),
     )
         .await
         .expect("client send");
@@ -331,6 +334,7 @@ async fn tcp_testnet_relay_forward_trace_records_events() {
         PAYLOAD,
         &mut OsRng,
         BuildPacketOptions::default(),
+        &LinkBridgeConfig::default(),
     )
     .await
     .expect("send");
@@ -399,6 +403,7 @@ async fn tcp_path_build_matches_direct_peel() {
         PAYLOAD,
         &mut rng,
         BuildPacketOptions::default(),
+        &LinkBridgeConfig::default(),
     )
         .await
         .unwrap();

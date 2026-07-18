@@ -28,9 +28,9 @@ See also `docs/AEGIS_phase8_hardening_notes.md` for Phase 8 context.
 **Findings (characterizes, does not close):**
 - `mode='static'`: exposure plateaus at `1-(1-c)^g` (control; matches §12).
 - `mode='adaptive'`: exposure **grows with horizon** even for a stable guard set.
-- Long horizon (2000 epochs): adaptive exposure approaches 1.0 for these params.
+- `mode='mitigated'`: first mitigation — sticky cap + demotion on signal; **lower** than adaptive at E=200/800; may still saturate at E=2000. See [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md).
 
-**Artifact:** `sim/data/adaptive_guard_exposure.analysis.json`
+**Artifact:** `sim/data/adaptive_guard_exposure.analysis.json` (includes `mitigated_by_epochs`, `mitigation_at_200`)
 
 **Pytest:** `sim/tests/test_hardening.py` (`test_adaptive_*`)
 

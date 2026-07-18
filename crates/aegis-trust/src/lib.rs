@@ -44,7 +44,10 @@ pub use anon_issuer::{
     BlindedIssueResponse, IssuedAnonymousCredential, IssuerError,
 };
 pub use nullifier::{NullifierError, NullifierMergeReport, NullifierRegistry};
-pub use policy::{feed_peer_metric, feed_peer_outcomes, RelayPruningPolicy, DEFAULT_PATH_REPUTATION_FLOOR};
+pub use policy::{
+    feed_peer_metric, feed_peer_outcomes, peer_health_spike_detected, RelayPruningPolicy,
+    DEFAULT_PATH_REPUTATION_FLOOR,
+};
 pub use reputation::{
     signing_key_from_hex_seed, signing_key_from_seed, verifying_key_from_hex, ReputationError,
     ReputationLedger, ReputationScore,

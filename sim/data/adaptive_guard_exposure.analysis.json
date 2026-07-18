@@ -1,6 +1,7 @@
 {
   "tag": "spec_13_O_adaptive_compromised_mix_set",
   "characterizes_not_closes": true,
+  "mitigation_partial_not_closed": true,
   "c": 0.015,
   "g": 3,
   "trials": 20000,
@@ -18,12 +19,38 @@
   ],
   "adaptive_by_epochs": {
     "5": 0.20815,
-    "20": 0.5855,
-    "50": 0.89655,
-    "100": 0.9906,
-    "200": 0.9998,
+    "20": 0.5834,
+    "50": 0.89925,
+    "100": 0.9902,
+    "200": 1.0,
     "500": 1.0,
     "800": 1.0,
     "2000": 1.0
+  },
+  "mitigated_by_epochs": {
+    "5": 0.20565,
+    "20": 0.54135,
+    "50": 0.72565,
+    "100": 0.80405,
+    "200": 0.9026,
+    "500": 0.98815,
+    "800": 0.9981,
+    "2000": 1.0
+  },
+  "mitigation_params": {
+    "max_sticky_epochs": 10,
+    "demotion_decay": 0.72,
+    "demotion_floor": 0.15
+  },
+  "mitigation_at_200": {
+    "epochs": 200,
+    "adaptive_unmitigated": 0.9999,
+    "mitigated_first": 0.9032,
+    "reduction": 0.09670000000000001,
+    "mitigation_params": {
+      "max_sticky_epochs": 10,
+      "demotion_decay": 0.72,
+      "demotion_floor": 0.15
+    }
   }
 }

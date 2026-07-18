@@ -10,7 +10,7 @@ It complements (does not replace) the spec's §13 list in
 
 **Legend:** [T] tested (in-repo evidence) · [R] reasoned · [O] open · **External** = platform/operator integration, not unfinished wiring.
 
-**Related:** [`RESEARCH_OPS_STATUS.md`](RESEARCH_OPS_STATUS.md) (one-page residual table) · [`AEGIS_research_ops_hardening_plan.md`](../AEGIS_research_ops_hardening_plan.md) (closed wave plan) · [`AEGIS_phase8_hardening_notes.md`](../AEGIS_phase8_hardening_notes.md) (§13 sim progress detail).
+**Related:** [`RESEARCH_OPS_STATUS.md`](RESEARCH_OPS_STATUS.md) (one-page residual table) · [`AEGIS_research_ops_hardening_plan.md`](../AEGIS_research_ops_hardening_plan.md) (closed wave plan) · [`AEGIS_phase8_hardening_notes.md`](../AEGIS_phase8_hardening_notes.md) (§13 sim progress detail) · [`CONSORTIUM_CHARTER.md`](CONSORTIUM_CHARTER.md) (governance draft) · [`PILOT.md`](PILOT.md) (pilot packaging).
 
 ---
 
@@ -38,12 +38,12 @@ From [`AEGIS_SPEC_v3_consolidated.md`](../AEGIS_SPEC_v3_consolidated.md) §13. N
 
 | §13 open item | Status | In-repo progress / pointers |
 |---------------|--------|----------------------------|
-| Adaptive adversary varying compromised-mix set across epochs | **[O] QUANTIFIED** | `adaptive_guard_exposure` / `adaptive_guard_exposure_curve`; artifact `sim/data/adaptive_guard_exposure.analysis.json`; gates in `sim/tests/test_hardening.py`. Long-horizon exposure grows; **not mitigated**. |
+| Adaptive adversary varying compromised-mix set across epochs | **[O] QUANTIFIED + partial mitigation** | `adaptive_guard_exposure` / curve + `mode='mitigated'`; artifact includes `mitigated_by_epochs`; Rust `GuardMitigationPolicy`; [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md). **Does not close §13.** |
 | Combined active(n−1) + intersection over long horizons (Mode 1) | **[O] QUANTIFIED** | `combined_active_intersection` + `combined_attack_report`; artifact `sim/data/combined_active_intersection.analysis.json`; gates in `test_hardening.py`. Characterized, **not closed**. |
 | Cover-burst / GPA timing (related Partial) | **[O] QUANTIFIED** | `sim/aegis_sim/cover_timing.py`; artifact `sim/data/cover_burst_gpa_characterization.json`; `sim/tests/test_cover_burst_gpa.py`. Not info-theoretic indistinguishability. |
 | Real-trace shapeability (actual C2/telemetry, not synthetic) | **[O] partial [T]** | Loopback testnet captures only — see §3 below. Pipeline: `sim/aegis_sim/traffic.py` / `metrics.py`. Traces under `sim/data/real_*_trace.csv`. |
 | Sphinx crypto correctness — proof / test vectors, not simulation | **[O] partial** | Deeper KATs/edge tests in `aegis-crypto` (`vectors.rs`, peel invariants); formal proof does **not** exist (`docs/AEGIS_phase2_implementation_notes.md`). |
-| Consortium governance (who runs/vets relays across nations) | **[O] policy only** | See §4 below. |
+| Consortium governance (who runs/vets relays across nations) | **[O] policy draft** | Practical charter: [`CONSORTIUM_CHARTER.md`](CONSORTIUM_CHARTER.md). Code enforces signed roster + reputation; jurisdiction quotas and legal vetting remain policy. |
 
 Detail and honest limits: [`AEGIS_phase8_hardening_notes.md`](../AEGIS_phase8_hardening_notes.md) §2 and §4–§5.
 
@@ -68,13 +68,14 @@ Do **not** cite loopback captures as closure of spec §13 "actual C2/telemetry".
 
 ---
 
-## 4. Governance [O] — policy only, no code
+## 4. Governance [O] — policy draft + code boundaries
 
 Spec §13: *Consortium governance: who runs/vets relays across nations (business/political).*
 
-- **Status:** **[O]** — out of scope for this codebase.
-- **In-repo:** threat-model and ops docs describe **technical** admission/reputation/roster mechanics; they do **not** resolve cross-national operator policy, legal vetting, or consortium charter.
-- **Research type:** governance / policy / business — not a software deliverable in `crates/` or `sim/`.
+- **Status:** **[O]** — not closed; a **practical draft charter** now exists for operators.
+- **In-repo:** [`CONSORTIUM_CHARTER.md`](CONSORTIUM_CHARTER.md) (membership, vetting, M-of-N roles, jurisdiction diversity goals, compromise response, reputation disputes, code vs policy). Technical admission/reputation/roster mechanics in threat-model and ops runbooks.
+- **Code enforces:** M-of-N signed roster load, fail-closed lab flags (`aegis-node validate`), reputation + gossip verify paths.
+- **Policy / External:** legal vetting, sanctions screening, diversity quota compliance audits, multi-org BFT reputation — not software deliverables alone.
 
 ---
 
@@ -87,10 +88,10 @@ Use this checklist when writing release notes, README claims, or sales material.
 | "Research complete" / "all §13 closed" | **False** — science items are quantified or partial; not closed. |
 | Platform TEE / HSM / BFT / AC / dudect "done" | **False** — scaffolding done; integration is **External**. |
 | Real-trace shapeability fully validated | **False** — loopback testnet only **[T]**; operational C2 **[O]**. |
-| Adaptive guard exposure neutralized | **False** — quantified and **not mitigated**. |
+| Adaptive guard exposure neutralized | **False** — first mitigation lowers sim exposure vs unmitigated adaptive; **§13 still [O]**. |
 | Combined active + intersection bounded | **False** — quantified (`combined_active_intersection.analysis.json`); **not mitigated**. |
 | Sphinx formally verified | **False** — KATs/edge tests only. |
-| Consortium governance solved | **False** — policy/business **[O]**. |
+| Consortium governance solved | **False** — charter draft **[O]**; binding governance still external to code. |
 | Call-site profiling / ops wave | **Closed** (2026-07-17/18) except B-class **External** — see [`RESEARCH_OPS_STATUS.md`](RESEARCH_OPS_STATUS.md). |
 
 **Wave closure (software):** In-repo characterization of listed science items is as far as software allows. Remaining blockers are operator/platform **External** integration, formal proofs, operational C2 data, mitigation design, and governance — not missing wiring in the default datapath.
@@ -99,8 +100,9 @@ Use this checklist when writing release notes, README claims, or sales material.
 
 ## 6. Suggested next sessions (priority-neutral backlog)
 
-1. **Operational trace ingest** — point `load_trace_counts` / `shapeability_report` at a redacted real C2 or telemetry capture (operator-supplied; not in repo).
-2. **Adaptive / combined-attack mitigation design** — rate-limit / detect recompromise (Phase 7 anomaly tie-in); sim before code.
-3. **Platform integration pilots** — one External row at a time (TEE SDK, PKCS#11 HSM, multi-org gossip, AC issuer, isolated dudect lab) per ops runbooks.
-4. **Formal Sphinx proof** — external crypto review / mechanized proof (not more unit tests).
-5. **Governance artifact** — consortium charter / vetting policy (external to repo; link from ops docs when it exists).
+1. **Pilot productization (in progress)** — staged rollout per [`PILOT.md`](PILOT.md): `deploy/templates/` production snippets, `aegis-node validate`, [`DEPLOYMENT.md`](DEPLOYMENT.md) checklist. Remaining: operator-supplied WAN/C2 traces, counsel-reviewed charter, External platform rows.
+2. **Operational trace ingest** — point `load_trace_counts` / `shapeability_report` at a redacted real C2 or telemetry capture (operator-supplied; not in repo).
+3. **Adaptive / combined-attack mitigation** — first pass: sim `mode='mitigated'` + `GuardMitigationPolicy` ([`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md)); extend detection fidelity; combined attack still [O].
+4. **Platform integration pilots** — one External row at a time (TEE SDK, PKCS#11 HSM, multi-org gossip, AC issuer, isolated dudect lab) per ops runbooks.
+5. **Formal Sphinx proof** — external crypto review / mechanized proof (not more unit tests).
+6. **Governance hardening** — counsel review of [`CONSORTIUM_CHARTER.md`](CONSORTIUM_CHARTER.md); bind to operator agreements and audit cadence.

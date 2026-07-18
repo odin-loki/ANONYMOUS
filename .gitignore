@@ -7,8 +7,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
-# misc
-.DS_Store
+# pilot runtime (health quorum / exit sink; created by run_pilot)
+sim/data/pilot_configs/data/
 # dudect lab clones + built harnesses (not release evidence)
 tools/dudect-upstream/
 tools/dudect/harness_*

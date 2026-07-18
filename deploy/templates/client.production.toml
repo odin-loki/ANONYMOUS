@@ -1,0 +1,47 @@
+# AEGIS production client — template
+# Replace hop KEM seeds, link keys, roster paths, and first-hop address.
+# Do NOT use --raw outside trace capture (see docs/ops/DEPLOYMENT.md).
+
+first_hop_addr = "10.0.0.1:9000"
+ingress_link_key = "<64 hex — matches first hop [ingress].link_key>"
+
+# Optional payload for smoke test; omit for stdin-driven sends.
+payload = "pilot-smoke"
+
+[roster]
+path = "data/roster.json"
+threshold = 2
+allow_unverified_roster = false
+authority_pubkeys = [
+  "<64 hex consortium authority 0>",
+  "<64 hex consortium authority 1>",
+  "<64 hex consortium authority 2>",
+]
+
+# L=4 example path — one [[hops]] entry per relay (guard → … → exit).
+# kem_commitment on each hop when roster binding is required.
+
+[[hops]]
+id = "0100000000000000000000000000000000000000000000000000000000000000"
+kem_x25519_seed = "<64 hex — guard KEM seed; protect like a secret>"
+kem_mlkem_d = "<64 hex>"
+kem_mlkem_z = "<64 hex>"
+# kem_commitment = "<64 hex roster commitment>"
+
+[[hops]]
+id = "0200000000000000000000000000000000000000000000000000000000000000"
+kem_x25519_seed = "<64 hex>"
+kem_mlkem_d = "<64 hex>"
+kem_mlkem_z = "<64 hex>"
+
+[[hops]]
+id = "0300000000000000000000000000000000000000000000000000000000000000"
+kem_x25519_seed = "<64 hex>"
+kem_mlkem_d = "<64 hex>"
+kem_mlkem_z = "<64 hex>"
+
+[[hops]]
+id = "0400000000000000000000000000000000000000000000000000000000000000"
+kem_x25519_seed = "<64 hex>"
+kem_mlkem_d = "<64 hex>"
+kem_mlkem_z = "<64 hex>"

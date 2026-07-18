@@ -254,6 +254,7 @@ async fn two_paced_sends_reuse_one_tcp_handshake() {
         first_hop_relay_id: hops[0].id,
         link_key_bytes: psk,
         kem_commitment: None,
+        peer_noise_static: None,
     };
     let tau = Duration::from_millis(25);
     let mut session = PacedSession::connect(

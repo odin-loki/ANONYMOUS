@@ -4,7 +4,8 @@
 **APIs:** `ConsortiumKey`, `ThresholdConsortium`, `ThresholdSignedRelayRecord` in `aegis-topology::roster`  
 **Custody:** `SoftwareCustodyProvider` / `HsmCustodyProvider` / `SimulatedHsmProvider` + `Pkcs11CustodyOps` + `select_ceremony_custody` in `aegis-topology::custody`  
 **Helper:** `cargo run -p aegis-topology --bin aegis-ceremony`  
-**Shamir:** optional GF(256) share split/reconstruct in `aegis-topology::shamir` / `ceremony`
+**Shamir:** optional GF(256) share split/reconstruct in `aegis-topology::shamir` / `ceremony`  
+**SoftHSM pilot:** [`softhsm_ceremony.md`](softhsm_ceremony.md) — WSL token init + PKCS#11 mapping (optional; not CI)
 
 This ceremony produces the Ed25519 authority keys that sign permissioned
 [`RelayRecord`](../../crates/aegis-topology/src/types.rs) admissions (including the

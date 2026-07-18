@@ -79,14 +79,16 @@ Beyond the phase gates above, a dedicated security-profiling pass (real fuzzing 
 4. Try the real testnet: `cargo run -p aegis-node -- --config <toml>` for one or more
    relays, then `cargo run -p aegis-client -- --config <toml>` to send a real, τ-paced
    Sphinx packet over TCP (see `crates/aegis-node/tests/tcp_testnet.rs` for a runnable
-   example of the config shape). `crates/aegis-node/tests/trace_capture.rs` (run with
+   example of the config shape). Production templates: `deploy/templates/`; validate with
+   `cargo run -p aegis-node -- validate --config <toml>`. Pilot rollout: `docs/ops/PILOT.md`;
+   governance draft: `docs/ops/CONSORTIUM_CHARTER.md`. `crates/aegis-node/tests/trace_capture.rs` (run with
    `-- --ignored`) reproduces the Phase-8 benign and malicious real trace captures.
 
    **Security profiling status (2026-07-17): done** — call-site gaps closed, and
    the research/ops leftovers wave is **closed** except B-class External. See
    `docs/AEGIS_research_ops_hardening_plan.md`, `docs/ops/RESEARCH_OPS_STATUS.md`,
    `docs/ops/RESEARCH_AGENDA.md` (what remains open — not "research complete"), and
-   `docs/ops/`.
+   `docs/ops/` (incl. `docs/ops/CONSORTIUM_CHARTER.md`, `docs/ops/PILOT.md`).
 
    Call-site mitigations: paced session + ρ≤0.7, ingress token-bucket + global
    budget, M-of-N + KEM-derived `RelayId`, CT replay scan, signed reputation
