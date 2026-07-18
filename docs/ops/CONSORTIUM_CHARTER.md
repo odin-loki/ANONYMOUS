@@ -194,6 +194,16 @@ Run **`aegis-node validate --config <toml>`** before deploy — fails closed on 
 - [`health_gossip.md`](health_gossip.md) — neighbor health quorum
 - [`anonymous_reputation.md`](anonymous_reputation.md) — ZK presentation verifier checklist
 - [`RESEARCH_AGENDA.md`](RESEARCH_AGENDA.md) — honest open items
+- [`faction_sybil_skew.md`](faction_sybil_skew.md) — **[O] QUANTIFIED** sim of faction key-fraction × jurisdiction-skew under M-of-N admission (wave C3); legal vetting remains **External**
+
+### Research note (wave C3)
+
+In-repo characterization (`sim/aegis_sim/faction_sybil_skew.py`) shows Sybil roster
+admission succeeds when faction-controlled authority keys reach threshold M, and a
+jurisdiction-skewed relay pool then concentrates guard/exit/path slots — violating
+§5 goals in simulation. Cryptographic M-of-N and the default admission rate limit
+remain the code-enforced controls; **diversity-quota compliance and legal vetting
+are still policy / External** and are not closed by this research artifact.
 
 ---
 
@@ -202,3 +212,4 @@ Run **`aegis-node validate --config <toml>`** before deploy — fails closed on 
 | Date | Change |
 |------|--------|
 | 2026-07-18 | Initial practical draft linked from ops docs |
+| 2026-07-18 | Link wave C3 faction/Sybil jurisdiction-skew sim; restate legal vetting External |

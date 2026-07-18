@@ -1,0 +1,250 @@
+{
+  "disclaimer": "Partial scrape side-channel characterization \u2014 not an info-theoretic leakage bound. Models coarse RelayCoarseStats + IngressRateLimitStats deltas under lab flood/cover; debug_stats assumed not exported.",
+  "claims_info_theoretic_leakage_bound": false,
+  "debug_stats_exported": false,
+  "primary": {
+    "disclaimer": "Partial scrape side-channel characterization \u2014 not an info-theoretic leakage bound. Models coarse RelayCoarseStats + IngressRateLimitStats deltas under lab flood/cover; debug_stats assumed not exported.",
+    "characterization": "partial_metrics_scrape_sidechannel",
+    "claims_info_theoretic_leakage_bound": false,
+    "debug_stats_exported": false,
+    "duration_secs": 30.0,
+    "scrape_interval_secs": 1.0,
+    "baseline_paced": {
+      "final_coarse": {
+        "processed_ok": 8,
+        "processed_fail": 0,
+        "cover_emitted": 0,
+        "queue_dropped": 0
+      },
+      "final_ingress": {
+        "dropped_frames": 16
+      },
+      "totals": {
+        "offered_attack_cells": 0.0,
+        "offered_paced_cells": 171.42857142857144,
+        "offered_cover_flows": 0.0,
+        "accepted_cells": 146.0,
+        "dropped_cells": 16.0
+      },
+      "leakage": {
+        "pearson_dropped_vs_attack": null,
+        "pearson_load_proxy_vs_attack": null,
+        "pearson_fail_vs_attack": null,
+        "pearson_queue_vs_attack": null,
+        "pearson_cover_vs_cover_gt": null,
+        "attack_volume_recoverable_via_drops": 0.0,
+        "mean_scrape_delta_dropped": 0.5333333333333333,
+        "mean_scrape_delta_load_proxy": 0.5360370370370371,
+        "max_scrape_delta_dropped": 4.0,
+        "timing_leak_note": "Pearson on scrape-window deltas vs ground-truth attack windows; high |r| \u21d2 coarse timing of floods leaks via counters."
+      }
+    },
+    "flood_attack": {
+      "final_coarse": {
+        "processed_ok": 10,
+        "processed_fail": 1,
+        "cover_emitted": 0,
+        "queue_dropped": 0
+      },
+      "final_ingress": {
+        "dropped_frames": 582
+      },
+      "totals": {
+        "offered_attack_cells": 600.0,
+        "offered_paced_cells": 171.42857142857144,
+        "offered_cover_flows": 0.0,
+        "accepted_cells": 194.0,
+        "dropped_cells": 582.0
+      },
+      "leakage": {
+        "pearson_dropped_vs_attack": 0.9676922304982072,
+        "pearson_load_proxy_vs_attack": 0.9677640288554749,
+        "pearson_fail_vs_attack": 0.8681936356947707,
+        "pearson_queue_vs_attack": null,
+        "pearson_cover_vs_cover_gt": null,
+        "attack_volume_recoverable_via_drops": 0.97,
+        "mean_scrape_delta_dropped": 19.4,
+        "mean_scrape_delta_load_proxy": 19.418888888888887,
+        "max_scrape_delta_dropped": 52.0,
+        "timing_leak_note": "Pearson on scrape-window deltas vs ground-truth attack windows; high |r| \u21d2 coarse timing of floods leaks via counters."
+      }
+    },
+    "cover_bulk_round": {
+      "final_coarse": {
+        "processed_ok": 8,
+        "processed_fail": 0,
+        "cover_emitted": 60,
+        "queue_dropped": 0
+      },
+      "final_ingress": {
+        "dropped_frames": 16
+      },
+      "totals": {
+        "offered_attack_cells": 0.0,
+        "offered_paced_cells": 171.42857142857144,
+        "offered_cover_flows": 60.0,
+        "accepted_cells": 146.0,
+        "dropped_cells": 16.0
+      },
+      "leakage": {
+        "pearson_dropped_vs_attack": null,
+        "pearson_load_proxy_vs_attack": null,
+        "pearson_fail_vs_attack": null,
+        "pearson_queue_vs_attack": null,
+        "pearson_cover_vs_cover_gt": 1.0,
+        "attack_volume_recoverable_via_drops": 0.0,
+        "mean_scrape_delta_dropped": 0.5333333333333333,
+        "mean_scrape_delta_load_proxy": 0.5360370370370371,
+        "max_scrape_delta_dropped": 4.0,
+        "timing_leak_note": "Pearson on scrape-window deltas vs ground-truth attack windows; high |r| \u21d2 coarse timing of floods leaks via counters."
+      }
+    },
+    "delta": {
+      "ks_load_proxy_flood_vs_baseline": 0.5333333333333333,
+      "ks_dropped_flood_vs_baseline": 0.5333333333333333,
+      "flood_drop_total_minus_baseline": 566,
+      "flood_cover_emitted_minus_baseline": 0,
+      "cover_round_cover_emitted_minus_baseline": 60,
+      "flood_attack_volume_recoverable_via_drops": 0.97,
+      "flood_pearson_dropped_vs_attack": 0.9676922304982072,
+      "flood_pearson_load_proxy_vs_attack": 0.9677640288554749,
+      "note": "IngressRateLimitStats.dropped_frames confirms excess attack volume to a metrics-capable observer; RelayCoarseStats load/fail/queue deltas provide a coarse timing envelope of the flood window."
+    }
+  },
+  "scrape_interval_sweep": {
+    "disclaimer": "Partial scrape side-channel characterization \u2014 not an info-theoretic leakage bound. Models coarse RelayCoarseStats + IngressRateLimitStats deltas under lab flood/cover; debug_stats assumed not exported.",
+    "characterization": "scrape_interval_sweep",
+    "claims_info_theoretic_leakage_bound": false,
+    "rows": [
+      {
+        "scrape_interval_secs": 0.5,
+        "ks_dropped_flood_vs_baseline": 0.5,
+        "attack_volume_recoverable_via_drops": 0.97,
+        "pearson_dropped_vs_attack": 0.9508057906697526,
+        "pearson_load_proxy_vs_attack": 0.9509315092956125
+      },
+      {
+        "scrape_interval_secs": 1.0,
+        "ks_dropped_flood_vs_baseline": 0.5333333333333333,
+        "attack_volume_recoverable_via_drops": 0.97,
+        "pearson_dropped_vs_attack": 0.9676922304982072,
+        "pearson_load_proxy_vs_attack": 0.9677640288554749
+      },
+      {
+        "scrape_interval_secs": 2.0,
+        "ks_dropped_flood_vs_baseline": 0.6,
+        "attack_volume_recoverable_via_drops": 0.97,
+        "pearson_dropped_vs_attack": 0.9854916549897598,
+        "pearson_load_proxy_vs_attack": 0.985504059980246
+      },
+      {
+        "scrape_interval_secs": 5.0,
+        "ks_dropped_flood_vs_baseline": 0.6666666666666667,
+        "attack_volume_recoverable_via_drops": 0.97,
+        "pearson_dropped_vs_attack": 0.999530519554811,
+        "pearson_load_proxy_vs_attack": 0.9995272034331539
+      }
+    ]
+  },
+  "delta": {
+    "ks_load_proxy_flood_vs_baseline": 0.5333333333333333,
+    "ks_dropped_flood_vs_baseline": 0.5333333333333333,
+    "flood_drop_total_minus_baseline": 566,
+    "flood_cover_emitted_minus_baseline": 0,
+    "cover_round_cover_emitted_minus_baseline": 60,
+    "flood_attack_volume_recoverable_via_drops": 0.97,
+    "flood_pearson_dropped_vs_attack": 0.9676922304982072,
+    "flood_pearson_load_proxy_vs_attack": 0.9677640288554749,
+    "note": "IngressRateLimitStats.dropped_frames confirms excess attack volume to a metrics-capable observer; RelayCoarseStats load/fail/queue deltas provide a coarse timing envelope of the flood window."
+  },
+  "baseline_paced": {
+    "final_coarse": {
+      "processed_ok": 8,
+      "processed_fail": 0,
+      "cover_emitted": 0,
+      "queue_dropped": 0
+    },
+    "final_ingress": {
+      "dropped_frames": 16
+    },
+    "totals": {
+      "offered_attack_cells": 0.0,
+      "offered_paced_cells": 171.42857142857144,
+      "offered_cover_flows": 0.0,
+      "accepted_cells": 146.0,
+      "dropped_cells": 16.0
+    },
+    "leakage": {
+      "pearson_dropped_vs_attack": null,
+      "pearson_load_proxy_vs_attack": null,
+      "pearson_fail_vs_attack": null,
+      "pearson_queue_vs_attack": null,
+      "pearson_cover_vs_cover_gt": null,
+      "attack_volume_recoverable_via_drops": 0.0,
+      "mean_scrape_delta_dropped": 0.5333333333333333,
+      "mean_scrape_delta_load_proxy": 0.5360370370370371,
+      "max_scrape_delta_dropped": 4.0,
+      "timing_leak_note": "Pearson on scrape-window deltas vs ground-truth attack windows; high |r| \u21d2 coarse timing of floods leaks via counters."
+    }
+  },
+  "flood_attack": {
+    "final_coarse": {
+      "processed_ok": 10,
+      "processed_fail": 1,
+      "cover_emitted": 0,
+      "queue_dropped": 0
+    },
+    "final_ingress": {
+      "dropped_frames": 582
+    },
+    "totals": {
+      "offered_attack_cells": 600.0,
+      "offered_paced_cells": 171.42857142857144,
+      "offered_cover_flows": 0.0,
+      "accepted_cells": 194.0,
+      "dropped_cells": 582.0
+    },
+    "leakage": {
+      "pearson_dropped_vs_attack": 0.9676922304982072,
+      "pearson_load_proxy_vs_attack": 0.9677640288554749,
+      "pearson_fail_vs_attack": 0.8681936356947707,
+      "pearson_queue_vs_attack": null,
+      "pearson_cover_vs_cover_gt": null,
+      "attack_volume_recoverable_via_drops": 0.97,
+      "mean_scrape_delta_dropped": 19.4,
+      "mean_scrape_delta_load_proxy": 19.418888888888887,
+      "max_scrape_delta_dropped": 52.0,
+      "timing_leak_note": "Pearson on scrape-window deltas vs ground-truth attack windows; high |r| \u21d2 coarse timing of floods leaks via counters."
+    }
+  },
+  "cover_bulk_round": {
+    "final_coarse": {
+      "processed_ok": 8,
+      "processed_fail": 0,
+      "cover_emitted": 60,
+      "queue_dropped": 0
+    },
+    "final_ingress": {
+      "dropped_frames": 16
+    },
+    "totals": {
+      "offered_attack_cells": 0.0,
+      "offered_paced_cells": 171.42857142857144,
+      "offered_cover_flows": 60.0,
+      "accepted_cells": 146.0,
+      "dropped_cells": 16.0
+    },
+    "leakage": {
+      "pearson_dropped_vs_attack": null,
+      "pearson_load_proxy_vs_attack": null,
+      "pearson_fail_vs_attack": null,
+      "pearson_queue_vs_attack": null,
+      "pearson_cover_vs_cover_gt": 1.0,
+      "attack_volume_recoverable_via_drops": 0.0,
+      "mean_scrape_delta_dropped": 0.5333333333333333,
+      "mean_scrape_delta_load_proxy": 0.5360370370370371,
+      "max_scrape_delta_dropped": 4.0,
+      "timing_leak_note": "Pearson on scrape-window deltas vs ground-truth attack windows; high |r| \u21d2 coarse timing of floods leaks via counters."
+    }
+  }
+}

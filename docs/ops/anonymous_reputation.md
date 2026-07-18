@@ -85,3 +85,25 @@ distinct authority reporters agree ([`health_gossip.md`](health_gossip.md)). Thi
 **Operator guidance:** diversify gossip neighbors; keep `majority_k ≥ 2`; do not treat
 gossip median as sole ground truth; pair with independent health checks and charter
 dispute process ([`CONSORTIUM_CHARTER.md`](CONSORTIUM_CHARTER.md)).
+
+## Lab characterization (wave C4) — [O] QUANTIFIED
+
+In-repo lab (no Docker): `sim/aegis_sim/ac_nullifier_unlinkability.py` + committed
+artifact `sim/data/ac_nullifier_unlinkability.json` + CI
+`sim/tests/test_ac_nullifier_unlinkability.py`.
+
+| Residual | Lab score (artifact) | Meaning |
+|----------|----------------------|---------|
+| Issuer correlation at `issue` | **1.0** | Issuer learns `relay_id` |
+| Issuer nullifier→spend link (blinded) | **1.0** | Request omits RelayId; nullifier still links issue session to spend |
+| Local double-spend | **0.0** | `try_register` rejects replay on one node |
+| Partition double-accept pre-merge | **1.0** | Two registries both accept before merge |
+| Delayed merge window | **~0.375** | Mean exposure ≈ delay/window on default grid |
+| Merge-path eclipse (export suppressed) | **1.0** | Victim never imports peer spends |
+| Verifier presentation RelayId leak | **0.0** | Proof/presentation JSON has no RelayId |
+
+**Composite residual (weighted lab):** see artifact `composite_residual_risk` (~0.86).
+
+This **characterizes** Partial AC + file-merge residuals. It does **not** claim
+interactive ZK issuance, paper-complete unlinkable multi-show AC, or cross-node
+nullifier consensus.

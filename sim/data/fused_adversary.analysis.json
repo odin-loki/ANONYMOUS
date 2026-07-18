@@ -1,0 +1,193 @@
+{
+  "tag": "coverage_C2_fused_adaptive_active_intersection",
+  "characterizes_not_closes": true,
+  "status": "[O] QUANTIFIED",
+  "wan_closed": false,
+  "c": 0.015,
+  "g": 3,
+  "M": 30,
+  "baseline_receiver_uniform": 0.03333333333333333,
+  "s_rate": 3.0,
+  "bg": 8.0,
+  "Q": 25,
+  "probe_frac": 0.5,
+  "leaky_scheme_on_compromise": "constant_only",
+  "clean_epoch_scheme": "hard_cap",
+  "trials": 200,
+  "epoch_grid": [
+    50,
+    100,
+    200,
+    400,
+    800
+  ],
+  "fused_curves": {
+    "50": {
+      "p_adaptive_exposed": 0.915,
+      "p_mode1_confirm": 0.14,
+      "p_union_success": 0.915,
+      "p_joint_success": 0.14
+    },
+    "100": {
+      "p_adaptive_exposed": 1.0,
+      "p_mode1_confirm": 0.24,
+      "p_union_success": 1.0,
+      "p_joint_success": 0.24
+    },
+    "200": {
+      "p_adaptive_exposed": 1.0,
+      "p_mode1_confirm": 0.325,
+      "p_union_success": 1.0,
+      "p_joint_success": 0.325
+    },
+    "400": {
+      "p_adaptive_exposed": 1.0,
+      "p_mode1_confirm": 0.63,
+      "p_union_success": 1.0,
+      "p_joint_success": 0.63
+    },
+    "800": {
+      "p_adaptive_exposed": 1.0,
+      "p_mode1_confirm": 0.86,
+      "p_union_success": 1.0,
+      "p_joint_success": 0.86
+    }
+  },
+  "coupling_model": "Per epoch: redraw g-guard compromise with prob c. Dirty epochs expose Mode-1 observables as `constant_only`; clean epochs use hard_cap (no drop/volume signal). Score = z(cum volume)+z(active).",
+  "honest_limits": [
+    "Synthetic Poisson Mode-1 + independent per-epoch recompromise.",
+    "Not WAN closed; exit clearnet residual is a separate weaker tier.",
+    "Does not claim adaptive_v3 or hard_cap product mitigation closed.",
+    "Union/joint metrics are characterization aids, not operational C2."
+  ],
+  "baselines_live": {
+    "adaptive_only": {
+      "50": 0.8925,
+      "100": 0.9875,
+      "200": 1.0,
+      "400": 1.0,
+      "800": 1.0
+    },
+    "combined_only_constant": {
+      "50": 0.9917,
+      "100": 1.0,
+      "200": 1.0,
+      "400": 1.0,
+      "800": 1.0
+    },
+    "combined_only_hard_cap": {
+      "50": 0.0167,
+      "100": 0.0167,
+      "200": 0.0167,
+      "400": 0.0167,
+      "800": 0.0167
+    },
+    "note": "Live recompute via public APIs (adaptive_guard_exposure, combined_active_intersection_curve). Prefer committed artifacts for pinned numbers when present."
+  },
+  "baselines_committed": {
+    "adaptive_artifact": {
+      "path": "adaptive_guard_exposure.analysis.json",
+      "c": 0.015,
+      "g": 3,
+      "adaptive_by_epochs": {
+        "5": 0.20793333333333333,
+        "20": 0.5970666666666666,
+        "50": 0.8945333333333333,
+        "100": 0.9892666666666666,
+        "200": 0.9999333333333333,
+        "500": 1.0,
+        "800": 1.0,
+        "2000": 1.0
+      },
+      "mitigated_v3_by_epochs": {
+        "5": 0.13493333333333332,
+        "20": 0.182,
+        "50": 0.22906666666666667,
+        "100": 0.3224666666666667,
+        "200": 0.44733333333333336,
+        "500": 0.7124,
+        "800": 0.8577333333333333,
+        "2000": 0.9895333333333334
+      },
+      "characterizes_not_closes": true
+    },
+    "combined_artifact": {
+      "path": "combined_active_intersection.analysis.json",
+      "M": 30,
+      "baseline": 0.03333333333333333,
+      "curves": {
+        "constant_only": {
+          "50": 0.975,
+          "100": 1.0,
+          "200": 1.0,
+          "400": 1.0,
+          "800": 1.0,
+          "1600": 1.0
+        },
+        "pad_up": {
+          "50": 0.02,
+          "100": 0.02,
+          "200": 0.03,
+          "400": 0.04,
+          "800": 0.055,
+          "1600": 0.085
+        },
+        "hard_cap": {
+          "50": 0.035,
+          "100": 0.035,
+          "200": 0.035,
+          "400": 0.035,
+          "800": 0.035,
+          "1600": 0.035
+        }
+      },
+      "recommended_mode1": {
+        "scheme": "hard_cap",
+        "receiver_hard_cap": true,
+        "Q_min_sustained_multiple": 1.2,
+        "Q_recommended_min": 25,
+        "beats_hard_cap_in_sim": false,
+        "operator_note": "Keep receiver-side hard-cap padding enabled in production Mode-1 (Q>=25); pad-up, truncate-only, noisy, and constant-rate observables remain vulnerable to the fused attack (or only match hard_cap when Q exceeds the traffic ceiling \u2014 same cost, weaker invariant). Exit/non-AEGIS receivers are excluded from this claim."
+      },
+      "characterizes_not_closes": true
+    },
+    "notes": []
+  },
+  "comparison_at_long_horizon": {
+    "E": 800,
+    "fused_p_union_success": 1.0,
+    "fused_p_joint_success": 0.86,
+    "fused_p_adaptive_exposed": 1.0,
+    "fused_p_mode1_confirm": 0.86,
+    "adaptive_only_live": 1.0,
+    "adaptive_only_committed": 1.0,
+    "combined_constant_live": 1.0,
+    "combined_constant_committed": 1.0,
+    "combined_hard_cap_live": 0.0167,
+    "reading": "Fused union is at least as large as either component alone when compromise epochs unlock leaky Mode-1 observables. hard_cap on clean epochs delays Mode-1 confirm until exposure occurs \u2014 the adaptive surface is the gate for Mode-1 leakage in this model."
+  },
+  "offline_long_horizon": {
+    "characterizes_not_closes": true,
+    "wan_closed": false,
+    "epoch_grid": [
+      1600,
+      3200
+    ],
+    "trials": 100,
+    "fused_curves": {
+      "1600": {
+        "p_adaptive_exposed": 1.0,
+        "p_mode1_confirm": 0.99,
+        "p_union_success": 1.0,
+        "p_joint_success": 0.99
+      },
+      "3200": {
+        "p_adaptive_exposed": 1.0,
+        "p_mode1_confirm": 1.0,
+        "p_union_success": 1.0,
+        "p_joint_success": 1.0
+      }
+    },
+    "note": "Offline-only extension (~minutes). Expect adaptive exposure and union success to saturate; Mode-1 confirm tracks dirty epochs. Not a close claim."
+  }
+}

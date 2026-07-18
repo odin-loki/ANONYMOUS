@@ -1,0 +1,211 @@
+{
+  "tag": "research_wave_C4_ac_nullifier_unlinkability",
+  "wave": "C4",
+  "status": "[O] QUANTIFIED",
+  "characterizes_not_closes": true,
+  "claims_interactive_zk_done": false,
+  "claims_paper_complete_ac": false,
+  "claims_cross_node_nullifier_consensus": false,
+  "product_surfaces": {
+    "nullifier_registry": "aegis_trust::NullifierRegistry",
+    "merge": "NullifierRegistry::merge_from_file",
+    "issuer": "AnonymousCredentialIssuer",
+    "blinded": "BlindedIssueRequest / issue_from_blinded_request",
+    "nullifier_derive": "derive_reputation_nullifier",
+    "ops_doc": "docs/ops/anonymous_reputation.md",
+    "playbook": "docs/ops/ATTACK_PLAYBOOK.md \u00a710"
+  },
+  "risk_bands_expected": {
+    "issuer_correlation_at_issue": [
+      0.95,
+      1.0
+    ],
+    "issuer_nullifier_link_to_spend": [
+      0.9,
+      1.0
+    ],
+    "local_double_spend": [
+      0.0,
+      0.05
+    ],
+    "partition_double_spend_pre_merge": [
+      0.95,
+      1.0
+    ],
+    "delayed_merge_window": [
+      0.2,
+      0.6
+    ],
+    "merge_eclipse_suppressed": [
+      0.8,
+      1.0
+    ],
+    "verifier_presentation_relay_id_leak": [
+      0.0,
+      0.05
+    ],
+    "blinding_reuse_same_epoch": [
+      0.95,
+      1.0
+    ]
+  },
+  "residual_risk_scores": {
+    "issuer_correlation_at_issue": 1.0,
+    "issuer_nullifier_link_to_spend": 1.0,
+    "local_double_spend": 0.0,
+    "partition_double_spend_pre_merge": 1.0,
+    "delayed_merge_window": 0.375,
+    "merge_eclipse_suppressed": 1.0,
+    "verifier_presentation_relay_id_leak": 0.0,
+    "blinding_reuse_same_epoch": 1.0
+  },
+  "composite_residual_risk": 0.8563,
+  "scenarios": [
+    {
+      "scenario": "issuer_correlation_at_issue",
+      "n_relays": 32,
+      "issuer_learned_relay_id_rate": 1.0,
+      "residual_risk_score": 1.0,
+      "notes": "Software issue path binds identity at issue; not unlinkable multi-show AC. Interactive ZK issuance is External \u2014 not claimed done."
+    },
+    {
+      "scenario": "issuer_nullifier_link_to_spend",
+      "n_credentials": 40,
+      "relay_id_in_blinded_request_rate": 0.0,
+      "issuer_nullifier_to_spend_link_rate": 1.0,
+      "residual_risk_score": 1.0,
+      "notes": "BlindedIssueRequest omits RelayId; issuer still sees nullifier and can link later spends to the issue session. Not interactive AC."
+    },
+    {
+      "scenario": "local_double_spend",
+      "n_trials": 64,
+      "double_spend_reject_rate": 1.0,
+      "residual_risk_score": 0.0,
+      "notes": "NullifierRegistry.try_register rejects same-epoch replay locally."
+    },
+    {
+      "scenario": "partition_double_spend_pre_merge",
+      "n_trials": 48,
+      "both_nodes_accepted_rate": 1.0,
+      "mean_post_merge_epoch_len": 1.0,
+      "residual_risk_score": 1.0,
+      "notes": "merge_from_file is operator file exchange, not consensus. Partition allows double-accept; merge is idempotent and does not undo spends."
+    },
+    {
+      "scenario": "delayed_merge_window",
+      "points": [
+        {
+          "delay_slots": 0,
+          "window": 8,
+          "double_accept_rate": 0.0,
+          "expected_rate_uniform_attempt": 0.0,
+          "residual_risk_score": 0.0
+        },
+        {
+          "delay_slots": 1,
+          "window": 8,
+          "double_accept_rate": 0.125,
+          "expected_rate_uniform_attempt": 0.125,
+          "residual_risk_score": 0.125
+        },
+        {
+          "delay_slots": 2,
+          "window": 8,
+          "double_accept_rate": 0.25,
+          "expected_rate_uniform_attempt": 0.25,
+          "residual_risk_score": 0.25
+        },
+        {
+          "delay_slots": 4,
+          "window": 8,
+          "double_accept_rate": 0.5,
+          "expected_rate_uniform_attempt": 0.5,
+          "residual_risk_score": 0.5
+        },
+        {
+          "delay_slots": 8,
+          "window": 8,
+          "double_accept_rate": 1.0,
+          "expected_rate_uniform_attempt": 1.0,
+          "residual_risk_score": 1.0
+        }
+      ],
+      "residual_risk_score": 0.375,
+      "notes": "Uniform re-spend timing \u21d2 exposure \u2248 delay/window. Immediate merge closes the window; long delay approaches partition double-accept."
+    },
+    {
+      "scenario": "merge_eclipse_suppressed",
+      "n_trials": 40,
+      "suppress_prob": 1.0,
+      "suppressed_merges": 40,
+      "double_accept_rate": 1.0,
+      "residual_risk_score": 1.0,
+      "notes": "File merge is not wire gossip. Suppressing export/import eclipses the victim's spent set \u2014 Partial residual, not BFT consensus."
+    },
+    {
+      "scenario": "verifier_presentation_relay_id_leak",
+      "n_credentials": 36,
+      "relay_id_leak_rate": 0.0,
+      "residual_risk_score": 0.0,
+      "notes": "Presentation carries no RelayId; nullifier hides relay_id given secret blinding. Unlinkability vs issuer / merge eclipse is separate."
+    },
+    {
+      "scenario": "blinding_reuse_same_epoch",
+      "n_trials": 32,
+      "identical_nullifier_rate": 1.0,
+      "residual_risk_score": 1.0,
+      "notes": "Deterministic nullifier derivation: reuse yields the same spend token and is rejected locally after first spend."
+    }
+  ],
+  "failure_modes": [
+    {
+      "id": "issuer_sees_relay_id_at_issue",
+      "surface": "AnonymousCredentialIssuer::issue",
+      "severity": "Partial \u2014 software binding",
+      "interactive_zk_done": false,
+      "lab_scenario": "issuer_correlation_at_issue"
+    },
+    {
+      "id": "blinded_request_exposes_nullifier_to_issuer",
+      "surface": "BlindedIssueRequest / issue_from_blinded_request",
+      "severity": "Partial \u2014 no RelayId in JSON; nullifier linkable",
+      "interactive_zk_done": false,
+      "lab_scenario": "issuer_nullifier_link_to_spend"
+    },
+    {
+      "id": "local_double_spend_detected",
+      "surface": "NullifierRegistry::try_register",
+      "severity": "Mitigated on single node",
+      "interactive_zk_done": false,
+      "lab_scenario": "local_double_spend"
+    },
+    {
+      "id": "partition_or_delayed_merge_double_accept",
+      "surface": "NullifierRegistry::merge_from_file",
+      "severity": "Partial \u2014 operator file exchange only",
+      "interactive_zk_done": false,
+      "lab_scenario": "partition_double_spend_pre_merge"
+    },
+    {
+      "id": "merge_path_eclipse",
+      "surface": "export_to_file / merge_from_file operator channel",
+      "severity": "Partial \u2014 suppressible out-of-band path",
+      "interactive_zk_done": false,
+      "lab_scenario": "merge_eclipse_suppressed"
+    },
+    {
+      "id": "presentation_omits_relay_id",
+      "surface": "AnonymousReputationPresentation",
+      "severity": "Mitigated for verifier-facing proof bytes",
+      "interactive_zk_done": false,
+      "lab_scenario": "verifier_presentation_relay_id_leak"
+    }
+  ],
+  "honesty": {
+    "interactive_zk_issuance": "External \u2014 not done",
+    "unlinkable_multi_show_ac": "External \u2014 not done",
+    "cross_node_nullifier_consensus": "External \u2014 file merge only",
+    "local_replay_prevention": "Done (single node)",
+    "presentation_omits_relay_id": "Done (proof bytes)"
+  }
+}

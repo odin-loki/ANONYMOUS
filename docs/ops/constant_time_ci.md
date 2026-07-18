@@ -1,8 +1,18 @@
 # Constant-time evidence CI / local `dudect`
 
-**Status (2026-07-18):** In-tree timing smokes; WSL wrappers capture smoke + lab attempt evidence;
-`tools/dudect/` auto-clones oreparaz/dudect + `aegis-crypto-dudect-ffi` Rust exports scaffold the
-external lab boundary. Full statistical runs on an **isolated CPU** remain **External**.
+**Status (2026-07-18, coverage wave C6):** In-tree timing smokes; WSL wrappers capture smoke +
+lab attempt/summary evidence; `tools/dudect/` auto-clones oreparaz/dudect +
+`aegis-crypto-dudect-ffi` Rust exports scaffold the external lab boundary.
+
+### C6 deepen numbers (this host, WSL2 — not isolated)
+
+| Primitive | Approx traces (dudect `meas:`) | Stop reason | Isolated? |
+|-----------|--------------------------------|-------------|-----------|
+| `ReplayCache::contains_ct` | **≈ 8.195×10⁷** (81.95 M) | `TIMEOUT` @ 600s, chunk=1e5 | **No** |
+| Sphinx `verify_mac` | **≈ 1.05×10⁶** (1.05 M) | `BUDGET_EXHAUSTED` @ 200×1e4 chunks | **No** |
+
+Source: [`sim/dudect_lab_summary.txt`](../../sim/dudect_lab_summary.txt).
+Numeric counts can exceed 10⁵ on WSL; the External bar (≥10⁵ **per primitive on an isolated CPU**) is still **unmet** (`external_bar_met=NO`).
 
 ## In-tree smokes (run anywhere)
 
@@ -41,15 +51,34 @@ The script:
 1. Runs `timing_smoke` + `dudect_smoke` under WSL (`cargo test -p aegis-crypto …`).
 2. Writes timestamped output to [`sim/dudect_wsl_smoke.txt`](../../sim/dudect_wsl_smoke.txt) (gitignored artifact; copy into `docs/ops/evidence/` for release records if desired).
 
-**Full lab attempt (FFI + Makefile + short dudect stats):**
+**Lab attempt (FFI + Makefile + dudect stats):**
 
 ```powershell
-wsl -e bash -lc '/mnt/c/path/to/ANONYMOUS/scripts/run_dudect_lab_wsl.sh'
-# or: DUDECT_MEASUREMENTS=5000 wsl -e bash -lc '.../run_dudect_lab_wsl.sh'
+# Short (default): small chunk + short timeouts
+.\scripts\run_dudect_lab_wsl.ps1 -LabMode short
+
+# Deepen (~10–12 min wall): 1e5 chunks, replay ~600s, mac ~120s
+.\scripts\run_dudect_lab_wsl.ps1 -LabMode deepen
+
+# Or direct WSL:
+wsl -e bash -lc 'DUDECT_LAB_MODE=deepen /mnt/c/path/to/ANONYMOUS/scripts/run_dudect_lab_wsl.sh'
 ```
 
-Captures best-effort build/run output to [`sim/dudect_lab_attempt.txt`](../../sim/dudect_lab_attempt.txt).
-WSL2 is **not** sufficient for ≥10⁵ isolated traces — see blockers at end of that file.
+| Env / param | Role |
+|-------------|------|
+| `DUDECT_LAB_MODE` / `-LabMode` | `short` \| `deepen` \| `custom` |
+| `DUDECT_MEASUREMENTS[_REPLAY|_MAC]` | Chunk size per `dudect_main` (deepen: replay 1e5, mac 1e4) |
+| `DUDECT_MAX_CHUNKS[_REPLAY|_MAC]` | Stop after N chunks (`0` = until leakage) |
+| `DUDECT_TIMEOUT_REPLAY` / `DUDECT_TIMEOUT_MAC` | Per-harness wall-clock seconds |
+| `DUDECT_SKIP_SMOKE=1` | Skip cargo smokes (harness-only) |
+
+Artifacts:
+
+- [`sim/dudect_lab_attempt.txt`](../../sim/dudect_lab_attempt.txt) — full log
+- [`sim/dudect_lab_summary.txt`](../../sim/dudect_lab_summary.txt) — compact numbers + evidence codes
+
+Evidence codes: `LEAKAGE_FOUND`, `BUDGET_EXHAUSTED`, `TIMEOUT`, plus always
+`WSL_NOT_ISOLATED` / `external_bar_met=NO` on this host class.
 
 **Prerequisites in WSL:** `curl https://sh.rustup.rs -sSf | sh` (or distro package), then `rustup default stable`.
 
@@ -91,8 +120,9 @@ cargo test --manifest-path aegis-crypto-dudect-ffi/Cargo.toml
 ```bash
 cd tools/dudect
 make                    # stub binaries: FFI smoke only, no dudect stats
-make lab                # auto-clone oreparaz/dudect into ../dudect-upstream + run harnesses
-DUDECT_MEASUREMENTS=5000 make lab   # short lab attempt (not release evidence)
+make lab                # auto-clone oreparaz/dudect + run harnesses
+make lab-deepen         # longer bounded deepen (see Makefile)
+DUDECT_MEASUREMENTS=5000 DUDECT_MAX_CHUNKS=20 make lab
 # Pin core on bare metal / privileged VM:
 taskset -c 2 ./harness_replay_contains
 taskset -c 2 ./harness_verify_mac
@@ -102,7 +132,8 @@ The Makefile clones [oreparaz/dudect](https://github.com/oreparaz/dudect) when `
 is missing (upstream is header-only; no separate `dudect.c`). Override with `DUDECT_DIR=/path/to/dudect`.
 
 Stub targets print sanity output and exit; they do **not** claim CT. With dudect linked,
-harnesses use `AEGIS_DUDECT_MEASUREMENTS` (default **100000** — tune upward for release evidence).
+harnesses use `AEGIS_DUDECT_MEASUREMENTS` (default **100000** — chunk size) and optional
+`AEGIS_DUDECT_MAX_CHUNKS` (budget stop with `evidence_code=BUDGET_EXHAUSTED`).
 
 ### Suggested class split
 
@@ -124,12 +155,14 @@ WSL2 may ignore cpufreq and isolation; treat WSL smokes as CI guards only.
 
 ### Honest External gap
 
-In-tree wiring: FFI + C harnesses + Makefile (auto-clone dudect) + WSL lab script +
-[`sim/dudect_lab_attempt.txt`](../../sim/dudect_lab_attempt.txt) best-effort capture.
+In-tree wiring: FFI + C harnesses + Makefile (auto-clone dudect, timeouts, max chunks,
+evidence codes) + WSL lab/deepen scripts +
+[`sim/dudect_lab_attempt.txt`](../../sim/dudect_lab_attempt.txt) /
+[`sim/dudect_lab_summary.txt`](../../sim/dudect_lab_summary.txt).
 
 **Still External (not automated in CI):** running ≥10⁵ traces **per primitive** on an isolated
 core (bare metal / privileged VM with cpufreq + `taskset`), archiving t-statistic reports, and
-sign-off for release claims. WSL2 lab runs document wiring only.
+sign-off for release claims. High WSL trace counts without isolation do **not** satisfy this bar.
 
 ### CI note
 

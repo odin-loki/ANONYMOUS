@@ -1,0 +1,190 @@
+{
+  "tag": "coverage_C2_exit_tier_intersection",
+  "characterizes_not_closes": true,
+  "status": "[O] QUANTIFIED",
+  "wan_closed": false,
+  "n_clients": 40,
+  "p_active": 0.25,
+  "bg_rate": 2.0,
+  "signal_rate": 6.0,
+  "window": 1,
+  "tip_rate": 0.08,
+  "trials": 200,
+  "epoch_grid": [
+    20,
+    50,
+    100,
+    200,
+    400,
+    800
+  ],
+  "baseline_uniform": 0.025,
+  "curves": {
+    "20": {
+      "mean_anonymity_set": 9.1128,
+      "mean_intersection_size": 17.595,
+      "p_intersection_singleton": 0.11,
+      "p_volume_rank_top": 1.0,
+      "mean_naive_full_intersection_size": 1.0
+    },
+    "50": {
+      "mean_anonymity_set": 9.1237,
+      "mean_intersection_size": 4.88,
+      "p_intersection_singleton": 0.48,
+      "p_volume_rank_top": 1.0,
+      "mean_naive_full_intersection_size": 1.0
+    },
+    "100": {
+      "mean_anonymity_set": 9.0987,
+      "mean_intersection_size": 1.445,
+      "p_intersection_singleton": 0.89,
+      "p_volume_rank_top": 1.0,
+      "mean_naive_full_intersection_size": 1.0
+    },
+    "200": {
+      "mean_anonymity_set": 9.0939,
+      "mean_intersection_size": 1.005,
+      "p_intersection_singleton": 0.995,
+      "p_volume_rank_top": 1.0,
+      "mean_naive_full_intersection_size": 1.0
+    },
+    "400": {
+      "mean_anonymity_set": 9.0996,
+      "mean_intersection_size": 1.0,
+      "p_intersection_singleton": 1.0,
+      "p_volume_rank_top": 1.0,
+      "mean_naive_full_intersection_size": 1.0
+    },
+    "800": {
+      "mean_anonymity_set": 9.0907,
+      "mean_intersection_size": 1.0,
+      "p_intersection_singleton": 1.0,
+      "p_volume_rank_top": 1.0,
+      "mean_naive_full_intersection_size": 1.0
+    }
+  },
+  "summary_at_long_horizon": {
+    "E": 800,
+    "mean_anonymity_set": 9.0907,
+    "mean_intersection_size": 1.0,
+    "p_intersection_singleton": 1.0,
+    "p_volume_rank_top": 1.0,
+    "mean_naive_full_intersection_size": 1.0
+  },
+  "honest_limits": [
+    "Synthetic Poisson clearnet residual \u2014 not WAN / operational C2.",
+    "No multi-hop mix delay, Sphinx crypto, or real exit operator traces.",
+    "Receiver hard-cap cannot apply on clearnet; residual is by design.",
+    "Sender anonymity = co-active exit window set, not Mode-1 receiver guarantees.",
+    "Tip-sparse \u2229 uses partial activity knowledge; naive full-window \u2229 collapses faster."
+  ],
+  "positioning": "Exit is a weaker tier: multi-client exit windows provide a sender anonymity set; long-horizon volume ranking and tip-sparse intersection on unshaped clearnet residual beat uniform baseline.",
+  "sensitivity": {
+    "coactivity_p_active": {
+      "E": 800,
+      "n_clients": 40,
+      "trials": 80,
+      "p_active_grid": [
+        0.1,
+        0.25,
+        0.5,
+        0.8
+      ],
+      "results": {
+        "0.1": {
+          "mean_anonymity_set": 3.9595,
+          "mean_intersection_size": 1.0,
+          "p_intersection_singleton": 1.0,
+          "p_volume_rank_top": 1.0
+        },
+        "0.25": {
+          "mean_anonymity_set": 9.0917,
+          "mean_intersection_size": 1.0,
+          "p_intersection_singleton": 1.0,
+          "p_volume_rank_top": 1.0
+        },
+        "0.5": {
+          "mean_anonymity_set": 17.6458,
+          "mean_intersection_size": 1.0,
+          "p_intersection_singleton": 1.0,
+          "p_volume_rank_top": 1.0
+        },
+        "0.8": {
+          "mean_anonymity_set": 27.8975,
+          "mean_intersection_size": 1.0,
+          "p_intersection_singleton": 1.0,
+          "p_volume_rank_top": 1.0
+        }
+      },
+      "note": "Higher co-activity enlarges per-window anonymity sets but can still leave volume ranking / long-horizon intersection above uniform baseline when clearnet residual is unshaped."
+    },
+    "client_pool_N": {
+      "E": 800,
+      "p_active": 0.25,
+      "trials": 80,
+      "n_grid": [
+        10,
+        20,
+        40,
+        80
+      ],
+      "results": {
+        "10": {
+          "baseline_uniform": 0.1,
+          "mean_anonymity_set": 2.6106,
+          "mean_intersection_size": 1.0,
+          "p_intersection_singleton": 1.0,
+          "p_volume_rank_top": 1.0
+        },
+        "20": {
+          "baseline_uniform": 0.05,
+          "mean_anonymity_set": 4.7779,
+          "mean_intersection_size": 1.0,
+          "p_intersection_singleton": 1.0,
+          "p_volume_rank_top": 1.0
+        },
+        "40": {
+          "baseline_uniform": 0.025,
+          "mean_anonymity_set": 9.1045,
+          "mean_intersection_size": 1.0,
+          "p_intersection_singleton": 1.0,
+          "p_volume_rank_top": 1.0
+        },
+        "80": {
+          "baseline_uniform": 0.0125,
+          "mean_anonymity_set": 17.7269,
+          "mean_intersection_size": 1.0,
+          "p_intersection_singleton": 1.0,
+          "p_volume_rank_top": 1.0
+        }
+      },
+      "note": "Larger exit client pools grow mean anonymity sets; volume ranking on unshaped clearnet residual can still beat 1/N over long E."
+    }
+  },
+  "offline_long_horizon": {
+    "characterizes_not_closes": true,
+    "wan_closed": false,
+    "epoch_grid": [
+      1600,
+      3200
+    ],
+    "trials": 100,
+    "curves": {
+      "1600": {
+        "mean_anonymity_set": 9.09,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "mean_naive_full_intersection_size": 1.0
+      },
+      "3200": {
+        "mean_anonymity_set": 9.0858,
+        "mean_intersection_size": 1.0,
+        "p_intersection_singleton": 1.0,
+        "p_volume_rank_top": 1.0,
+        "mean_naive_full_intersection_size": 1.0
+      }
+    },
+    "note": "Offline-only extension. Tip-sparse \u2229 / volume ranking rise with E on unshaped clearnet residual; naive full \u2229 stays collapsed. Not a WAN close."
+  }
+}

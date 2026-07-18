@@ -108,3 +108,33 @@ This is a **local audit artifact**, not multi-org BFT agreement.
 - `K` colluding admitted neighbors can still shift the median within one org.
 - Unidentified ingress (shared ingress key) cannot source gossip.
 - Clock skew / replay of fresh-enough adverts is accepted within the age window.
+
+## Sim profiling (wave C1) — [O] QUANTIFIED Partial
+
+Pure-Python twin of the merge math (not a close claim):
+
+| Piece | Location |
+|-------|----------|
+| Model | `sim/aegis_sim/gossip_eclipse.py` |
+| CI artifact | `sim/data/gossip_eclipse.analysis.json` |
+| Offline grid | `sim/data/gossip_eclipse_offline.json` |
+| Gates | `sim/tests/test_gossip_eclipse.py` |
+| Regen | `cd sim && PYTHONPATH=. python scripts/run_gossip_eclipse.py [--offline]` |
+
+**What it measures** (victim with `N` neighbors, adversarial fraction `f`, `majority_k=K`):
+
+- **Median health bias** — window fail-rate − true honest fail-rate after half-weight merges
+- **False probation** — P(window fail-rate ≥ 0.40) for an honest subject
+- **Eclipse** — fraction of epochs where adversaries form a pure-adv `K`-quorum (coordinated report-first)
+
+**Headline slices (CI artifact, N=8, honest≈0.10 / attack≈1.0):**
+
+| f | K | Solo quorum? | mean bias | false probation | eclipse epochs |
+|---|---|--------------|-----------|-----------------|----------------|
+| 0.0 | 2 | no | ~0 | 0 | 0 |
+| 0.125 | 3 | no | ~0 | 0 | 0 (honest-majority median) |
+| 0.25 | 3 | no | ~0.45 | ~1 | 0 (2-of-3 mixed median still attack) |
+| 0.5 | 2 | yes | ~0.45 | ~1 | ~1 |
+| 1.0 | 2 | yes | ~0.90 | ~1 | ~1 |
+
+Raising `K` above `adv_count` blocks *solo* eclipse; it does **not** make the path BFT — adversaries who hold a majority inside a mixed `K`-set still own the median. Multi-org BFT remains **External**.

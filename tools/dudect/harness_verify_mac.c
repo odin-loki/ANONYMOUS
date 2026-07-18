@@ -34,6 +34,10 @@ int main(void) {
 #define AEGIS_DUDECT_MEASUREMENTS 100000
 #endif
 
+#ifndef AEGIS_DUDECT_MAX_CHUNKS
+#define AEGIS_DUDECT_MAX_CHUNKS 0
+#endif
+
 uint8_t do_one_computation(uint8_t *data) {
   return aegis_ct_verify_mac(data[0]);
 }
@@ -46,6 +50,18 @@ void prepare_inputs(dudect_config_t *c, uint8_t *input_data, uint8_t *classes) {
   }
 }
 
+static void print_summary(const char *evidence_code, size_t chunks, size_t scheduled_traces,
+                          dudect_state_t state) {
+  printf("AEGIS_DUDECT_SUMMARY primitive=Sphinx::verify_mac "
+         "chunk_size=%d max_chunks=%d chunks_ran=%zu scheduled_traces=%zu "
+         "dudect_state=%s evidence_code=%s isolation=none "
+         "platform=linux_or_wsl external_bar=isolated_ge_1e5_per_primitive\n",
+         AEGIS_DUDECT_MEASUREMENTS, AEGIS_DUDECT_MAX_CHUNKS, chunks, scheduled_traces,
+         state == DUDECT_LEAKAGE_FOUND ? "LEAKAGE_FOUND" : "NO_LEAKAGE_EVIDENCE_YET",
+         evidence_code);
+  fflush(stdout);
+}
+
 static int run_test(void) {
   dudect_config_t config = {
       .chunk_size = CHUNK_SIZE,
@@ -55,17 +71,31 @@ static int run_test(void) {
   dudect_init(&ctx, &config);
 
   dudect_state_t state = DUDECT_NO_LEAKAGE_EVIDENCE_YET;
+  size_t chunks = 0;
+  size_t scheduled = 0;
   while (state == DUDECT_NO_LEAKAGE_EVIDENCE_YET) {
     state = dudect_main(&ctx);
+    chunks++;
+    scheduled += config.number_measurements;
+    if (AEGIS_DUDECT_MAX_CHUNKS > 0 && chunks >= (size_t)AEGIS_DUDECT_MAX_CHUNKS) {
+      print_summary("BUDGET_EXHAUSTED", chunks, scheduled, state);
+      dudect_free(&ctx);
+      return 2;
+    }
   }
+  print_summary(state == DUDECT_LEAKAGE_FOUND ? "LEAKAGE_FOUND" : "UNEXPECTED_STATE", chunks,
+                scheduled, state);
   dudect_free(&ctx);
   return (int)state;
 }
 
 int main(void) {
+  /* Line-buffer stdout so `tee`/timeout capture does not drop the last meas lines. */
+  setvbuf(stdout, NULL, _IOLBF, 0);
   aegis_dudect_mac_lab_init();
-  printf("AEGIS dudect: Sphinx verify_mac (packet_len=%u, measurements=%d)\n",
-         (unsigned)AEGIS_SPHINX_PACKET_LEN, AEGIS_DUDECT_MEASUREMENTS);
+  printf("AEGIS dudect: Sphinx verify_mac (packet_len=%u, measurements=%d, max_chunks=%d)\n",
+         (unsigned)AEGIS_SPHINX_PACKET_LEN, AEGIS_DUDECT_MEASUREMENTS, AEGIS_DUDECT_MAX_CHUNKS);
+  fflush(stdout);
   return run_test();
 }
 

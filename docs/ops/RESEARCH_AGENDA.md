@@ -22,7 +22,7 @@ In-tree contracts, fail-closed hooks, ops runbooks, and CI smokes exist. Remaini
 |------|---------------------|----------------------------|---------|
 | **TEE attestation** | Software quotes; `HardwareTeeProvider` fail-closed; DCAP/SEV request types; `tee-hardware` hook | **External:** Intel DCAP / AMD SEV-SNP SDK + platform device | [`tee_attestation.md`](tee_attestation.md) |
 | **HSM / key ceremony** | Shamir + `Pkcs11CustodyOps`; lab `SimulatedHsmProvider`; fail-closed | **External:** PKCS#11 / vendor HSM SDK + interactive MPC ceremony | [`consortium_key_ceremony.md`](consortium_key_ceremony.md) |
-| **Multi-org BFT / health gossip** | Authority-set quorum log; `majority_k`; optional `HealthEpochCheckpoint` | **External:** multi-org BFT reputation consensus across operators | [`health_gossip.md`](health_gossip.md) |
+| **Multi-org BFT / health gossip** | Authority-set quorum log; `majority_k`; optional `HealthEpochCheckpoint`; **C1 sim** eclipse/`majority_k` bias+FP profiling (`gossip_eclipse*.json`) — **[O] QUANTIFIED Partial**, not closed | **External:** multi-org BFT reputation consensus across operators | [`health_gossip.md`](health_gossip.md) · [`ATTACK_PLAYBOOK.md`](ATTACK_PLAYBOOK.md) §10 |
 | **Anonymous credentials (AC)** | Issuer + blinded issue types; epoch rotate; nullifier merge | **External:** interactive AC / real ZK show at scale | [`anonymous_reputation.md`](anonymous_reputation.md) |
 | **dudect / CT evidence** | Smokes; `tools/dudect/` lab Makefile; WSL scripts → `sim/dudect_lab_attempt.txt`; CI sim-pytest | **External:** ≥10⁵ traces/primitive on isolated CPU | [`constant_time_ci.md`](constant_time_ci.md) |
 
@@ -40,19 +40,23 @@ From [`AEGIS_SPEC_v3_consolidated.md`](../AEGIS_SPEC_v3_consolidated.md) §13. N
 |---------------|--------|----------------------------|
 | Adaptive adversary varying compromised-mix set across epochs | **[O] QUANTIFIED + Partial mitigation (v1–v3)** | `adaptive_guard_exposure` + `mode='mitigated_v3'` (best), `mitigated` (v2), `mitigated_first` (v1); artifact `mitigated_v3_by_epochs`; Rust `GuardMitigationPolicy::adaptive_v3()`; [`adaptive_guard_mitigation.md`](adaptive_guard_mitigation.md). v3 ~32 pp lower than v2 at E=200 in sim; long-horizon saturation residual remains — **does not close §13.** |
 | Combined active(n−1) + intersection over long horizons (Mode 1) | **[O] QUANTIFIED** | Extended ranking (`hard_cap`/`deferred_hard_cap` + pad/truncate/noisy), M/Q sensitivity, offline E≤6400; artifact `sim/data/combined_active_intersection.analysis.json`; mapping [`combined_attack_mode1_hardcap.md`](combined_attack_mode1_hardcap.md); gates in `test_combined_active_intersection.py` + `test_hardening.py`. Characterized, **not closed**. |
+| Exit-tier + fused adaptive∩active (coverage C2) | **[O] QUANTIFIED** | Exit multi-client window ∩ / volume ranking (`exit_tier_intersection.*`); fused coupling vs adaptive-only + combined-only baselines (`fused_adversary.*`). Artifacts under `sim/data/`; playbook §7 / §7.1. **Not WAN closed**; clearnet residual remains. |
 | Cover-burst / GPA timing (related Partial) | **[O] QUANTIFIED** | `cover_timing.py` CV + KS + gap histograms + burst_heavy bundle; artifact `sim/data/cover_burst_gpa_characterization.json`; CI in `test_cover_burst_gpa.py`. Not info-theoretic indistinguishability. |
+| Gossip eclipse / `majority_k` collusion (threat model §4 / playbook §10) | **[O] QUANTIFIED Partial** | Wave C1: `sim/aegis_sim/gossip_eclipse.py` sweeps `f`, `K`, `N`; artifacts `sim/data/gossip_eclipse.analysis.json` + `_offline.json`; gates `test_gossip_eclipse.py`. Solo eclipse when `adv≥K`; mixed median majority still biases; **multi-org BFT still External**. |
 | Real-trace shapeability (actual C2/telemetry, not synthetic) | **[O] partial [T]** | Loopback testnet captures only — see §3 below. Ingest pipeline: `traffic.load_timestamp_csv` / `metrics.characterize_trace_file`; synthetic stress labeled `NOT_OPERATIONAL_C2` via `scripts/run_c2_shapeability_pipeline.py`. |
 | Sphinx crypto correctness — proof / test vectors, not simulation | **[O] partial** | Peel-order KATs (2/3/max + all lengths), wrong-hop reject, seeded structural KAT in `vectors.rs`; formal proof does **not** exist (`docs/AEGIS_phase2_implementation_notes.md`). |
-| Consortium governance (who runs/vets relays across nations) | **[O] policy draft** | Practical charter: [`CONSORTIUM_CHARTER.md`](CONSORTIUM_CHARTER.md). Code enforces signed roster + reputation; jurisdiction quotas and legal vetting remain policy. |
+| Consortium governance (who runs/vets relays across nations) | **[O] policy draft + QUANTIFIED skew** | Practical charter: [`CONSORTIUM_CHARTER.md`](CONSORTIUM_CHARTER.md). Faction/Sybil jurisdiction-skew sim: [`faction_sybil_skew.md`](faction_sybil_skew.md) + `sim/data/faction_sybil_skew.json` (M-of-N admit under faction key fraction; guard/exit concentration). Code enforces signed roster + reputation; **jurisdiction quotas and legal vetting remain External / policy**. |
 
 Detail and honest limits: [`AEGIS_phase8_hardening_notes.md`](../AEGIS_phase8_hardening_notes.md) §2 and §4–§5.
 
 Sibling agents may extend sim coverage; expected touchpoints:
 
 - `sim/aegis_sim/adversaries.py` — adaptive exposure, attack primitives
+- `sim/aegis_sim/exit_tier_intersection.py`, `fused_adversary.py` — coverage C2 (exit window + fused adaptive∩Mode-1)
 - `sim/tests/test_hardening.py` — §13 exploratory regressions (bounds looser than core ledger)
 - `sim/aegis_sim/traffic.py`, `sim/aegis_sim/metrics.py` — trace ingest + shapeability tiering
 - `sim/scripts/run_c2_shapeability_pipeline.py` — WAN drop-in / synthetic stress (labeled NOT_OPERATIONAL_C2)
+- `sim/scripts/run_exit_tier_intersection.py`, `run_fused_adversary.py` — C2 artifacts
 - `sim/scripts/run_cover_burst_gpa_characterization.py` — cover CV/KS/histogram artifact
 - `sim/scripts/capture_multiprocess_*.py`, `sim/scripts/analyze_*_trace.py` — real testnet trace capture/analysis
 
@@ -89,6 +93,7 @@ Spec §13: *Consortium governance: who runs/vets relays across nations (business
 
 - **Status:** **[O]** — not closed; a **practical draft charter** now exists for operators.
 - **In-repo:** [`CONSORTIUM_CHARTER.md`](CONSORTIUM_CHARTER.md) (membership, vetting, M-of-N roles, jurisdiction diversity goals, compromise response, reputation disputes, code vs policy). Technical admission/reputation/roster mechanics in threat-model and ops runbooks.
+- **Sybil / faction skew (wave C3):** Pure-Python M-of-N + jurisdiction-skew profiling in [`faction_sybil_skew.md`](faction_sybil_skew.md) (`sim/aegis_sim/faction_sybil_skew.py`, CI `test_faction_sybil_skew.py`). Quantifies admission success when faction-controlled keys reach threshold and resulting guard/exit concentration — **does not** replace legal governance.
 - **Code enforces:** M-of-N signed roster load, fail-closed lab flags (`aegis-node validate`), reputation + gossip verify paths.
 - **Policy / External:** legal vetting, sanctions screening, diversity quota compliance audits, multi-org BFT reputation — not software deliverables alone.
 

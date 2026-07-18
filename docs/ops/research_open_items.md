@@ -98,9 +98,60 @@ observables remain vulnerable — do not disable hard-cap for "efficiency."
 
 ---
 
+## C) Exit-tier anonymity-set / intersection [O → QUANTIFIED] (coverage C2)
+
+**Spec / wave:** Exit weaker tier (spec §8) + RESEARCH_COVERAGE_WAVE C2.
+
+**Simulator:** `sim/aegis_sim/exit_tier_intersection.py`
+- `exit_tier_intersection(...)` — single-horizon mean anonymity set, ∩ singleton, volume rank
+- `exit_tier_intersection_curve(...)` — metrics vs epochs
+- `exit_tier_report(...)` — sensitivity + offline horizons
+
+**Model:** N clients share one exit; co-active windows form the sender anonymity set; GPA at exit↔clearnet sees **unshaped** residual (no receiver hard-cap). Tip-sparse ∩ uses partial activity knowledge (`tip_rate`); naive full-window ∩ collapses faster.
+
+**Findings (characterizes, does not close):**
+- Mean co-active anonymity set grows with `p_active` and client pool N.
+- Tip-sparse intersection shrinks with E; unshaped volume ranking beats 1/N quickly.
+- Naive full-window ∩ collapses near-singleton early (honest residual).
+- **Not WAN closed** — synthetic Poisson clearnet residual only.
+
+**Artifact:** `sim/data/exit_tier_intersection.analysis.json`  
+**Script:** `sim/scripts/run_exit_tier_intersection.py` (`--offline` for E≤3200)  
+**Pytest:** `sim/tests/test_exit_tier_intersection.py`
+
+---
+
+## D) Fused adaptive ∩ active/intersection [O → QUANTIFIED] (coverage C2)
+
+**Spec / wave:** Compose adaptive compromised-mix redraw with Mode-1 active+intersection.
+
+**Simulator:** `sim/aegis_sim/fused_adversary.py` (calls public APIs; does not rewrite adaptive_v3 / CAI guts)
+- `fused_long_horizon(...)` — coupled curves (`p_adaptive_exposed`, `p_mode1_confirm`, union/joint)
+- `baseline_adaptive_only` / `baseline_combined_only` — live public-API baselines
+- `load_committed_baselines` — reuse `adaptive_guard_exposure.analysis.json` + `combined_active_intersection.analysis.json`
+
+**Coupling:** Per epoch redraw guards with prob `c`. Dirty → leaky Mode-1 obs (`constant_only` / `pad_up`); clean → `hard_cap` (no fused signal).
+
+**Findings (characterizes, does not close):**
+- With `c=0`, Mode-1 confirm stays near 1/M (hard_cap epochs only).
+- With realistic/high `c`, adaptive exposure unlocks Mode-1 confirm; union ≥ either component.
+- Committed adaptive/combined artifacts remain the pinned separate baselines.
+
+**Artifact:** `sim/data/fused_adversary.analysis.json`  
+**Script:** `sim/scripts/run_fused_adversary.py` (`--offline` for longer E)  
+**Pytest:** `sim/tests/test_fused_adversary.py`
+
+**Honest limits:** Synthetic; not WAN closed; exit clearnet residual is a separate weaker tier (section C). Does not claim adaptive_v3 or Mode-1 hard_cap closed.
+
+---
+
 ## Regenerating artifacts
 
 ```bash
 cd sim && PYTHONPATH=. python scripts/generate_research_artifacts.py --only combined
+cd sim && PYTHONPATH=. python scripts/generate_research_artifacts.py --only c2
+# or: python scripts/run_exit_tier_intersection.py --offline
+#     python scripts/run_fused_adversary.py --offline
 cd sim && PYTHONPATH=. pytest -q tests/test_combined_active_intersection.py tests/test_hardening.py -k combined
+cd sim && PYTHONPATH=. pytest -q tests/test_exit_tier_intersection.py tests/test_fused_adversary.py
 ```

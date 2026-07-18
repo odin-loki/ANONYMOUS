@@ -389,4 +389,23 @@ mod tests {
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir(&dir);
     }
+
+    /// Partition / delayed-merge residual: two local registries can each accept
+    /// the same nullifier before operator `merge_from_file`. Merge is idempotent
+    /// and does **not** roll back prior accepts (not cross-node consensus).
+    /// Characterizes wave C4 — see `docs/ops/anonymous_reputation.md`.
+    #[test]
+    fn partition_allows_double_accept_until_merge() {
+        let n = derive_reputation_nullifier(&[0x44u8; 32], 99, &[0x55u8; 32]);
+        let mut a = NullifierRegistry::new();
+        let mut b = NullifierRegistry::new();
+        assert!(a.try_register(99, n).is_ok());
+        assert!(b.try_register(99, n).is_ok());
+        let report = a.merge(&b).unwrap();
+        assert_eq!(report.added, 0);
+        assert_eq!(report.already_present, 1);
+        assert_eq!(a.epoch_len(99), 1);
+        // Still spent once post-merge; no retroactive double-spend signal.
+        assert!(a.is_spent(99, &n));
+    }
 }

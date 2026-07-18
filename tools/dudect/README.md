@@ -18,15 +18,25 @@ requires ≥10⁵ traces on an **isolated** CPU — see [`docs/ops/constant_time
 ```bash
 cd tools/dudect
 make                    # stub FFI smoke only
-make lab                # auto-clone dudect + build full harnesses + run (default 1e5 measurements)
-DUDECT_MEASUREMENTS=5000 make lab   # short statistical attempt (lab only; not release evidence)
+make lab                # auto-clone dudect + harnesses + run (default timeout 180s/harness)
+make lab-deepen         # ~10–12 min deepen (replay 600s/1e5, mac 180s/1e4 chunks)
+DUDECT_MEASUREMENTS=5000 DUDECT_MAX_CHUNKS=20 make lab   # short attempt
 ```
+
+Harnesses print `AEGIS_DUDECT_SUMMARY` with `evidence_code` in
+`{LEAKAGE_FOUND, BUDGET_EXHAUSTED}` (timeout emits `TIMEOUT` via Makefile).
+
+| Tunable | Meaning |
+|---------|---------|
+| `DUDECT_MEASUREMENTS` | Chunk size per `dudect_main` (default `100000`) |
+| `DUDECT_MAX_CHUNKS` | Stop after N chunks; `0` = until leakage |
+| `DUDECT_TIMEOUT_REPLAY` / `DUDECT_TIMEOUT_MAC` | Per-harness wall-clock seconds |
 
 The Makefile clones `oreparaz/dudect` into `../dudect-upstream` when missing (`make dudect-upstream`).
 Override location: `make DUDECT_DIR=/path/to/dudect lab`.
 
 **Windows host:** use in-tree `cargo test -p aegis-crypto --test timing_smoke --test dudect_smoke`,
-or `.\scripts\run_dudect_wsl.ps1` / `scripts/run_dudect_lab_wsl.sh` under WSL2.
+or `.\scripts\run_dudect_lab_wsl.ps1 -LabMode deepen` under WSL2.
 Do not expect this Makefile to run natively on Windows.
 
 ## Release evidence (External operator)
@@ -39,4 +49,5 @@ taskset -c 2 ./harness_replay_contains
 taskset -c 2 ./harness_verify_mac
 ```
 
-WSL2 lacks reliable cpufreq/taskset isolation — treat WSL runs as wiring smoke only.
+WSL2 lacks reliable cpufreq/taskset isolation — treat WSL runs as wiring / deepen smoke only.
+Never equate high WSL trace counts with the External ≥10⁵ **isolated** bar.

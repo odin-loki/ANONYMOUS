@@ -12,6 +12,16 @@ Modules:
                    plus (Phase 8) an adaptive compromised-mix-set adversary
     combined_active_intersection
                  - fused active(n-1)+intersection ranking, sensitivity, offline horizons
+    exit_tier_intersection
+                 - multi-client exit window anonymity-set / intersection (C2; not WAN closed)
+    fused_adversary
+                 - adaptive recompromise ∩ Mode-1 active/intersection coupling (C2)
+    faction_sybil_skew
+                 - M-of-N faction / jurisdiction-skew roster admission (wave C3)
+    ac_nullifier_unlinkability
+                 - wave C4 lab: issuer correlation, double-spend, merge_from_file eclipse
+    gossip_eclipse
+                 - wave C1: gossip eclipse + majority_k collusion ([O] QUANTIFIED Partial)
     metrics      - anonymity metrics (matching accuracy, disclosure, Hurst),
                    plus (Phase 8) shapeability_report for honest per-trace tiering
 
@@ -21,4 +31,15 @@ results so that any future change that weakens a defense fails a test.
 from spec §13: real-trace shapeability, adaptive compromised-mix set, and
 combined active+intersection long-horizon attacks.
 """
-__all__ = ["traffic", "shaper", "adversaries", "combined_active_intersection", "metrics"]
+__all__ = [
+    "traffic",
+    "shaper",
+    "adversaries",
+    "combined_active_intersection",
+    "exit_tier_intersection",
+    "fused_adversary",
+    "faction_sybil_skew",
+    "ac_nullifier_unlinkability",
+    "gossip_eclipse",
+    "metrics",
+]

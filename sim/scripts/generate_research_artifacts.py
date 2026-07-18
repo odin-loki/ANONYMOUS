@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Regenerate spec §13 research JSON artifacts under sim/data/.
+"""Regenerate spec §13 / coverage-wave research JSON artifacts under sim/data/.
 
-By default regenerates both adaptive-guard and combined-attack artifacts.
+By default regenerates adaptive-guard and combined-attack artifacts.
 Use `--only combined` to avoid rewriting adaptive_guard ownership files.
+C2 exit-tier / fused artifacts: prefer dedicated scripts
+`run_exit_tier_intersection.py` / `run_fused_adversary.py` (also wired below).
 """
 import argparse
 import json
@@ -16,6 +18,8 @@ from aegis_sim import adversaries as adv  # noqa: E402
 from aegis_sim.combined_active_intersection import (  # noqa: E402
     combined_attack_defense_report,
 )
+from aegis_sim import exit_tier_intersection as eti  # noqa: E402
+from aegis_sim import fused_adversary as fa  # noqa: E402
 
 DATA = ROOT / "data"
 
@@ -48,11 +52,36 @@ def write_combined():
     print("Wrote", path)
 
 
+def write_exit_tier():
+    report = eti.exit_tier_report(
+        n_clients=40, p_active=0.25, trials=200,
+        include_sensitivity=True, include_offline=True,
+        offline_trials=100,
+    )
+    path = DATA / "exit_tier_intersection.analysis.json"
+    eti.write_exit_tier_artifact(path, report=report)
+    print("Wrote", path)
+
+
+def write_fused():
+    report = fa.fused_adversary_report(
+        trials=200,
+        include_live_baselines=True,
+        include_committed_baselines=True,
+        include_offline=True,
+        offline_trials=100,
+        data_dir=DATA,
+    )
+    path = DATA / "fused_adversary.analysis.json"
+    fa.write_fused_adversary_artifact(path, report=report)
+    print("Wrote", path)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--only",
-        choices=("all", "combined", "adaptive"),
+        choices=("all", "combined", "adaptive", "exit_tier", "fused", "c2"),
         default="all",
         help="Which artifact(s) to regenerate (default: all).",
     )
@@ -62,6 +91,10 @@ def main(argv=None):
         write_adaptive()
     if args.only in ("all", "combined"):
         write_combined()
+    if args.only in ("all", "exit_tier", "c2"):
+        write_exit_tier()
+    if args.only in ("all", "fused", "c2"):
+        write_fused()
 
 
 if __name__ == "__main__":

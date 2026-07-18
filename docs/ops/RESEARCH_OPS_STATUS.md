@@ -12,12 +12,12 @@ Legend: **Done** = in-tree code + tests/docs as scoped · **Partial** = useful m
 | 2 | Consortium key ceremony | **Partial** | Shamir + `Pkcs11CustodyOps`; HSM fail-closed + lab `SimulatedHsmProvider`; `docs/ops/consortium_key_ceremony.md` | **External:** PKCS#11 / vendor HSM SDK + interactive MPC |
 | 3 | Noise / roster-key link auth | **Partial/Mitigated** | `handshake=auto` → `snow` Noise_IK when static keys present | Pre-snow SHA3 peers; ingress static |
 | 4 | Unix / keychain KEM store | **Partial** | Unix `kem-keyring` + Windows DPAPI; refuse group/world-readable `kem.seeds` | **External:** HSM / cross-user secret store |
-| 5 | Cover-burst timing | **Partial** | τ-paced cover egress; gap CV + KS + histograms + burst_heavy artifact; ingress `require_ingress_kem_commitment` LegacyPsk fail-closed | Not info-theoretic indistinguishability; Noise does not bind KEM |
+| 5 | Cover-burst timing | **Partial** | τ-paced cover egress; gap CV + KS + histograms + burst_heavy; multi-hop semantic gap (`cover_multihop_*`) + metrics scrape leakage (`metrics_sidechannel_*`); ingress `require_ingress_kem_commitment` LegacyPsk fail-closed | Not info-theoretic indistinguishability; Noise does not bind KEM; scrape under flood still leaks volume/timing |
 | 6 | Cross-relay health gossip | **Partial** | Authority-set quorum log + `majority_k` + optional `HealthEpochCheckpoint`; `docs/ops/health_gossip.md` | **External:** multi-org BFT |
 | 7 | ZK anonymous reputation | **Partial** | Issuer + blinded issue types + epoch rotate + nullifier merge; `docs/ops/anonymous_reputation.md` | **External:** interactive AC / real ZK show |
 | 8 | Adversarial multi-conn flood | **Done** | Global ingress budget 8/τ | Tunable caps only |
 | 9 | Sybil / g=3 guard plateau | **Done** | g=3 helpers; unfiltered APIs `test-utils` only | Science tests keep unfiltered |
-| 10 | dudect / CT evidence | **Partial** | Smokes + `tools/dudect/` lab Makefile + WSL scripts → `sim/dudect_lab_attempt.txt` + CI sim-pytest | **External:** ≥10⁵ traces/primitive on isolated CPU |
+| 10 | dudect / CT evidence | **Partial** | Smokes + `tools/dudect/` deepen (timeout/max-chunks/evidence codes); WSL C6 ≈8.2×10⁷ replay / ≈1.05×10⁶ mac traces → `sim/dudect_lab_summary.txt` (**not** isolated) | **External:** ≥10⁵ traces/primitive on isolated CPU |
 | 11 | Per-peer fair queues | **Done** | Health-weighted inbound + outbound WFQ | Discrete weight quanta (not GPS) |
 | 12 | Emitter backlog | **Done** | Cap 256; fail send on full | — |
 
